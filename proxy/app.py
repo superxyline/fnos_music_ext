@@ -2919,6 +2919,28 @@ def _prune_full_fetch_state(now: float) -> None:
             del _full_fetch_failed[g]
 
 
+def _schedule_full_fetch(request: Request, guid: str, require_tee_enabled: bool) -> bool:
+    """后台整轨下载的统一注册入口：同 guid 去重、失败后冷却期内不重试。
+
+    require_tee_enabled=True 时受边听边存开关约束（试听兜底场景）；
+    False 表示红心收藏等显式触发，开关关闭也照常下载。
+    """
+    if require_tee_enabled and not CONF.get("tee_save_enabled"):
+        return False
+    if find_cache_file(guid):
+        return False
+    task = _full_fetch_tasks.get(guid)
+    if task is not None and not task.done():
+        return False
+    now = time.monotonic()
+    _prune_full_fetch_state(now)
+    if now - _full_fetch_failed.get(guid, -_FULL_FETCH_COOLDOWN_S) < _FULL_FETCH_COOLDOWN_S:
+        return False
+    headers = copy_incoming_headers(request)
+    _full_fetch_tasks[guid] = asyncio.create_task(_full_fetch_download(guid, headers))
+    return True
+
+
 def _register_full_fetch(request: Request, guid: str) -> None:
     """定长窗口拉流客户端的边听边存兜底：注册后台整轨下载，客户端请求照常服务。
 
@@ -2926,17 +2948,12 @@ def _register_full_fetch(request: Request, guid: str) -> None:
     永远过不了 tee 写盘门；由服务端另起整轨下载落盘补齐。同 guid 去重、
     失败后冷却期内不重试，防止坏源反复打上游。
     """
-    if not CONF.get("tee_save_enabled") or find_cache_file(guid):
-        return
-    task = _full_fetch_tasks.get(guid)
-    if task is not None and not task.done():
-        return
-    now = time.monotonic()
-    _prune_full_fetch_state(now)
-    if now - _full_fetch_failed.get(guid, -_FULL_FETCH_COOLDOWN_S) < _FULL_FETCH_COOLDOWN_S:
-        return
-    headers = copy_incoming_headers(request)
-    _full_fetch_tasks[guid] = asyncio.create_task(_full_fetch_download(guid, headers))
+    _schedule_full_fetch(request, guid, require_tee_enabled=True)
+
+
+def _register_favorite_download(request: Request, guid: str) -> bool:
+    """红心收藏触发的整轨下载：红心即把在线原文件落盘进曲库，与边听边存开关无关。"""
+    return _schedule_full_fetch(request, guid, require_tee_enabled=False)
 
 
 async def _full_fetch_download(guid: str, cred_headers: dict) -> None:
@@ -3914,6 +3931,13 @@ async def favorite_track_create(request: Request):
             save_online_favorites(user_guid, items)
         except Exception as e:
             logger.warning("Error updating online favorites for user %s: %s", user_guid, e)
+
+    if guid and user_guid:
+        try:
+            if _register_favorite_download(request, guid):
+                logger.info("Favorite triggered background full download for %s", guid)
+        except Exception as e:
+            logger.warning("Favorite full download registration failed for %s: %s", guid, type(e).__name__)
 
     return JSONResponse(content={"code": 0, "msg": "", "data": None})
 

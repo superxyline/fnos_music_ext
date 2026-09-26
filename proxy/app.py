@@ -964,6 +964,30 @@ def unique_library_path(directory: str, basename: str, ext: str) -> str:
     return os.path.join(directory, f"{basename} ({n}).{ext}")
 
 
+def read_media_tags(path: str) -> tuple[str, str, str]:
+    """读取音频文件自带的 title/artist/album（聚合源 mp3 大多带 ID3）。
+
+    供落盘定名时抢救元数据：所有在线兜底都失效后，源文件自己的标签是
+    最后一道防线。任何异常都返回空三元组，绝不阻断落盘。
+    """
+    try:
+        from mutagen import File as MutagenFile
+
+        audio = MutagenFile(path, easy=True)
+        if audio is None or getattr(audio, "tags", None) is None:
+            return "", "", ""
+
+        def _first(key: str) -> str:
+            v = audio.tags.get(key)
+            if isinstance(v, (list, tuple)):
+                v = v[0] if v else ""
+            return str(v or "").strip()
+
+        return _first("title"), _first("artist"), _first("album")
+    except Exception:
+        return "", "", ""
+
+
 def write_audio_tags(path: str, title: str, artist: str = "", album: str = "") -> None:
     """写入 title/artist/album，飞牛扫描后用标签而不是文件名显示。"""
     title, artist, album = (title or "").strip(), (artist or "").strip(), (album or "").strip()
@@ -2621,11 +2645,19 @@ def _tee_finalize(part: str, guid: str, ext: str, info: dict | None, tee_enabled
     """
     title, artist, album = (str((info or {}).get(k) or "") for k in ("title", "artist", "album"))
     if tee_enabled:
+        if not title.strip():
+            # 在线元数据全链路失效（搜索缓存/musicdl info 都过期）时的最后防线：
+            # 源文件自带标签（ID3）拿来定名，杜绝 unknown 落盘。
+            tag_title, tag_artist, tag_album = read_media_tags(part)
+            title = tag_title or title
+            artist = artist or tag_artist
+            album = album or tag_album
         dest = library_media_path(guid, title, ext, artist=artist, directory=tee_save_dir())
         os.replace(part, dest)
         remember_media_path(guid, dest)
         adopt_library_perms(dest)
-        write_audio_tags(dest, title, artist, album)
+        if title.strip() or artist.strip():
+            write_audio_tags(dest, title, artist, album)
         # 无音频时代落在 cache 的影子歌词跟随音频进曲库，词曲贴身
         promote_shadow_lyric(guid, dest)
     else:
@@ -2887,6 +2919,13 @@ async def _open_online_stream(request: Request, guid: str, range_header: str | N
             client = owned
             req = client.build_request("GET", url, headers=headers)
         else:
+            # musicdl 分支此前完全不取元数据：搜索会话缓存一过期，落盘标题就是
+            # unknown。与 netease/lx 对齐，起流前给一次短窗口 /info 兜底。
+            if info is None:
+                try:
+                    info = await asyncio.wait_for(_fetch_online_info(request, guid), timeout=0.75)
+                except Exception:
+                    pass
             client = get_musicdl_client(request.app)
             req = client.build_request("GET", "/stream", params={"id": song_id_from_online_guid(guid), "proxy": "true"}, headers=headers)
         resp = await client.send(req, stream=True)
@@ -2970,10 +3009,61 @@ def _register_favorite_download(request: Request, guid: str, info_hint: dict | N
     info_hint 用收藏快照补齐元数据（后台下载拿不到搜索会话缓存）；user_guid
     供落盘后把本地曲目转成官方红心时定位收藏记录。
     """
+    hint = dict(info_hint or {})
+    if find_cache_file(guid):
+        # 文件已在曲库：若是播放期元数据失效落下的 unknown 定名，用收藏快照
+        # 纠正文件名/标签（不重新下载），让红心同时起到"修复命名"的作用。
+        try:
+            if _repair_unknown_cached(
+                guid,
+                str(hint.get("title") or "").strip(),
+                str(hint.get("artist") or "").strip(),
+                str(hint.get("album") or "").strip(),
+            ):
+                _schedule_library_scan(copy_incoming_headers(request))
+        except Exception as e:
+            logger.warning("Repair unknown filename failed for %s: %s", guid, type(e).__name__)
+        return False
     return _schedule_full_fetch(
         request, guid, require_tee_enabled=False,
-        info_hint=info_hint, favorite_context={"user_guid": user_guid} if user_guid else None,
+        info_hint=hint or None, favorite_context={"user_guid": user_guid} if user_guid else None,
     )
+
+
+def _repair_unknown_cached(guid: str, title: str, artist: str, album: str) -> bool:
+    """把已落盘但命名为 unknown 的曲库文件改名成「歌手 - 歌名」。
+
+    播放期搜索缓存与 musicdl info 双双过期时会以 unknown 定名；红心命中这种
+    文件时按收藏快照纠正：音频改名、随迁 .lrc、更新 guid→路径 ref 与音频标签。
+    非 unknown 文件或无歌名返回 False（不动已有正确命名的文件）。
+    """
+    cached = find_cache_file(guid)
+    if not cached or not title:
+        return False
+    stem = os.path.splitext(os.path.basename(cached))[0]
+    if stem != "unknown" and not re.fullmatch(r"unknown \(\d+\)", stem):
+        return False
+    directory = os.path.dirname(cached)
+    ext = os.path.splitext(cached)[1].lstrip(".") or "mp3"
+    dest = unique_library_path(directory, library_basename(title, artist), ext)
+    try:
+        os.replace(cached, dest)
+    except OSError as e:
+        logger.warning("Failed to rename unknown file for %s: %s", guid, e)
+        return False
+    remember_media_path(guid, dest)
+    old_lrc = os.path.splitext(cached)[0] + ".lrc"
+    if os.path.exists(old_lrc):
+        new_lrc = os.path.splitext(dest)[0] + ".lrc"
+        if not os.path.exists(new_lrc):
+            try:
+                os.replace(old_lrc, new_lrc)
+            except OSError:
+                pass
+    if title or artist:
+        write_audio_tags(dest, title, artist, album)
+    logger.info("Repaired unknown filename for %s -> %s", guid, os.path.basename(dest))
+    return True
 
 
 async def _full_fetch_download(

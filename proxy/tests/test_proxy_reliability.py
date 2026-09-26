@@ -488,7 +488,8 @@ async def test_gzip_audio_rejected_before_first_byte(tmp_path):
             "content-encoding": "gzip", "content-length": str(len(packed))})
     p.app.state.musicdl_client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://test")
     response = await p.stream_track(request("guid=online:kuwo:1"))
-    assert response.status_code == 404 and seen == ["identity"]
+    # 首个请求是 musicdl /info 元数据兜底（httpx 默认 gzip, deflate），随后才是 identity 取流
+    assert response.status_code == 404 and seen == ["gzip, deflate", "identity"]
     assert not list(tmp_path.rglob("*.mp3"))
 
 

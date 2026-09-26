@@ -2919,11 +2919,19 @@ def _prune_full_fetch_state(now: float) -> None:
             del _full_fetch_failed[g]
 
 
-def _schedule_full_fetch(request: Request, guid: str, require_tee_enabled: bool) -> bool:
+def _schedule_full_fetch(
+    request: Request,
+    guid: str,
+    require_tee_enabled: bool,
+    info_hint: dict | None = None,
+    favorite_context: dict | None = None,
+) -> bool:
     """后台整轨下载的统一注册入口：同 guid 去重、失败后冷却期内不重试。
 
     require_tee_enabled=True 时受边听边存开关约束（试听兜底场景）；
     False 表示红心收藏等显式触发，开关关闭也照常下载。
+    info_hint 是收藏快照等来源的元数据兜底；favorite_context 携带 user_guid
+    时，落盘成功后会跟进"转官方红心"的关联任务。
     """
     if require_tee_enabled and not CONF.get("tee_save_enabled"):
         return False
@@ -2937,7 +2945,9 @@ def _schedule_full_fetch(request: Request, guid: str, require_tee_enabled: bool)
     if now - _full_fetch_failed.get(guid, -_FULL_FETCH_COOLDOWN_S) < _FULL_FETCH_COOLDOWN_S:
         return False
     headers = copy_incoming_headers(request)
-    _full_fetch_tasks[guid] = asyncio.create_task(_full_fetch_download(guid, headers))
+    _full_fetch_tasks[guid] = asyncio.create_task(
+        _full_fetch_download(guid, headers, info_hint=info_hint, favorite_context=favorite_context)
+    )
     return True
 
 
@@ -2951,12 +2961,21 @@ def _register_full_fetch(request: Request, guid: str) -> None:
     _schedule_full_fetch(request, guid, require_tee_enabled=True)
 
 
-def _register_favorite_download(request: Request, guid: str) -> bool:
-    """红心收藏触发的整轨下载：红心即把在线原文件落盘进曲库，与边听边存开关无关。"""
-    return _schedule_full_fetch(request, guid, require_tee_enabled=False)
+def _register_favorite_download(request: Request, guid: str, info_hint: dict | None, user_guid: str) -> bool:
+    """红心收藏触发的整轨下载：红心即把在线原文件落盘进曲库，与边听边存开关无关。
+
+    info_hint 用收藏快照补齐元数据（后台下载拿不到搜索会话缓存）；user_guid
+    供落盘后把本地曲目转成官方红心时定位收藏记录。
+    """
+    return _schedule_full_fetch(
+        request, guid, require_tee_enabled=False,
+        info_hint=info_hint, favorite_context={"user_guid": user_guid} if user_guid else None,
+    )
 
 
-async def _full_fetch_download(guid: str, cred_headers: dict) -> None:
+async def _full_fetch_download(
+    guid: str, cred_headers: dict, info_hint: dict | None = None, favorite_context: dict | None = None
+) -> None:
     """后台整轨下载 online guid 并落盘（独立于客户端连接，不占播放路径预算）。"""
     part = None
     resp = None
@@ -2973,6 +2992,14 @@ async def _full_fetch_download(guid: str, cred_headers: dict) -> None:
         if not opened:
             raise RuntimeError("open failed")
         resp, owned, ext, info, chunks, first = opened
+        # 后台上下文拿不到搜索会话缓存，info 可能缺字段（musicdl 甚至整体为 None）：
+        # 用收藏快照等 hint 补齐，保证落盘文件名（歌手 - 歌名）与音频标签正确。
+        hint = dict(info_hint or {})
+        if hint:
+            info = dict(info or {})
+            for key in ("title", "artist", "album", "lyric", "lrc", "ext", "duration_s", "cover_url"):
+                if info.get(key) in (None, "") and hint.get(key) not in (None, ""):
+                    info[key] = hint[key]
         expected = None
         length = resp.headers.get("content-length", "")
         if length.isdigit():
@@ -2996,6 +3023,10 @@ async def _full_fetch_download(guid: str, cred_headers: dict) -> None:
         part = None
         logger.info("Background full fetch saved %s (%d bytes)", guid, written)
         _schedule_library_scan(cred_headers)
+        if favorite_context:
+            user_guid = str(favorite_context.get("user_guid") or "")
+            if user_guid:
+                asyncio.create_task(_link_official_favorite(guid, info or hint, cred_headers, user_guid))
     except asyncio.CancelledError:
         raise
     except Exception as e:
@@ -3014,6 +3045,111 @@ async def _full_fetch_download(guid: str, cred_headers: dict) -> None:
                 await owned.aclose()
         if _full_fetch_tasks.get(guid) is asyncio.current_task():
             del _full_fetch_tasks[guid]
+
+
+_OFFICIAL_LINK_POLL_S = 5.0
+_OFFICIAL_LINK_TIMEOUT_S = 150.0
+
+
+def _match_local_track(tracks: list, title: str, artist: str) -> dict | None:
+    """官方搜索结果里找下载落盘的那首本地曲目：歌名必须相等，歌手给了才要求命中。
+
+    官方条目歌手字段形状不一（artist/singer 字符串或 artists 数组），全部归并比较。
+    """
+
+    def _norm(s: object) -> str:
+        return re.sub(r"\s+", "", str(s or "")).lower()
+
+    def _artist_names(tr: dict) -> str:
+        names = [artist_from_track(tr)]
+        artists = tr.get("artists")
+        if isinstance(artists, list):
+            for x in artists:
+                if isinstance(x, dict) and x.get("name"):
+                    names.append(str(x["name"]))
+        return " ".join(n for n in names if n)
+
+    t_norm = _norm(title)
+    a_norm = _norm(artist)
+    for tr in tracks:
+        if not isinstance(tr, dict):
+            continue
+        if _norm(title_from_track(tr)) != t_norm:
+            continue
+        artist_field = _artist_names(tr)
+        if a_norm and artist_field and a_norm not in artist_field:
+            continue
+        return tr
+    return None
+
+
+async def _link_official_favorite(online_guid: str, info: dict | None, cred_headers: dict, user_guid: str) -> None:
+    """红心下载落盘后，把官方曲库里新生成的本地曲目转成官方红心。
+
+    轮询官方本地搜索直到重扫把新文件索引进来；找到即 POST 官方收藏接口并从
+    在线收藏记录移除该条（收藏页只留官方本地条目，不重复）。超时（重扫未跑/
+    未扫到）保留在线收藏条目兜底，收藏不丢。凭证头取自红心请求，过期则放弃。
+    """
+    title = str((info or {}).get("title") or "").strip()
+    if not title:
+        logger.warning("Favorite link skipped for %s: no title in snapshot", online_guid)
+        return
+    artist = str((info or {}).get("artist") or "").strip()
+    headers = dict(cred_headers or {})
+    deadline = time.monotonic() + _OFFICIAL_LINK_TIMEOUT_S
+    while time.monotonic() < deadline:
+        await asyncio.sleep(_OFFICIAL_LINK_POLL_S)
+        try:
+            client = get_upstream_client(app)
+            req = client.build_request(
+                "GET", "/music/api/v1/search/track",
+                params={"keyword": title, "page": 1, "size": 50}, headers=headers,
+            )
+            resp = await client.send(req)
+            if resp.status_code != 200:
+                continue
+            try:
+                data = (resp.json() or {}).get("data")
+            except Exception:
+                continue
+            tracks = data.get("list") if isinstance(data, dict) else None
+            if not isinstance(tracks, list):
+                continue
+            target = _match_local_track(tracks, title, artist)
+            if not target:
+                continue
+            official_guid = str(target.get("guid") or "")
+            if not official_guid or is_online_guid(official_guid):
+                continue
+            req = client.build_request(
+                "POST", "/music/api/v1/favorite-track/create",
+                headers=headers, json={"trackGUID": official_guid},
+            )
+            resp = await client.send(req)
+            if resp.status_code != 200:
+                logger.warning(
+                    "Official favorite create failed for %s (%s): %s; keeping online favorite",
+                    official_guid, online_guid, resp.status_code,
+                )
+                return
+            async with _FAV_LOCK:
+                try:
+                    items = load_online_favorites(user_guid)
+                    kept = [it for it in items if str(it.get("guid") or "") != online_guid]
+                    if len(kept) != len(items):
+                        save_online_favorites(user_guid, kept)
+                except Exception as e:
+                    logger.warning("Failed to drop online favorite %s for %s: %s", online_guid, user_guid, e)
+            logger.info("Favorite download linked to official track %s (was %s)", official_guid, online_guid)
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Favorite link poll failed for %s: %s", online_guid, type(e).__name__)
+    logger.warning(
+        "Official track for favorite %s not indexed within %ss; keeping online favorite entry",
+        online_guid, _OFFICIAL_LINK_TIMEOUT_S,
+    )
 
 
 async def _stream_head_response(request: Request, guid: str, cached: str | None, range_header: str | None) -> Response:
@@ -3934,7 +4070,9 @@ async def favorite_track_create(request: Request):
 
     if guid and user_guid:
         try:
-            if _register_favorite_download(request, guid):
+            # 收藏快照还原成 info 形状，作为后台下载的元数据兜底（文件名/标签/歌词）
+            favorite_hint = _snapshot_to_info(track_obj) if isinstance(track_obj, dict) else None
+            if _register_favorite_download(request, guid, info_hint=favorite_hint, user_guid=user_guid):
                 logger.info("Favorite triggered background full download for %s", guid)
         except Exception as e:
             logger.warning("Favorite full download registration failed for %s: %s", guid, type(e).__name__)

@@ -1,10 +1,10 @@
-# fnmusic-ext 飞牛音乐扩展代理
+# fnmusic-ext 飞牛音乐扩展代理（二次开发版）
 
-Gitee：https://gitee.com/javycoder/fnos_music_ext
-
-GitHub：https://github.com/javycoder/fnos_music_ext
-
-[![CI](https://github.com/javycoder/fnos_music_ext/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/javycoder/fnos_music_ext/actions/workflows/ci.yml)
+> **本仓库是 [javycoder/fnos_music_ext](https://github.com/javycoder/fnos_music_ext) 的二次开发版**，在上游 v2.3.0 基础上新增「红心收藏自动下载」等能力。**衷心感谢原作者 [@javycoder](https://github.com/javycoder) 的优秀开源工作**——本仓库的全部基础能力（Socket 接管、三音源、WebUI、收藏/歌单/历史体系）均来自上游项目，二次开发增量见 [二次开发功能](#二次开发功能) 一节。
+>
+> - 本仓库 Gitee：https://gitee.com/superxyline/fnos_music_ext
+> - 本仓库 GitHub：https://github.com/superxyline/fnos_music_ext
+> - 上游仓库：https://github.com/javycoder/fnos_music_ext （Gitee 同名：https://gitee.com/javycoder/fnos_music_ext ）
 
 `fnmusic-ext` 是专为 fnOS（飞牛私有云）自带音乐应用（`trim.music`）打造的**无侵入增强扩展**。它通过接管官方后端的 Unix Socket 通信入口，在完全不修改官方程序、nginx 配置与数据库的前提下，让原生飞牛音乐获得在线音乐能力；可随时一条命令还原官方直连。
 
@@ -22,6 +22,15 @@ GitHub：https://github.com/javycoder/fnos_music_ext
 - **智能边听边存**：在线听歌时后台自动缓存，再次播放本地秒开；可选完整试听后保存进本地曲库；
 - **推荐体系**：「热门推荐」与「每日推荐 MM-DD」两个独立歌单、独立开关；默认采信音源原生推荐，未启用网易时可配 OpenAI 兼容大模型兜底；歌单封面取列表里第一首有封面的曲目；
 - **多用户隔离收藏**：家庭多成员的红心收藏彼此独立，与本地曲库融合。
+
+## 二次开发功能
+
+以下为本仓库在上游 v2.3.0 基础上新增/修改的能力（v2.3.1 起）：
+
+- **红心收藏自动下载**（v2.3.1）：对在线歌曲点红心（我喜爱）后，代理立即在后台把该曲目的**完整原文件**整轨下载落盘进本地曲库（定名"歌手 - 歌名"、写音频标签、歌词随迁），不再依赖完整试听触发；
+- **下载元数据兜底**（v2.3.2）：后台整轨下载拿不到搜索会话缓存时，用收藏快照里的歌名/歌手/专辑/歌词补齐元数据，保证落盘文件名与标签始终正确；
+- **自动转官方收藏 + 持续对账**（v2.3.2 / v2.3.4）：下载文件进入官方曲库索引后，代理自动用当前用户身份为对应本地曲目创建**官方红心**，并撤掉在线收藏条目（避免重复）；官方未及时索引时条目进入待关联集合，每次打开收藏页都会自愈重试，直到转换成功——收藏全程不丢；
+- **WebUI 收藏自动下载开关**（v2.3.3）：管理 WebUI「边听边存」页新增「收藏自动下载」开关（默认开，热生效），配置键 `FNMUSIC_FAVORITE_DOWNLOAD_ENABLED`。
 
 ## 架构
 
@@ -203,4 +212,9 @@ sudo python3 tests/integration/fpk_lifecycle.py --auto-restore
 - 洛雪自定义源脚本等第三方代码由使用者自行提供并在隔离子进程中运行，请仅使用可信来源的脚本、仅访问您有权收听的内容；
 - 使用者应遵守所在国家/地区法律法规与第三方平台用户协议；因滥用导致的任何责任由使用者自行承担。
 
-上游致谢：[CharlesPikachu/musicdl](https://github.com/CharlesPikachu/musicdl)、[darknessomi/musicbox](https://github.com/darknessomi/musicbox)、洛雪音乐（LX Music）社区及其自定义源规范。
+## 鸣谢
+
+- **[javycoder/fnos_music_ext](https://github.com/javycoder/fnos_music_ext) 原项目及作者 [@javycoder](https://github.com/javycoder)**：本仓库是其二开版本，Socket 接管架构、三音源体系、管理 WebUI、在线收藏/歌单/播放历史等所有基础能力均出自原项目，没有原作者的工作就没有这个二开版，特此致谢！
+- 上游致谢：[CharlesPikachu/musicdl](https://github.com/CharlesPikachu/musicdl)、[darknessomi/musicbox](https://github.com/darknessomi/musicbox)、洛雪音乐（LX Music）社区及其自定义源规范。
+
+## 免责与版权声明

@@ -102,6 +102,8 @@ CONF = {
     "tee_save_enabled": os.environ.get("FNMUSIC_TEE_SAVE_ENABLED", "true").lower() in ("true", "1", "yes"),
     "tee_save_dir": os.environ.get("FNMUSIC_TEE_SAVE_DIR", ""),
     "tee_cache_max": int(os.environ.get("FNMUSIC_TEE_CACHE_MAX", "2")),
+    # 收藏自动下载：对在线歌曲点红心即后台整轨下载原文件落盘（独立于边听边存开关）
+    "favorite_download_enabled": os.environ.get("FNMUSIC_FAVORITE_DOWNLOAD_ENABLED", "true").lower() in ("true", "1", "yes"),
     # 在线取流 Range 探针：记录每条在线 /track/stream 的 Range 形态与落盘资格，
     # 用于真机确认手机播放器是否按定长窗口取流（那样边听边存永不触发）
     "stream_probe": os.environ.get("FNMUSIC_STREAM_PROBE", "true").lower() in ("true", "1", "yes"),
@@ -432,6 +434,7 @@ _ENV_WATCH_KEYS: dict[str, tuple[str, str]] = {
     "FNMUSIC_TEE_SAVE_ENABLED": ("tee_save_enabled", "bool"),
     "FNMUSIC_TEE_SAVE_DIR": ("tee_save_dir", "str"),
     "FNMUSIC_TEE_CACHE_MAX": ("tee_cache_max", "tee_cache_max"),
+    "FNMUSIC_FAVORITE_DOWNLOAD_ENABLED": ("favorite_download_enabled", "bool"),
     "FNMUSIC_LIBRARY_SCAN_PATH": ("library_scan_path", "str"),
     "FNMUSIC_RECOMMEND_HOT": ("recommend_hot", "bool"),
     "FNMUSIC_RECOMMEND_DAILY": ("recommend_daily", "bool"),
@@ -4068,7 +4071,7 @@ async def favorite_track_create(request: Request):
         except Exception as e:
             logger.warning("Error updating online favorites for user %s: %s", user_guid, e)
 
-    if guid and user_guid:
+    if guid and user_guid and CONF.get("favorite_download_enabled", True):
         try:
             # 收藏快照还原成 info 形状，作为后台下载的元数据兜底（文件名/标签/歌词）
             favorite_hint = _snapshot_to_info(track_obj) if isinstance(track_obj, dict) else None

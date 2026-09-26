@@ -3052,6 +3052,45 @@ async def _full_fetch_download(
 
 _OFFICIAL_LINK_POLL_S = 5.0
 _OFFICIAL_LINK_TIMEOUT_S = 150.0
+_PENDING_LINK_TRY_S = 10.0
+
+# 待关联条目：key = f"{user_guid}:{online_guid}"。仅在内存，重启后由
+# _seed_pending_from_favorites 按已下载文件自愈重建，无需持久化。
+_pending_official_links: "dict[str, dict]" = {}
+
+
+def _register_pending_official_link(user_guid: str, guid: str, info: dict | None) -> None:
+    title = str((info or {}).get("title") or "").strip()
+    if not title:
+        logger.warning("Favorite link skipped for %s: no title in snapshot", guid)
+        return
+    _pending_official_links[f"{user_guid}:{guid}"] = {
+        "guid": guid,
+        "userGuid": user_guid,
+        "title": title,
+        "artist": str((info or {}).get("artist") or "").strip(),
+        "addedAt": int(time.time()),
+        "lastTry": 0.0,
+    }
+
+
+def _seed_pending_from_favorites(user_guid: str, items: list) -> None:
+    """把"已下载落盘但还没转成官方红心"的在线收藏补进待关联集合（自愈入口）。
+
+    升级/重启丢失内存态、或下载完成后迟迟未被索引的条目，都靠这里在每次收藏
+    列表请求时重新拾起。find_cache_file 命中即代表该在线曲目已有本地文件。
+    """
+    for it in items:
+        guid = str(it.get("guid") or "")
+        if not guid or not is_online_guid(guid):
+            continue
+        key = f"{user_guid}:{guid}"
+        if key in _pending_official_links:
+            continue
+        if not find_cache_file(guid):
+            continue
+        snapshot = it.get("track") if isinstance(it.get("track"), dict) else None
+        _register_pending_official_link(user_guid, guid, _snapshot_to_info(snapshot) if snapshot else None)
 
 
 def _match_local_track(tracks: list, title: str, artist: str) -> dict | None:
@@ -3086,24 +3125,27 @@ def _match_local_track(tracks: list, title: str, artist: str) -> dict | None:
     return None
 
 
-async def _link_official_favorite(online_guid: str, info: dict | None, cred_headers: dict, user_guid: str) -> None:
-    """红心下载落盘后，把官方曲库里新生成的本地曲目转成官方红心。
+async def _reconcile_official_links_for_user(cred_headers: dict, user_guid: str) -> bool:
+    """对该用户的待关联条目做一轮对账：查官方库→建官方红心→撤对应在线收藏。
 
-    轮询官方本地搜索直到重扫把新文件索引进来；找到即 POST 官方收藏接口并从
-    在线收藏记录移除该条（收藏页只留官方本地条目，不重复）。超时（重扫未跑/
-    未扫到）保留在线收藏条目兜底，收藏不丢。凭证头取自红心请求，过期则放弃。
+    只处理当前用户自己的条目（收藏操作必须以该用户身份发起）；每条目 10 秒
+    节流，避免收藏列表频繁刷新时反复打官方搜索。返回本轮是否发生转换。
     """
-    title = str((info or {}).get("title") or "").strip()
-    if not title:
-        logger.warning("Favorite link skipped for %s: no title in snapshot", online_guid)
-        return
-    artist = str((info or {}).get("artist") or "").strip()
+    converted = False
+    now = time.monotonic()
     headers = dict(cred_headers or {})
-    deadline = time.monotonic() + _OFFICIAL_LINK_TIMEOUT_S
-    while time.monotonic() < deadline:
-        await asyncio.sleep(_OFFICIAL_LINK_POLL_S)
+    client = get_upstream_client(app)
+    for key, entry in list(_pending_official_links.items()):
+        if entry.get("userGuid") != user_guid:
+            continue
+        if now - float(entry.get("lastTry") or 0) < _PENDING_LINK_TRY_S:
+            continue
+        title = str(entry.get("title") or "")
+        if not title:
+            _pending_official_links.pop(key, None)
+            continue
+        entry["lastTry"] = now
         try:
-            client = get_upstream_client(app)
             req = client.build_request(
                 "GET", "/music/api/v1/search/track",
                 params={"keyword": title, "page": 1, "size": 50}, headers=headers,
@@ -3118,7 +3160,7 @@ async def _link_official_favorite(online_guid: str, info: dict | None, cred_head
             tracks = data.get("list") if isinstance(data, dict) else None
             if not isinstance(tracks, list):
                 continue
-            target = _match_local_track(tracks, title, artist)
+            target = _match_local_track(tracks, title, str(entry.get("artist") or ""))
             if not target:
                 continue
             official_guid = str(target.get("guid") or "")
@@ -3131,26 +3173,48 @@ async def _link_official_favorite(online_guid: str, info: dict | None, cred_head
             resp = await client.send(req)
             if resp.status_code != 200:
                 logger.warning(
-                    "Official favorite create failed for %s (%s): %s; keeping online favorite",
-                    official_guid, online_guid, resp.status_code,
+                    "Official favorite create failed for %s (%s): %s; will retry",
+                    official_guid, entry["guid"], resp.status_code,
                 )
-                return
+                continue
             async with _FAV_LOCK:
                 try:
                     items = load_online_favorites(user_guid)
-                    kept = [it for it in items if str(it.get("guid") or "") != online_guid]
+                    kept = [it for it in items if str(it.get("guid") or "") != entry["guid"]]
                     if len(kept) != len(items):
                         save_online_favorites(user_guid, kept)
                 except Exception as e:
-                    logger.warning("Failed to drop online favorite %s for %s: %s", online_guid, user_guid, e)
-            logger.info("Favorite download linked to official track %s (was %s)", official_guid, online_guid)
-            return
+                    logger.warning("Failed to drop online favorite %s for %s: %s", entry["guid"], user_guid, e)
+            _pending_official_links.pop(key, None)
+            converted = True
+            logger.info("Favorite download linked to official track %s (was %s)", official_guid, entry["guid"])
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Favorite link reconcile failed for %s: %s", entry["guid"], type(e).__name__)
+    return converted
+
+
+async def _link_official_favorite(online_guid: str, info: dict | None, cred_headers: dict, user_guid: str) -> None:
+    """红心下载落盘后，限时轮询官方库把新生成的本地曲目转成官方红心。
+
+    超时（官方未把文件索引进库）不放弃——条目留在待关联集合，每次收藏列表
+    请求都会先做一轮对账，文件被索引到的瞬间即完成转换。收藏始终不丢。
+    """
+    _register_pending_official_link(user_guid, online_guid, info)
+    deadline = time.monotonic() + _OFFICIAL_LINK_TIMEOUT_S
+    while time.monotonic() < deadline:
+        await asyncio.sleep(_OFFICIAL_LINK_POLL_S)
+        try:
+            await _reconcile_official_links_for_user(cred_headers, user_guid)
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.warning("Favorite link poll failed for %s: %s", online_guid, type(e).__name__)
-    logger.warning(
-        "Official track for favorite %s not indexed within %ss; keeping online favorite entry",
+        if f"{user_guid}:{online_guid}" not in _pending_official_links:
+            return
+    logger.info(
+        "Official track for favorite %s not indexed within %ss; will retry on favorites list requests",
         online_guid, _OFFICIAL_LINK_TIMEOUT_S,
     )
 
@@ -4116,10 +4180,29 @@ async def favorite_track_delete(request: Request):
 @app.get("/music/api/v1/favorite-track/list")
 async def favorite_track_list(request: Request):
     upstream_client = get_upstream_client(request.app)
+    headers = copy_incoming_headers(request)
+
+    # 先鉴权（user/me 不消耗后续请求的票据）：拿到用户身份后才能对账。
+    is_authed, user_guid, _auth_resp = await _probe_upstream_auth(request, upstream_client)
+    if is_authed and user_guid:
+        # 对账先行：把"已下载落盘但还没转成官方红心"的条目转掉，再拉官方列表，
+        # 这样本轮响应就包含刚建好的官方收藏，用户打开收藏页立即可见。
+        try:
+            async with _FAV_LOCK:
+                current_favs = load_online_favorites(user_guid)
+            _seed_pending_from_favorites(user_guid, current_favs)
+            if any(e.get("userGuid") == user_guid for e in _pending_official_links.values()):
+                await asyncio.wait_for(
+                    _reconcile_official_links_for_user(headers, user_guid), timeout=8.0
+                )
+        except asyncio.TimeoutError:
+            logger.info("Favorites pre-list reconcile timed out; continuing with list")
+        except Exception as e:
+            logger.warning("Favorites pre-list reconcile failed: %s", type(e).__name__)
+
     url_path = request.url.path
     if request.url.query:
         url_path = f"{url_path}?{request.url.query}"
-    headers = copy_incoming_headers(request)
 
     req = upstream_client.build_request("GET", url_path, headers=headers)
     upstream_resp = await upstream_client.send(req)
@@ -4146,12 +4229,10 @@ async def favorite_track_list(request: Request):
     if not isinstance(upstream_json, dict) or upstream_json.get("code") != 0:
         return JSONResponse(content=upstream_json, status_code=upstream_resp.status_code, headers=resp_headers)
 
-    # 探测当前用户身份。官方列表已取回成功（同一组请求头），此时探测被拒
-    # （如 App 一次性票据已被首次请求消耗）不能回传鉴权错误导致整列表空白，
+    # 探测被拒（如 App 一次性票据已被消耗）不能回传鉴权错误导致整列表空白，
     # 降级为仅返回官方列表。
-    is_authed, user_guid, auth_resp = await _probe_upstream_auth(request, upstream_client)
     if not is_authed:
-        logger.warning("favorite list degraded to official-only: auth probe rejected after official list ok")
+        logger.warning("favorite list degraded to official-only: auth probe rejected")
         return JSONResponse(content=upstream_json, status_code=upstream_resp.status_code, headers=resp_headers)
 
     # 成功获取官方列表，合并本地在线收藏

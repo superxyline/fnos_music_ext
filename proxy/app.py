@@ -3253,14 +3253,29 @@ def _seed_pending_from_favorites(user_guid: str, items: list) -> None:
         _register_pending_official_link(user_guid, guid, _snapshot_to_info(snapshot) if snapshot else None)
 
 
-def _match_local_track(tracks: list, title: str, artist: str) -> dict | None:
-    """官方搜索结果里找下载落盘的那首本地曲目：歌名必须相等，歌手给了才要求命中。
+# 快照/占位歌手：不作歌手约束（否则“未知艺术家”占位导致对账永远失败）
+_ARTIST_PLACEHOLDERS = {"", "未知艺术家", "未知歌手", "未知", "unknown", "none", "null"}
 
-    官方条目歌手字段形状不一（artist/singer 字符串或 artists 数组），全部归并比较。
+
+def _match_local_track(tracks: list, title: str, artist: str) -> dict | None:
+    """官方搜索结果里找下载落盘的那首本地曲目：歌名必须相等；歌手非占位时
+    按 token 全包含判断（顺序/分隔符无关），占位歌手不作约束。
+
+    历史坑：快照占位“未知艺术家”被当真歌手 → 永不命中；“六哲&陈娟儿” vs
+    官方“陈娟儿 六哲”顺序分隔不同 → 字符串包含判断失败。两者都曾让对账静默卡死。
     """
 
     def _norm(s: object) -> str:
-        return re.sub(r"\s+", "", str(s or "")).lower()
+        return re.sub(r"[\s\-_·・.,，。!！?？'\"“”‘’:：;；、()\[\]【】&+/]+", "", str(s or "").lower())
+
+    def _artist_tokens(s: object) -> list[str]:
+        raw = re.split(r"[&/+,、，\s]+", str(s or ""))
+        out = []
+        for x in raw:
+            t = _norm(x)
+            if t and t not in _ARTIST_PLACEHOLDERS:
+                out.append(t)
+        return out
 
     def _artist_names(tr: dict) -> str:
         names = [artist_from_track(tr)]
@@ -3272,16 +3287,17 @@ def _match_local_track(tracks: list, title: str, artist: str) -> dict | None:
         return " ".join(n for n in names if n)
 
     t_norm = _norm(title)
-    a_norm = _norm(artist)
+    local_tokens = _artist_tokens(artist)  # 占位符被过滤 → 空 = 不约束歌手
     for tr in tracks:
         if not isinstance(tr, dict):
             continue
         if _norm(title_from_track(tr)) != t_norm:
             continue
-        artist_field = _artist_names(tr)
-        if a_norm and artist_field and a_norm not in artist_field:
-            continue
-        return tr
+        if not local_tokens:
+            return tr
+        cand_all = _norm(_artist_names(tr))
+        if cand_all and all(t in cand_all for t in local_tokens):
+            return tr
     return None
 
 

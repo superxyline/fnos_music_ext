@@ -301,8 +301,8 @@ async def test_full_fetch_dedup_and_failure_cooldown(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_full_fetch_skips_when_cached_or_tee_off(monkeypatch):
-    """缓存已命中或边听边存关闭时不注册下载任务。"""
+async def test_full_fetch_skips_when_cached_or_tee_off(monkeypatch, tmp_path):
+    """边听边存关闭、或曲库已有文件时不注册下载任务；滚动缓存不挡下载。"""
     called = []
 
     async def fake_open(request, g, range_header):
@@ -313,14 +313,27 @@ async def test_full_fetch_skips_when_cached_or_tee_off(monkeypatch):
     monkeypatch.setitem(p.CONF, "tee_save_enabled", False)
     p._register_full_fetch(_fake_request(), "online:kuwo:1")
     assert p._full_fetch_tasks == {}
-    # 缓存命中：同样不注册
+    # 曲库已有文件：同样不注册
     monkeypatch.setitem(p.CONF, "tee_save_enabled", True)
-    os.makedirs(p.CONF["cache_dir"], exist_ok=True)
-    cached = os.path.join(p.CONF["cache_dir"], "online_kuwo_2.flac")
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    monkeypatch.setattr(p, "detect_library_dir", lambda: str(lib))
+    monkeypatch.setattr(p, "tee_save_dir", lambda: str(lib))
+    cached = str(lib / "online_kuwo_2.flac")
     with open(cached, "wb") as f:
         f.write(b"x" * 2048)
     p._register_full_fetch(_fake_request(), "online:kuwo:2")
     assert p._full_fetch_tasks == {}
+    # 滚动缓存（cache_dir）不算已有文件：照常注册，红心下载不被它挡住
+    os.makedirs(p.CONF["cache_dir"], exist_ok=True)
+    rolling = os.path.join(p.CONF["cache_dir"], "online_kuwo_3.flac")
+    with open(rolling, "wb") as f:
+        f.write(b"y" * 2048)
+    p._register_full_fetch(_fake_request(), "online:kuwo:3")
+    assert "online:kuwo:3" in p._full_fetch_tasks
+    for task in p._full_fetch_tasks.values():
+        task.cancel()
+    p._full_fetch_tasks.clear()
     assert called == []
 
 

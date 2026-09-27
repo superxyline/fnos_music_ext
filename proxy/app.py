@@ -2961,6 +2961,23 @@ def _prune_full_fetch_state(now: float) -> None:
             del _full_fetch_failed[g]
 
 
+def _find_library_audio(guid: str) -> str | None:
+    """只在曲库目录找已落盘音频。滚动缓存（关边听边存时的播放缓存）不算
+    "已有文件"——否则红心会被它挡住，歌永远进不了曲库。"""
+    recalled = recalled_media_path(guid)
+    if recalled:
+        return recalled
+    safe = cache_safe_guid(guid)
+    for d in (tee_save_dir(), detect_library_dir()):
+        if not d:
+            continue
+        for ext in CACHE_EXTS:
+            p = os.path.join(d, f"{safe}.{ext}")
+            if os.path.exists(p) and os.path.getsize(p) > 0:
+                return p
+    return None
+
+
 def _schedule_full_fetch(
     request: Request,
     guid: str,
@@ -2977,7 +2994,7 @@ def _schedule_full_fetch(
     """
     if require_tee_enabled and not CONF.get("tee_save_enabled"):
         return False
-    if find_cache_file(guid):
+    if _find_library_audio(guid):
         return False
     task = _full_fetch_tasks.get(guid)
     if task is not None and not task.done():
@@ -3010,24 +3027,77 @@ def _register_favorite_download(request: Request, guid: str, info_hint: dict | N
     供落盘后把本地曲目转成官方红心时定位收藏记录。
     """
     hint = dict(info_hint or {})
-    if find_cache_file(guid):
-        # 文件已在曲库：若是播放期元数据失效落下的 unknown 定名，用收藏快照
-        # 纠正文件名/标签（不重新下载），让红心同时起到"修复命名"的作用。
+    cached = find_cache_file(guid)
+    if cached:
+        lib_dirs = {os.path.abspath(p) for p in (tee_save_dir(), detect_library_dir()) if p}
+        if os.path.abspath(os.path.dirname(cached)) in lib_dirs:
+            # 曲库已有：若是播放期元数据失效落下的 unknown 定名，按收藏快照纠正
+            # 文件名/标签（不重新下载）；正确命名的文件原样保留。
+            try:
+                if _repair_unknown_cached(
+                    guid,
+                    str(hint.get("title") or "").strip(),
+                    str(hint.get("artist") or "").strip(),
+                    str(hint.get("album") or "").strip(),
+                ):
+                    _schedule_library_scan(copy_incoming_headers(request))
+            except Exception as e:
+                logger.warning("Repair unknown filename failed for %s: %s", guid, type(e).__name__)
+            return False
+        # 只在滚动缓存（关边听边存时的播放缓存）：定名挪进曲库，不重新下载。
+        # 定不了名（快照与 ID3 双空）时继续走后台下载，避免歌卡在缓存里被淘汰。
         try:
-            if _repair_unknown_cached(
-                guid,
-                str(hint.get("title") or "").strip(),
-                str(hint.get("artist") or "").strip(),
-                str(hint.get("album") or "").strip(),
-            ):
+            if _promote_rolling_cache_to_library(guid, hint):
                 _schedule_library_scan(copy_incoming_headers(request))
+                return False
         except Exception as e:
-            logger.warning("Repair unknown filename failed for %s: %s", guid, type(e).__name__)
-        return False
+            logger.warning("Promote rolling cache failed for %s: %s", guid, type(e).__name__)
     return _schedule_full_fetch(
         request, guid, require_tee_enabled=False,
         info_hint=hint or None, favorite_context={"user_guid": user_guid} if user_guid else None,
     )
+
+
+def _promote_rolling_cache_to_library(guid: str, hint: dict) -> bool:
+    """把滚动缓存音频定名挪进曲库（红心触发，复用已下载的文件不重复拉流）。
+
+    定名优先级：收藏快照 > 文件自带 ID3。移动含 .lrc 随迁、写路径 ref、写标签。
+    两边可能不在同一文件系统，用 shutil.move 兜底跨设备。快照与 ID3 都拿不到
+    歌名时返回 False，让调用方照常走后台下载。
+    """
+    cached = find_cache_file(guid)
+    if not cached:
+        return False
+    title = str(hint.get("title") or "").strip()
+    artist = str(hint.get("artist") or "").strip()
+    album = str(hint.get("album") or "").strip()
+    if not title or not artist:
+        t2, a2, al2 = read_media_tags(cached)
+        title = title or t2
+        artist = artist or a2
+        album = album or al2
+    if not title:
+        return False
+    lib = tee_save_dir()
+    os.makedirs(lib, exist_ok=True)
+    ext = os.path.splitext(cached)[1].lstrip(".") or "mp3"
+    dest = unique_library_path(lib, library_basename(title, artist), ext)
+    try:
+        os.replace(cached, dest)
+    except OSError:
+        shutil.move(cached, dest)  # 跨文件系统（cache 与曲库不同挂载点）
+    remember_media_path(guid, dest)
+    old_lrc = os.path.splitext(cached)[0] + ".lrc"
+    if os.path.exists(old_lrc):
+        new_lrc = os.path.splitext(dest)[0] + ".lrc"
+        if not os.path.exists(new_lrc):
+            try:
+                shutil.move(old_lrc, new_lrc)
+            except OSError:
+                pass
+    write_audio_tags(dest, title, artist, album)
+    logger.info("Promoted rolling cache for %s -> %s", guid, os.path.basename(dest))
+    return True
 
 
 def _repair_unknown_cached(guid: str, title: str, artist: str, album: str) -> bool:

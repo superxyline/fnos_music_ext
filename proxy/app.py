@@ -3306,17 +3306,26 @@ async def _reconcile_official_links_for_user(cred_headers: dict, user_guid: str)
             continue
         entry["lastTry"] = now
         try:
+            # 官方搜索只认 q 参数（keyword 返回 100002 invalid arguments，
+            # data 恒为空导致对账永远匹配不上——历史 unknown 转收藏失败的根源）
             req = client.build_request(
                 "GET", "/music/api/v1/search/track",
-                params={"keyword": title, "page": 1, "size": 50}, headers=headers,
+                params={"q": title, "page": 1, "size": 50}, headers=headers,
             )
             resp = await client.send(req)
             if resp.status_code != 200:
                 continue
             try:
-                data = (resp.json() or {}).get("data")
+                payload = resp.json() or {}
             except Exception:
                 continue
+            if payload.get("code") != 0:
+                logger.warning(
+                    "Favorite link search rejected for %s: code=%s msg=%s",
+                    entry["guid"], payload.get("code"), str(payload.get("msg"))[:80],
+                )
+                continue
+            data = payload.get("data")
             tracks = data.get("list") if isinstance(data, dict) else None
             if not isinstance(tracks, list):
                 continue

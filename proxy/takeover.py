@@ -547,6 +547,18 @@ def safe_child_log(line, secrets=()):
     http = re.fullmatch(r'llm http ([1-5][0-9]{2})', message)
     if http:
         return prefix + http[0]
+    # fnmusic-ext 二开：红心下载/转官方收藏链路诊断日志（固定前缀白名单，
+    # 内容仅 guid/歌名/状态码，不含凭证），放行完整消息便于实机排查。
+    fav_diag = re.match(
+        r'((?:Background full fetch (?:saved|failed)|Promoted rolling cache|'
+        r'Repaired unknown filename|Favorite download linked|Favorite link search rejected|'
+        r'Favorite link reconcile failed|Favorite link poll failed|Official favorite create failed|'
+        r'Official track for favorite|Favorite triggered|Favorite full download registration failed|'
+        r'Favorite link skipped|Library scan triggered).{0,170})',
+        message,
+    )
+    if fav_diag:
+        return prefix + fav_diag[1]
     outcome = _SAFE_OUTCOME.match(message)
     if outcome:
         # Retain known error categories only; never arbitrary exception values.

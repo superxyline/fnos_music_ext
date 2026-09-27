@@ -22,6 +22,7 @@
         <button class="nav-item" data-page="source">音乐源</button>
         <button class="nav-item" data-page="quality">播放与推荐</button>
         <button class="nav-item" data-page="tee">边听边存</button>
+        <button class="nav-item" data-page="match">歌曲匹配</button>
         <button class="nav-item" data-page="llm">高级 · 大模型</button>
       </nav>
       <div class="sidebar-foot" id="sidebar-foot"></div>
@@ -161,6 +162,47 @@
         </div>
       </section>
 
+      <!-- 歌曲匹配 -->
+      <section class="page" id="page-match">
+        <h2>歌曲匹配</h2>
+        <p class="hint">从当前音源（多平台）搜索并把<b>歌词</b>与<b>封面</b>写回本地曲库，标题/歌手/专辑等信息不改动。写入官方数据（music.db + 歌词分片库 + 封面文件），官方页面立即可见；已有的歌词/封面会被匹配结果覆盖。</p>
+        <div class="card">
+          <div class="btn-row">
+            <input class="input grow" id="match-q" placeholder="按歌名或文件路径筛选…">
+            <select class="input" id="match-filter">
+              <option value="all">全部歌曲</option>
+              <option value="missing_lyric">缺歌词</option>
+              <option value="missing_cover">缺封面</option>
+              <option value="missing_any">缺任一</option>
+            </select>
+            <button class="btn" id="match-refresh">查询</button>
+          </div>
+          <div class="btn-row">
+            <label class="match-want"><input type="checkbox" id="match-want-lyric" checked> 歌词</label>
+            <label class="match-want"><input type="checkbox" id="match-want-cover" checked> 封面</label>
+            <button class="btn" id="match-missing">匹配本页缺失</button>
+            <button class="btn primary" id="match-run">匹配选中</button>
+            <span class="muted" id="match-count"></span>
+          </div>
+          <div id="match-progress" class="report" hidden></div>
+          <div class="match-wrap"><table class="match-table">
+            <thead>
+              <tr>
+                <th class="mt-check"><input type="checkbox" id="match-check-all" title="全选本页"></th>
+                <th>歌名</th><th>歌手</th><th>专辑</th>
+                <th class="mt-flag">歌词</th><th class="mt-flag">封面</th><th class="mt-status">状态</th>
+              </tr>
+            </thead>
+            <tbody id="match-rows"><tr><td colspan="7" class="muted">加载中…</td></tr></tbody>
+          </table></div>
+          <div class="btn-row">
+            <button class="btn" id="match-prev">上一页</button>
+            <span class="muted" id="match-pageinfo"></span>
+            <button class="btn" id="match-next">下一页</button>
+          </div>
+        </div>
+      </section>
+
       <!-- LLM -->
       <section class="page" id="page-llm">
         <h2>高级 · 大模型</h2>
@@ -180,6 +222,7 @@
     <button class="nav-item" data-page="source">音源</button>
     <button class="nav-item" data-page="quality">播放</button>
     <button class="nav-item" data-page="tee">缓存</button>
+    <button class="nav-item" data-page="match">匹配</button>
     <button class="nav-item" data-page="llm">高级</button>
   </nav>
 

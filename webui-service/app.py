@@ -625,6 +625,63 @@ async def netease_qr(unikey: str = Query(...)):
     return Response(content=buf.getvalue(), media_type="image/svg+xml")
 
 
+# ------------------------------------------------------------- 歌曲匹配转发 --
+
+_match_upstream_cache: str | None = None
+
+
+def _match_upstream() -> str:
+    """匹配网关地址：显式 env > .env 的 FNMUSIC_MATCH_URL > 容器默认网关探测。
+
+    网关（proxy/match_gateway.py）跑在宿主机 0.0.0.0:8776；本进程在容器里，
+    容器的 default route gateway 即宿主机网桥 IP。
+    """
+    global _match_upstream_cache
+    if _match_upstream_cache:
+        return _match_upstream_cache
+    explicit = (os.environ.get("WEBUI_MATCH_URL") or "").strip()
+    if not explicit:
+        try:
+            explicit = (read_env().get("FNMUSIC_MATCH_URL") or "").strip()
+        except Exception:
+            explicit = ""
+    if not explicit:
+        try:
+            out = subprocess.check_output(["ip", "route", "show", "default"], text=True, timeout=2)
+            gw = ""
+            if "via" in out:
+                gw = out.split("via", 1)[1].split()[0]
+            if gw:
+                explicit = f"http://{gw}:8776"
+        except Exception:
+            explicit = ""
+    _match_upstream_cache = explicit or "http://172.17.0.1:8776"
+    return _match_upstream_cache
+
+
+@app.api_route("/api/match/{path:path}", methods=["GET", "POST", "DELETE"])
+async def match_proxy(path: str, request: Request):
+    """转发歌曲匹配请求到宿主机匹配网关（:8776）。"""
+    url = f"{_match_upstream()}/api/match/{path}"
+    if request.url.query:
+        url += f"?{request.url.query}"
+    body = await request.body()
+    client = get_http(request)
+    try:
+        resp = await client.request(
+            request.method, url, content=body,
+            headers={"Content-Type": request.headers.get("content-type") or "application/json"},
+            timeout=30.0,
+        )
+    except httpx.HTTPError as exc:
+        return JSONResponse(
+            {"code": 502, "msg": f"匹配服务不可达（{type(exc).__name__}）", "data": None},
+            status_code=200,
+        )
+    return Response(content=resp.content, status_code=resp.status_code,
+                    media_type=resp.headers.get("content-type", "application/json"))
+
+
 # ------------------------------------------------------------------ 静态前端 --
 
 @app.get("/")

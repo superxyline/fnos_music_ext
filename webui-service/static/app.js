@@ -501,6 +501,150 @@ $("#lx-pick").addEventListener("click", lxPickFromNas);
   }
 })();
 
+/* -------------------------------------------------------------- 歌曲匹配 */
+const matchState = { page: 1, size: 50, total: 0, items: [], taskId: null, timer: null, loaded: false };
+
+function matchApi(path, options) {
+  return api(path, options).then((body) => {
+    if (body && typeof body.code === "number" && body.code !== 0) {
+      throw new Error(body.msg || `错误 ${body.code}`);
+    }
+    return body;
+  });
+}
+
+function matchWants() {
+  const w = [];
+  if ($("#match-want-lyric").checked) w.push("lyric");
+  if ($("#match-want-cover").checked) w.push("cover");
+  return w;
+}
+
+function matchRender() {
+  const rows = $("#match-rows");
+  const sel = new Set([...rows.querySelectorAll("input[data-guid]:checked")].map((c) => c.dataset.guid));
+  rows.innerHTML = "";
+  if (!matchState.items.length) {
+    rows.innerHTML = `<tr><td colspan="7" class="muted">没有匹配的歌曲</td></tr>`;
+  }
+  for (const it of matchState.items) {
+    const tr = document.createElement("tr");
+    tr.dataset.guid = it.guid;
+    const checked = sel.has(it.guid) ? "checked" : "";
+    tr.innerHTML = `
+      <td class="mt-check"><input type="checkbox" data-guid="${it.guid}" ${checked}></td>
+      <td class="mt-title" title="${(it.path || "").replace(/"/g, "&quot;")}">${escapeHtml(it.title || "（无标题）")}</td>
+      <td>${escapeHtml(it.artist || "")}</td>
+      <td>${escapeHtml(it.album || "")}</td>
+      <td class="mt-flag">${it.hasLyric ? "✓" : "—"}</td>
+      <td class="mt-flag">${it.hasCover ? "✓" : "—"}</td>
+      <td class="mt-status" data-status-for="${it.guid}"></td>`;
+    rows.appendChild(tr);
+  }
+  $("#match-count").textContent = `共 ${matchState.total} 首，本页 ${matchState.items.length} 首`;
+  $("#match-pageinfo").textContent = `第 ${matchState.page} 页 / ${Math.max(1, Math.ceil(matchState.total / matchState.size))} 页`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+async function matchLoad() {
+  try {
+    const body = await matchApi(`/api/match/tracks?page=${matchState.page}&size=${matchState.size}` +
+      `&q=${encodeURIComponent($("#match-q").value.trim())}&filter=${$("#match-filter").value}`);
+    matchState.total = body.data.total;
+    matchState.items = body.data.items;
+    matchRender();
+    matchState.loaded = true;
+  } catch (e) {
+    $("#match-rows").innerHTML = `<tr><td colspan="7" style="color:var(--err)">${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+function matchSelected() {
+  return [...$("#match-rows").querySelectorAll("input[data-guid]:checked")].map((c) => c.dataset.guid);
+}
+
+async function matchRun(guids) {
+  const wants = matchWants();
+  if (!wants.length) return toast("至少勾选歌词或封面之一", "fail");
+  if (!guids.length) return toast("请先勾选歌曲", "fail");
+  if (matchState.timer) return toast("已有匹配任务进行中", "fail");
+  try {
+    const body = await matchApi("/api/match/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ guids, wants }),
+    });
+    matchState.taskId = body.data.taskId;
+    const box = $("#match-progress");
+    box.hidden = false;
+    box.className = "report";
+    box.textContent = `任务 ${matchState.taskId}：0 / ${guids.length}`;
+    matchState.timer = setInterval(matchPoll, 1200);
+  } catch (e) {
+    toast(e.message, "fail");
+  }
+}
+
+async function matchPoll() {
+  if (!matchState.taskId) return;
+  try {
+    const body = await matchApi(`/api/match/task/${matchState.taskId}`);
+    const t = body.data;
+    const box = $("#match-progress");
+    // 即时把单曲结果标到表格状态列
+    for (const r of t.results || []) {
+      const cell = $(`[data-status-for="${r.guid}"]`);
+      if (cell) {
+        cell.textContent = r.ok ? "✓ 已写入" : (r.error || "失败");
+        cell.style.color = r.ok ? "var(--ok)" : "var(--err)";
+      }
+    }
+    box.textContent = `任务 ${t.id}：${t.done} / ${t.total}` +
+      (t.current ? `（处理中 ${t.current.slice(0, 8)}…）` : "") +
+      `，成功 ${t.okCount}`;
+    if (!t.running) {
+      clearInterval(matchState.timer);
+      matchState.timer = null;
+      matchState.taskId = null;
+      const bad = (t.results || []).filter((r) => !r.ok);
+      box.className = "report " + (bad.length ? "fail" : "ok");
+      box.textContent = `完成：成功 ${t.okCount} / ${t.total}` +
+        (bad.length ? `，失败 ${bad.length}（如：${bad[0].error || "?"}）` : "");
+      toast(`匹配完成：成功 ${t.okCount}/${t.total}`, bad.length ? "fail" : "ok");
+      matchLoad();
+    }
+  } catch (e) {
+    clearInterval(matchState.timer);
+    matchState.timer = null;
+    toast(`进度查询失败：${e.message}`, "fail");
+  }
+}
+
+$$('[data-page="match"]').forEach((btn) => btn.addEventListener("click", () => {
+  if (!matchState.loaded) matchLoad();
+}));
+$("#match-refresh").addEventListener("click", () => { matchState.page = 1; matchLoad(); });
+$("#match-q").addEventListener("keydown", (e) => { if (e.key === "Enter") { matchState.page = 1; matchLoad(); } });
+$("#match-filter").addEventListener("change", () => { matchState.page = 1; matchLoad(); });
+$("#match-prev").addEventListener("click", () => { if (matchState.page > 1) { matchState.page--; matchLoad(); } });
+$("#match-next").addEventListener("click", () => {
+  if (matchState.page * matchState.size < matchState.total) { matchState.page++; matchLoad(); }
+});
+$("#match-check-all").addEventListener("change", (e) => {
+  $("#match-rows").querySelectorAll("input[data-guid]").forEach((c) => { c.checked = e.target.checked; });
+});
+$("#match-run").addEventListener("click", () => matchRun(matchSelected()));
+$("#match-missing").addEventListener("click", () => {
+  const wants = matchWants();
+  const guids = matchState.items
+    .filter((it) => (wants.includes("lyric") && !it.hasLyric) || (wants.includes("cover") && !it.hasCover))
+    .map((it) => it.guid);
+  matchRun(guids);
+});
+
 /* -------------------------------------------------------------- 表单脏标记 */
 ["#tee-dir", "#tee-max", "#llm-base", "#llm-key", "#llm-model", "#lx-url", "#search-timeout"].forEach((sel) =>
   $(sel).addEventListener("input", () => markDirty()));

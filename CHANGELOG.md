@@ -5,6 +5,17 @@
 
 > 以下 v2.3.1 起为本仓库（superxyline 二次开发版）的增量变更；v2.3.0 及之前为上游 javycoder/fnos_music_ext 的变更。
 
+## [2.3.8] - 2026-09-27
+
+### 新增
+
+- **歌曲匹配（WebUI 新页面）**：多平台匹配歌曲歌词/封面并写回官方数据，支持勾选批量与按缺失筛选批量，进度实时展示。实现要点：
+  - 新增宿主机匹配网关 `proxy/match_gateway.py`（:8776，run_proxy.sh 拉起）+ 核心模块 `proxy/match_core.py`（曲库列表 / 三音源搜索聚合 / 候选标题相似度校验 / 歌词与封面写回 / 批量任务）；
+  - 歌词写回官方 `lyric-sqlite` 16 分片库与 music.db 的 lyric 表（FnMusicEnhance 的写文件方式在新版 fnOS 已失效，本实现直写分片库）；封面写 `meta/cover/track/` 文件 + track.cover_guid；
+  - WebUI 容器内 `/api/match/*` 转发到网关（自动探测容器网关地址），前端新增「歌曲匹配」页（筛选/勾选/批量/进度/状态列）；
+  - 标题/歌手/专辑等信息字段不改动（只写歌词与封面）。
+  - 鸣谢 [kuilei0926/FnMusicEnhance](https://github.com/kuilei0926/FnMusicEnhance) 的匹配思路参考。
+
 ## [2.3.7] - 2026-09-27
 
 ### 修复

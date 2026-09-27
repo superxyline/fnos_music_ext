@@ -96,6 +96,48 @@ async def task(task_id: str):
     return {"code": 0, "msg": "", "data": t}
 
 
+@app.get("/api/match/duplicates")
+async def duplicates():
+    """扫描重复：按歌名归组 + 组内音质排序（mutagen 读取较慢，放线程池）。"""
+    try:
+        import asyncio
+
+        data = await asyncio.to_thread(match_core.scan_duplicates)
+        return {"code": 0, "msg": "", "data": data}
+    except Exception as e:
+        logger.exception("scan duplicates failed")
+        return _err(f"扫描失败: {type(e).__name__}", 500)
+
+
+@app.post("/api/match/dedup")
+async def dedup(request: Request):
+    """执行去重：items=[{removeTrackId, keepTrackId}]，逐条执行并汇报。"""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    items = body.get("items") or []
+    if not items or not isinstance(items, list):
+        return _err("items 为空")
+    if len(items) > 200:
+        return _err("单次最多 200 项")
+    import asyncio
+
+    results = []
+    for it in items:
+        try:
+            rm_id = int(it.get("removeTrackId"))
+            kp_id = int(it.get("keepTrackId"))
+            res = await asyncio.to_thread(match_core.remove_duplicate, rm_id, kp_id)
+            res["ok"] = True
+            results.append(res)
+        except Exception as e:
+            results.append({"removeTrackId": it.get("removeTrackId"), "ok": False,
+                            "error": str(e) or type(e).__name__})
+    ok_n = sum(1 for r in results if r.get("ok"))
+    return {"code": 0, "msg": "", "data": {"total": len(results), "ok": ok_n, "results": results}}
+
+
 if __name__ == "__main__":
     import uvicorn
 

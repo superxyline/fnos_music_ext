@@ -188,6 +188,16 @@ input[type="radio"] { accent-color: var(--accent); margin-top: 4px; }
 .match-table .mt-title { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
 .match-table select.input { min-width: 8em; }
 
+
+/* -------------------------------------------------- 重复清理 */
+.dedup-group { border: 1px solid var(--line, #e5e7eb); border-radius: 8px; padding: 8px 10px; margin: 10px 0; }
+.dedup-title { font-weight: 600; margin-bottom: 6px; }
+.dedup-row { display: flex; gap: 6px; align-items: baseline; font-size: 12.5px; padding: 4px 2px; flex-wrap: wrap; }
+.dedup-row input { flex: none; }
+.dedup-row.keep { color: var(--ok, #1a9e5c); }
+.dedup-row .muted { word-break: break-all; }
+.dedup-ref { color: var(--warn, #d97706); font-weight: 600; }
+
 /* -------------------------------------------------- 移动端 */
 .bottom-nav { display: none; }
 

@@ -201,6 +201,17 @@
             <button class="btn" id="match-next">下一页</button>
           </div>
         </div>
+
+        <div class="card" style="margin-top:14px">
+          <div class="card-title">重复清理</div>
+          <p class="hint">按<b>歌名</b>归组（忽略文件名差异），组内保留音质最好的（无损 &gt; 码率 &gt; 大小）；勾选的重复副本将<b>移入回收站</b>（fnmusic-ext/trash_duplicate/，可手动找回），收藏、歌单与播放历史引用自动迁移到保留的那首，你的收藏不受影响。</p>
+          <div class="btn-row">
+            <button class="btn" id="dedup-scan">扫描重复</button>
+            <button class="btn primary" id="dedup-run" disabled>清理选中（移回收站）</button>
+            <span class="muted" id="dedup-summary"></span>
+          </div>
+          <div id="dedup-report"></div>
+        </div>
       </section>
 
       <!-- LLM -->

@@ -645,6 +645,103 @@ $("#match-missing").addEventListener("click", () => {
   matchRun(guids);
 });
 
+/* -------------------------------------------------------------- 重复清理 */
+const dedupState = { groups: [] };
+
+function dedupFormatBitrate(it) {
+  const br = it.bitrate ? Math.round(it.bitrate / 1000) + " kbps" : "";
+  const loss = it.lossless ? "无损" : "";
+  return [it.format, loss, br].filter(Boolean).join(" · ");
+}
+function dedupSize(n) {
+  return n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.round(n / 1024) + " KB";
+}
+
+function dedupSelection() {
+  const out = [];
+  $("#dedup-report").querySelectorAll(".dedup-check:checked").forEach((c) => {
+    const g = dedupState.groups[+c.dataset.gi];
+    if (g) out.push({ removeTrackId: g.remove[+c.dataset.ri].trackId, keepTrackId: g.keep.trackId });
+  });
+  return out;
+}
+
+function updateDedupCount() {
+  $("#dedup-run").disabled = dedupSelection().length === 0;
+}
+
+function dedupRender() {
+  const rep = $("#dedup-report");
+  rep.innerHTML = "";
+  if (!dedupState.groups.length) {
+    rep.innerHTML = '<p class="muted">未发现重复歌曲</p>';
+    updateDedupCount();
+    return;
+  }
+  dedupState.groups.forEach((g, gi) => {
+    const box = document.createElement("div");
+    box.className = "dedup-group";
+    let rows = `<div class="dedup-title">${escapeHtml(g.title)}<span class="muted"> · ${g.remove.length + 1} 个副本</span></div>` +
+      `<div class="dedup-row keep">✓ 保留 · ${dedupFormatBitrate(g.keep)} · ${dedupSize(g.keep.size)}` +
+      ` <span class="muted">${escapeHtml(g.keep.path)}</span></div>`;
+    g.remove.forEach((r, ri) => {
+      const refs = [];
+      if (r.favCount) refs.push(`收藏×${r.favCount}`);
+      if (r.plCount) refs.push(`歌单×${r.plCount}`);
+      rows += `<label class="dedup-row"><input type="checkbox" class="dedup-check" data-gi="${gi}" data-ri="${ri}" checked>` +
+        ` 删除 · ${dedupFormatBitrate(r)} · ${dedupSize(r.size)}` +
+        (refs.length ? ` <b class="dedup-ref">♥ ${refs.join(" / ")}（将迁移）</b>` : "") +
+        ` <span class="muted">${escapeHtml(r.path)}</span></label>`;
+    });
+    box.innerHTML = rows;
+    rep.appendChild(box);
+  });
+  updateDedupCount();
+}
+
+$("#dedup-scan").addEventListener("click", async () => {
+  const btn = $("#dedup-scan");
+  btn.disabled = true;
+  btn.textContent = "扫描中…";
+  try {
+    const body = await matchApi("/api/match/duplicates");
+    dedupState.groups = body.data.groups || [];
+    $("#dedup-summary").textContent = `发现 ${body.data.totalGroups} 组重复，共 ${body.data.totalExtra} 个多余副本`;
+    dedupRender();
+  } catch (e) {
+    toast(e.message, "fail");
+  }
+  btn.disabled = false;
+  btn.textContent = "扫描重复";
+});
+$("#dedup-report").addEventListener("change", (e) => {
+  if (e.target.classList && e.target.classList.contains("dedup-check")) updateDedupCount();
+});
+$("#dedup-run").addEventListener("click", async () => {
+  const items = dedupSelection();
+  if (!items.length) return;
+  if (!confirm(`确认清理 ${items.length} 个重复文件？\n将移入回收站（可手动找回），收藏/歌单引用自动迁移到保留副本。`)) return;
+  const btn = $("#dedup-run");
+  btn.disabled = true;
+  btn.textContent = "清理中…";
+  try {
+    const body = await matchApi("/api/match/dedup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items }),
+    });
+    const d = body.data;
+    const bad = (d.results || []).filter((r) => !r.ok);
+    toast(`清理完成：成功 ${d.ok}/${d.total}` + (bad.length ? `（${bad[0].error || "错误"}）` : ""),
+      d.ok === d.total ? "ok" : "fail");
+    $("#dedup-scan").click();
+  } catch (e) {
+    toast(e.message, "fail");
+    btn.disabled = false;
+    btn.textContent = "清理选中（移回收站）";
+  }
+});
+
 /* -------------------------------------------------------------- 表单脏标记 */
 ["#tee-dir", "#tee-max", "#llm-base", "#llm-key", "#llm-model", "#lx-url", "#search-timeout"].forEach((sel) =>
   $(sel).addEventListener("input", () => markDirty()));

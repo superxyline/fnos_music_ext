@@ -193,3 +193,152 @@ async def test_start_task_prunes_expired(monkeypatch):
         assert t["done"] == 1 and t["okCount"] == 1, t
     finally:
         match_core._TASKS.clear()
+
+
+# ---------------------------------------------------------------------------
+# 去重
+# ---------------------------------------------------------------------------
+
+DEDUP_SCHEMA = SCHEMA + """
+CREATE TABLE favorite_track (id INTEGER PRIMARY KEY, user_id INTEGER, track_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE playlist (id INTEGER PRIMARY KEY, user_id INTEGER, name TEXT);
+CREATE TABLE playlist_track (id INTEGER PRIMARY KEY, user_id INTEGER, playlist_id INTEGER,
+    track_id INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE play_history (id INTEGER PRIMARY KEY, user_id INTEGER, track_id INTEGER,
+    play_count INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE user_track_lyric_preference (id INTEGER PRIMARY KEY, user_id INTEGER, track_id INTEGER,
+    lyric_id INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE user_track_lyric_offset (id INTEGER PRIMARY KEY, user_id INTEGER, track_id INTEGER,
+    lyric_id INTEGER, offset_ms INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE track_genre (id INTEGER PRIMARY KEY, track_id INTEGER, genre_id INTEGER);
+"""
+
+
+@pytest.fixture()
+def dedup_env(tmp_path, monkeypatch):
+    meta = tmp_path / "meta"
+    (meta / "lyric-sqlite").mkdir(parents=True)
+    db = tmp_path / "music.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(DEDUP_SCHEMA)
+    # 两副本同歌名：1=128k mp3，2=flac（好）
+    for tid, (path, suffix) in enumerate([
+        ("/m/song.mp3", "mp3"), ("/m/song2.flac", "flac"),
+    ], start=1):
+        conn.execute("INSERT INTO audio_file (id, path, name, suffix) VALUES (?, ?, ?, ?)",
+                     (tid, path, "f" + suffix, suffix))
+        conn.execute(
+            "INSERT INTO track (id, guid, audio_file_id, title) VALUES (?, ?, ?, ?)",
+            (tid, f"guid{tid}", tid, "同首歌名"),
+        )
+    # 引用：两副本都被 user1 收藏；old(1) 有播放历史+歌词
+    conn.execute("INSERT INTO favorite_track (user_id, track_id) VALUES (1, 1)")
+    conn.execute("INSERT INTO favorite_track (user_id, track_id) VALUES (1, 2)")
+    conn.execute("INSERT INTO playlist (id, user_id, name) VALUES (1, 1, 'p')")
+    conn.execute("INSERT INTO playlist_track (user_id, playlist_id, track_id) VALUES (1, 1, 1)")
+    conn.execute("INSERT INTO play_history (user_id, track_id, play_count) VALUES (1, 1, 7)")
+    conn.execute("INSERT INTO play_history (user_id, track_id, play_count) VALUES (1, 2, 3)")
+    conn.execute("INSERT INTO lyric (id, guid, track_id, stored_guid) VALUES (1, 'lg1', 1, 'aabbccddeeff00112233445566778899')")
+    conn.execute("INSERT INTO user_track_lyric_preference (user_id, track_id, lyric_id) VALUES (1, 1, 1)")
+    conn.commit()
+    conn.close()
+    # 造两个音频文件
+    (tmp_path).mkdir(exist_ok=True)
+    for f in ("song.mp3", "song2.flac"):
+        (tmp_path / f).write_bytes(b"X" * 2048)
+
+    trash = tmp_path / "trash"
+    monkeypatch.setattr(match_core, "MUSIC_DB", str(db))
+    monkeypatch.setattr(match_core, "META_ROOT", str(meta))
+    monkeypatch.setattr(match_core, "LYRIC_SQ_DIR", str(meta / "lyric-sqlite"))
+    monkeypatch.setattr(match_core, "TRASH_DIR", str(trash))
+    # audio_quality mock：song2.flac 更好
+    def fake_q(path):
+        loss = str(path).endswith(".flac")
+        return {"format": "flac" if loss else "mp3", "lossless": loss,
+                "bitrate": 1000000 if loss else 128000, "size": 2048}
+    monkeypatch.setattr(match_core, "audio_quality", fake_q)
+    # 修正路径指向 tmp（SQL 里的 /m/ 假路径）
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE audio_file SET path = ? WHERE id = 1", (str(tmp_path / "song.mp3"),))
+    conn.execute("UPDATE audio_file SET path = ? WHERE id = 2", (str(tmp_path / "song2.flac"),))
+    conn.commit()
+    conn.close()
+    return tmp_path
+
+
+def test_scan_duplicates_orders_by_quality(dedup_env):
+    rep = match_core.scan_duplicates()
+    assert rep["totalGroups"] == 1 and rep["totalExtra"] == 1
+    g = rep["groups"][0]
+    assert g["keep"]["trackId"] == 2, "flac 应保留"
+    assert [x["trackId"] for x in g["remove"]] == [1]
+    assert g["remove"][0]["favCount"] == 1  # 报告带引用计数
+
+
+def test_remove_duplicate_migrates_and_trashes(dedup_env):
+    res = match_core.remove_duplicate(1, 2)  # 删 128k，留 flac
+    assert res["moved"] and res["trashDir"] == str(dedup_env / "trash")
+    # 文件移走
+    assert not (dedup_env / "song.mp3").exists()
+    assert (dedup_env / "trash" / "song.mp3").exists()
+    # track/audio_file 删除，keep 仍在
+    conn = sqlite3.connect(match_core.MUSIC_DB)
+    assert conn.execute("SELECT COUNT(*) FROM track WHERE id=1").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM track WHERE id=2").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM audio_file WHERE id=1").fetchone()[0] == 0
+    # 收藏迁移：user1 只剩 keep 的一条（冲突去重）
+    favs = conn.execute("SELECT track_id FROM favorite_track WHERE user_id=1").fetchall()
+    assert [f[0] for f in favs] == [2]
+    # 播放历史合并：7+3=10
+    ph = conn.execute("SELECT track_id, play_count FROM play_history WHERE user_id=1").fetchall()
+    assert ph == [(2, 10)], ph
+    # 歌词：keep 无歌词 → old 的行迁移过去
+    assert conn.execute("SELECT track_id FROM lyric WHERE id=1").fetchone()[0] == 2
+    # 歌词偏好（指向 old）已删
+    assert conn.execute("SELECT COUNT(*) FROM user_track_lyric_preference WHERE track_id=1").fetchone()[0] == 0
+    conn.close()
+
+
+def test_remove_duplicate_rejects_different_title(dedup_env):
+    conn = sqlite3.connect(match_core.MUSIC_DB)
+    conn.execute("INSERT INTO audio_file (id, path, name, suffix) VALUES (9, '/m/x.mp3', 'x', 'mp3')")
+    conn.execute("INSERT INTO track (id, guid, audio_file_id, title) VALUES (9, 'g9', 9, '另一首歌')")
+    conn.commit()
+    conn.close()
+    with pytest.raises(ValueError):
+        match_core.remove_duplicate(9, 2)
+
+
+def test_remove_duplicate_keeps_shared_audio_file(dedup_env):
+    """CUE 整轨：多个 track 共享 audio_file，删其一不能删 audio_file。"""
+    conn = sqlite3.connect(match_core.MUSIC_DB)
+    conn.execute("UPDATE track SET audio_file_id = 2 WHERE id = 1")  # 两 track 共享 audio 2
+    conn.commit()
+    conn.close()
+    match_core.remove_duplicate(1, 2)
+    conn = sqlite3.connect(match_core.MUSIC_DB)
+    assert conn.execute("SELECT COUNT(*) FROM audio_file WHERE id=2").fetchone()[0] == 1
+    conn.close()
+
+
+def test_remove_duplicate_cross_device_fallback(dedup_env, monkeypatch):
+    """回收站与曲库跨挂载点（os.replace EXDEV）时用 shutil.move 兜底。"""
+    real_replace = os.replace
+
+    def fake_replace(a, b):
+        if str(a).endswith("song.mp3"):
+            raise OSError(18, "Invalid cross-device link")
+        return real_replace(a, b)
+
+    monkeypatch.setattr(match_core.os, "replace", fake_replace)
+    res = match_core.remove_duplicate(1, 2)
+    assert res["moved"]
+    assert not (dedup_env / "song.mp3").exists()
+    assert (dedup_env / "trash" / "song.mp3").exists()
+    conn = sqlite3.connect(match_core.MUSIC_DB)
+    assert conn.execute("SELECT COUNT(*) FROM track WHERE id=1").fetchone()[0] == 0
+    conn.close()

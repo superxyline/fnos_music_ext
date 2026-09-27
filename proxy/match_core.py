@@ -14,6 +14,7 @@ import asyncio
 import logging
 import os
 import re
+import shutil
 import sqlite3
 import tempfile
 import time
@@ -612,6 +613,289 @@ async def match_one(client: httpx.AsyncClient, guid: str, wants: list[str]) -> d
     if ok_any:
         result["error"] = ""
     return result
+
+
+# ---------------------------------------------------------------------------
+# 去重：按歌名归组，保留音质最好，其余移回收站并迁移引用
+# ---------------------------------------------------------------------------
+
+TRASH_DIR = os.path.join(
+    _env("FNMUSIC_HOME") or os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
+    "trash_duplicate",
+)
+
+# 格式音质分档：无损 > 有损（同档内再比码率）
+_LOSSLESS = {"flac", "wav", "ape", "wv", "aiff", "dff", "dsf", "tta", "alac"}
+_LOSSY = {"mp3", "m4a", "aac", "ogg", "opus", "wma"}
+
+
+def _norm_title(s: str) -> str:
+    s = (s or "").lower()
+    return re.sub(r"[\s\-_·・.,，。!！?？'\"“”‘’:：;；、()\[\]【】]+", "", s)
+
+
+def audio_quality(path: str) -> dict:
+    """读取音频音质：{format, lossless, bitrate, size}。
+
+    bitrate：无损用 采样率×位深，有损用 mutagen 码率；读不到且有时长时用
+    size/duration 估算，全失败给 0（排序退化为文件大小）。
+    """
+    ext = os.path.splitext(path)[1].lstrip(".").lower()
+    fmt = ext or "unknown"
+    lossless = fmt in _LOSSLESS
+    bitrate = 0
+    try:
+        from mutagen import File as MutagenFile
+
+        audio = MutagenFile(path, easy=True)
+        info = getattr(audio, "info", None)
+        if info is not None:
+            if lossless:
+                sr = int(getattr(info, "sample_rate", 0) or 0)
+                bits = int(getattr(info, "bits_per_sample", 0) or 0)
+                bitrate = sr * bits if sr and bits else int(getattr(info, "bitrate", 0) or 0)
+            else:
+                bitrate = int(getattr(info, "bitrate", 0) or 0)
+    except Exception:
+        pass
+    return {"format": fmt, "lossless": lossless, "bitrate": bitrate,
+            "size": os.path.getsize(path) if os.path.exists(path) else 0}
+
+
+def _quality_sort_key(item: dict) -> tuple:
+    """排序 key（越大越优）：无损 > 码率 > 大小。"""
+    return (
+        1 if item.get("lossless") else 0,
+        int(item.get("bitrate") or 0),
+        int(item.get("size") or 0),
+    )
+
+
+def scan_duplicates() -> dict:
+    """按歌名归组找重复：title 归一化相同即同组，组内按音质排序。
+
+    返回 {groups: [{normKey, title, keep, remove[]}], totalGroups, totalExtra}。
+    """
+    conn = _db()
+    try:
+        rows = conn.execute(
+            '''
+            SELECT t.id, t.guid, t.title, t.audio_file_id,
+                   af.path, af.size, af.duration_ms,
+                   (SELECT COUNT(*) FROM favorite_track f WHERE f.track_id = t.id) AS fav_count,
+                   (SELECT COUNT(*) FROM playlist_track pt WHERE pt.track_id = t.id) AS pl_count
+            FROM track t
+            JOIN audio_file af ON af.id = t.audio_file_id
+            WHERE t.is_admin_deleted = 0 AND t.is_audio_file_deleted = 0
+              AND t.title IS NOT NULL AND TRIM(t.title) != ''
+            '''
+        ).fetchall()
+    finally:
+        conn.close()
+
+    groups: dict = {}
+    for r in rows:
+        key = _norm_title(str(r["title"] or ""))
+        if not key:
+            continue
+        groups.setdefault(key, []).append({
+            "trackId": r["id"], "guid": r["guid"], "title": r["title"],
+            "path": r["path"] or "", "size": int(r["size"] or 0),
+            "durationMs": int(r["duration_ms"] or 0),
+            "favCount": int(r["fav_count"] or 0), "plCount": int(r["pl_count"] or 0),
+        })
+
+    out = []
+    total_extra = 0
+    for key, items in groups.items():
+        if len(items) < 2:
+            continue
+        for it in items:
+            q = audio_quality(it["path"])
+            it.update(q)
+            if not it["bitrate"] and it["durationMs"]:
+                it["bitrate"] = int(it["size"] * 8 * 1000 / it["durationMs"])
+        items.sort(key=_quality_sort_key, reverse=True)
+        # 音质完全并列时按路径字典序稳定化，保证确定性
+        top = items[0]
+        tied = [x for x in items[1:] if _quality_sort_key(x) == _quality_sort_key(top)]
+        rest = [x for x in items[1:] if _quality_sort_key(x) != _quality_sort_key(top)]
+        tied.sort(key=lambda x: x["path"])
+        ordered = [top] + tied + rest
+        out.append({"normKey": key, "title": ordered[0]["title"], "keep": ordered[0],
+                    "remove": ordered[1:]})
+        total_extra += len(ordered) - 1
+    out.sort(key=lambda g: -len(g["remove"]))
+    return {"groups": out, "totalGroups": len(out), "totalExtra": total_extra}
+
+
+def _merge_play_history(conn: sqlite3.Connection, old_id: int, keep_id: int) -> None:
+    """播放历史合并：①只有 old 有历史的用户迁移行；②双方都有的用户 keep 吸收
+    old 计数并删除 old 行——两步顺序保证每个用户只留一行且计数不丢。"""
+    conn.execute(
+        "UPDATE play_history SET track_id = ?, updated_at = CURRENT_TIMESTAMP "
+        "WHERE track_id = ? AND user_id NOT IN "
+        "(SELECT user_id FROM play_history WHERE track_id = ?)",
+        (keep_id, old_id, keep_id),
+    )
+    conn.execute(
+        '''
+        UPDATE play_history
+        SET play_count = play_count + (
+            SELECT COALESCE(ph2.play_count, 0) FROM play_history ph2
+            WHERE ph2.track_id = ? AND ph2.user_id = play_history.user_id),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE track_id = ?
+          AND user_id IN (SELECT user_id FROM play_history WHERE track_id = ?)
+        ''',
+        (old_id, keep_id, old_id),
+    )
+    conn.execute("DELETE FROM play_history WHERE track_id = ?", (old_id,))
+
+
+def _migrate_refs(conn: sqlite3.Connection, old_id: int, keep_id: int) -> None:
+    """把 old track 的收藏/歌单/播放历史引用迁到 keep（先删冲突避免唯一约束）。"""
+    conn.execute(
+        "DELETE FROM favorite_track WHERE track_id = ? AND user_id IN "
+        "(SELECT user_id FROM favorite_track WHERE track_id = ?)",
+        (old_id, keep_id),
+    )
+    conn.execute(
+        "UPDATE favorite_track SET track_id = ?, updated_at = CURRENT_TIMESTAMP WHERE track_id = ?",
+        (keep_id, old_id),
+    )
+    conn.execute(
+        "DELETE FROM playlist_track WHERE track_id = ? AND playlist_id IN "
+        "(SELECT playlist_id FROM playlist_track WHERE track_id = ?)",
+        (old_id, keep_id),
+    )
+    conn.execute(
+        "UPDATE playlist_track SET track_id = ?, updated_at = CURRENT_TIMESTAMP WHERE track_id = ?",
+        (keep_id, old_id),
+    )
+    # 歌词偏好/偏移：old 歌词将被移除，指向 old 的偏好直接删（不迁移到 keep 的歌词）
+    conn.execute("DELETE FROM user_track_lyric_preference WHERE track_id = ?", (old_id,))
+    conn.execute("DELETE FROM user_track_lyric_offset WHERE track_id = ?", (old_id,))
+    _merge_play_history(conn, old_id, keep_id)
+
+
+def _remove_lyric_of(conn: sqlite3.Connection, track_id: int) -> None:
+    """删除该 track 的歌词行 + 分片内容。"""
+    rows = conn.execute("SELECT stored_guid FROM lyric WHERE track_id = ?", (track_id,)).fetchall()
+    if not rows:
+        return
+    conn.execute("DELETE FROM lyric WHERE track_id = ?", (track_id,))
+    for (sg,) in rows:
+        if not sg or not re.fullmatch(r"[0-9a-f]{32}", str(sg)):
+            continue
+        try:
+            path = _lyric_db_path(str(sg))
+            if os.path.exists(path):
+                lconn = sqlite3.connect(path, timeout=10)
+                try:
+                    lconn.execute("PRAGMA busy_timeout=5000")
+                    lconn.execute("DELETE FROM lyric_content WHERE guid = ?", (str(sg),))
+                    lconn.commit()
+                finally:
+                    lconn.close()
+        except Exception as e:
+            logger.warning("Delete lyric content failed %s: %s", sg, e)
+
+
+def _transfer_lyric(conn: sqlite3.Connection, old_id: int, keep_id: int) -> None:
+    """歌词：keep 没有则把 old 的行转挂 keep（分片不动）；都有则删 old 的。"""
+    keep_has = conn.execute("SELECT 1 FROM lyric WHERE track_id = ? LIMIT 1", (keep_id,)).fetchone()
+    if keep_has:
+        _remove_lyric_of(conn, old_id)
+    else:
+        conn.execute(
+            "UPDATE lyric SET track_id = ?, updated_at = CURRENT_TIMESTAMP WHERE track_id = ?",
+            (keep_id, old_id),
+        )
+
+
+def remove_duplicate(remove_track_id: int, keep_track_id: int) -> dict:
+    """执行去重：校验歌名一致 → 引用迁移 → 歌词处置 → 删库记录 → 文件移回收站。
+
+    返回 {removedTrackId, keptTrackId, moved, trashDir}。
+    """
+    if remove_track_id == keep_track_id:
+        raise ValueError("remove 与 keep 相同")
+    conn = _db()
+    try:
+        rm = conn.execute(
+            "SELECT t.id, t.title, t.audio_file_id, af.path FROM track t "
+            "JOIN audio_file af ON af.id = t.audio_file_id WHERE t.id = ?",
+            (remove_track_id,),
+        ).fetchone()
+        kp = conn.execute("SELECT title FROM track WHERE id = ?", (keep_track_id,)).fetchone()
+        if not rm or not kp:
+            raise ValueError("track 不存在")
+        if _norm_title(str(rm["title"])) != _norm_title(str(kp[0])):
+            raise ValueError("歌名不一致，拒绝当作同一首歌处理")
+        src_path = rm["path"]
+        audio_file_id = rm["audio_file_id"]
+    finally:
+        conn.close()
+
+    # 先移文件（曲库与回收站可能跨挂载点：os.replace 失败用 shutil.move 兜底），
+    # 失败即中止且不动库；之后库事务失败则把文件移回原位，保证两步一致。
+    moved = []
+    back = []  # (dest, src) 用于库事务失败回滚
+    if src_path and os.path.exists(src_path):
+        os.makedirs(TRASH_DIR, exist_ok=True)
+        base = os.path.basename(src_path)
+        dest = os.path.join(TRASH_DIR, base)
+        n = 2
+        while os.path.exists(dest):
+            dest = os.path.join(TRASH_DIR, str(n) + "_" + base)
+            n += 1
+        try:
+            os.replace(src_path, dest)
+        except OSError:
+            shutil.move(src_path, dest)
+        moved.append(dest)
+        back.append((dest, src_path))
+        sidecar = os.path.splitext(src_path)[0] + ".lrc"
+        if os.path.exists(sidecar):
+            sdest = os.path.splitext(dest)[0] + ".lrc"
+            try:
+                try:
+                    os.replace(sidecar, sdest)
+                except OSError:
+                    shutil.move(sidecar, sdest)
+                moved.append(sdest)
+                back.append((sdest, sidecar))
+            except OSError:
+                pass
+
+    conn = _db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _migrate_refs(conn, remove_track_id, keep_track_id)
+            _transfer_lyric(conn, remove_track_id, keep_track_id)
+            conn.execute("DELETE FROM track_artist WHERE track_id = ?", (remove_track_id,))
+            conn.execute("DELETE FROM track_genre WHERE track_id = ?", (remove_track_id,))
+            conn.execute("DELETE FROM track WHERE id = ?", (remove_track_id,))
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM track WHERE audio_file_id = ?", (audio_file_id,)
+            ).fetchone()[0]
+            if remaining == 0:
+                conn.execute("DELETE FROM audio_file WHERE id = ?", (audio_file_id,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            for d, s_path in back:
+                try:
+                    shutil.move(d, s_path)
+                except OSError:
+                    pass
+            raise
+    finally:
+        conn.close()
+    return {"removedTrackId": remove_track_id, "keptTrackId": keep_track_id,
+            "moved": moved, "trashDir": TRASH_DIR}
 
 
 # ---------------------------------------------------------------------------

@@ -624,8 +624,8 @@ _TASK_TTL = 3600.0
 
 def _prune_tasks() -> None:
     now = time.monotonic()
-    for k in [k for k, t in _TASKS.items() if now - t["createdAt"] > _TASK_TTL]:
-        if not t.get("running"):
+    for k, t in list(_TASKS.items()):
+        if now - t["createdAt"] > _TASK_TTL and not t.get("running"):
             _TASKS.pop(k, None)
 
 

@@ -1,7 +1,9 @@
 """match_core 单测：临时模拟官方库（music.db + lyric-sqlite + cover），mock 音源。"""
+import asyncio
 import os
 import sqlite3
 import sys
+import time
 
 import pytest
 
@@ -160,3 +162,34 @@ async def test_match_one_end_to_end(env, monkeypatch):
     async with httpx.AsyncClient() as client:
         res2 = await match_core.match_one(client, "tg-2", ["lyric"])
     assert not res2["ok"] and "候选" in res2["error"], res2
+
+
+@pytest.mark.anyio
+async def test_start_task_prunes_expired(monkeypatch):
+    """过期任务清理：曾因列表推导变量越作用域导致 start_task 抛 NameError（HTTP 500）。"""
+    match_core._TASKS.clear()
+    expired = time.monotonic() - match_core._TASK_TTL - 10
+    match_core._TASKS["old"] = {"id": "old", "guids": [], "wants": [], "results": [],
+                                "running": False, "createdAt": expired, "current": ""}
+    match_core._TASKS["busy"] = {"id": "busy", "guids": [], "wants": [], "results": [],
+                                 "running": True, "createdAt": expired, "current": ""}
+
+    async def fake_match_one(client, guid, wants):
+        return {"guid": guid, "ok": True, "lyricOk": True, "coverOk": False,
+                "error": "", "matchedTitle": "t", "matchedArtist": ""}
+
+    monkeypatch.setattr(match_core, "match_one", fake_match_one)
+    try:
+        tid = match_core.start_task(["g1"], ["lyric"])
+        assert tid
+        assert "old" not in match_core._TASKS          # 过期已清
+        assert "busy" in match_core._TASKS             # 运行中不删
+        for _ in range(60):
+            t = match_core.get_task(tid)
+            if t and not t["running"]:
+                break
+            await asyncio.sleep(0.05)
+        t = match_core.get_task(tid)
+        assert t["done"] == 1 and t["okCount"] == 1, t
+    finally:
+        match_core._TASKS.clear()

@@ -39,3 +39,12 @@ def test_wrong_artist_rejected():
 def test_title_must_equal():
     assert _match_local_track(TR, "七里香", "五月天") is None
     assert _match_local_track(TR, "错错错 (Live)", "") is None  # 归一化后仍不相等
+
+
+def test_artist_subset_matches():
+    """官方条目歌手不全（仅主唱）vs 下载信息含合作歌手：交集即认同一首。"""
+    tr = [{"guid": "g1", "title": "缘分一道桥", "artists": [{"name": "王力宏"}]}]
+    assert _match_local_track(tr, "缘分一道桥", "王力宏&谭维维") is tr[0]
+    assert _match_local_track(tr, "缘分一道桥", "王力宏") is tr[0]
+    # 无交集仍拒绝
+    assert _match_local_track(tr, "缘分一道桥", "五月天") is None

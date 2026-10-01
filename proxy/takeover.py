@@ -552,7 +552,7 @@ def safe_child_log(line, secrets=()):
     fav_diag = re.match(
         r'((?:Background full fetch (?:saved|failed)|Promoted rolling cache|'
         r'Repaired unknown filename|Favorite download linked|Favorite link search rejected|'
-        r'Favorite link reconcile failed|Favorite link poll failed|Official favorite create failed|'
+        r'Favorite link reconcile failed|Favorite link reconcile prelist|Favorite link reconcile skip|Favorite link poll failed|Official favorite create failed|'
         r'Official track for favorite|Favorite triggered|Favorite full download registration failed|'
         r'Favorite link skipped|Library scan triggered).{0,170})',
         message,

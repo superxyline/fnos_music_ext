@@ -3314,7 +3314,10 @@ def _match_local_track(tracks: list, title: str, artist: str) -> dict | None:
         if not local_tokens:
             return tr
         cand_all = _norm(_artist_names(tr))
-        if cand_all and all(t in cand_all for t in local_tokens):
+        # 歌手取交集即可：官方条目歌手常不全（如只登记主唱），下载信息含合作
+        # 歌手（王力宏&谭维维 vs 官方仅王力宏）——全包含会让对账永远失败。
+        # 标题已严格相等作主条件，交集判同错配风险可忽略。
+        if cand_all and any(t in cand_all for t in local_tokens):
             return tr
     return None
 
@@ -4393,15 +4396,22 @@ async def favorite_track_list(request: Request):
         try:
             async with _FAV_LOCK:
                 current_favs = load_online_favorites(user_guid)
+            before = len(_pending_official_links)
             _seed_pending_from_favorites(user_guid, current_favs)
-            if any(e.get("userGuid") == user_guid for e in _pending_official_links.values()):
+            hit = sum(1 for e in _pending_official_links.values() if e.get("userGuid") == user_guid)
+            if hit:
+                logger.info("Favorite link reconcile prelist user=%s pending=%d/%d favs=%d",
+                            user_guid[:8], hit, before, len(current_favs))
                 await asyncio.wait_for(
                     _reconcile_official_links_for_user(headers, user_guid), timeout=8.0
                 )
+            else:
+                logger.info("Favorite link reconcile skip user=%s pending=%d/%d favs=%d",
+                            user_guid[:8], hit, before, len(current_favs))
         except asyncio.TimeoutError:
-            logger.info("Favorites pre-list reconcile timed out; continuing with list")
+            logger.info("Favorite link reconcile prelist timed out; continuing with list")
         except Exception as e:
-            logger.warning("Favorites pre-list reconcile failed: %s", type(e).__name__)
+            logger.warning("Favorite link reconcile prelist failed: %s", type(e).__name__)
 
     url_path = request.url.path
     if request.url.query:

@@ -5,6 +5,13 @@
 
 > 以下 v2.3.1 起为本仓库（superxyline 二次开发版）的增量变更；v2.3.0 及之前为上游 javycoder/fnos_music_ext 的变更。
 
+## [2.3.14] - 2026-10-01
+
+### 修复
+
+- **搜索在线结果在新版官方客户端显示空**：官方客户端升级（com.trim.music → com.trim.app build 1370039）后解析更严格，在线条目缺 `score/createdAt/updatedAt/discNo/trackNo/isrc/year` 顶层字段与 `artist.coverId`、`album.releaseDate/barcode` 等字段导致整条目被丢弃。`build_online_track` 现对齐官方本地条目完整字段形状（本地条目原样透传不受影响）。
+- **每日推荐 0 首**：长期运行的代理进程内 `recommend_daily` 配置状态损坏（.env 为 true 但进程返回空），重启后恢复（trackCount=20）。已重启进程修复；若复发请再重启 fnmusic-ext 服务并反馈。
+
 ## [2.3.13] - 2026-09-27
 
 ### 修复

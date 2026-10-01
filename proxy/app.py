@@ -784,12 +784,22 @@ def build_online_track(item: dict) -> dict:
     # 路径带真实后缀，飞牛 ll() 用 path 解析 extension；封面走 guid 以便 /static/cover 拦截
     spec_path = f"online/{src}/{guid}.{play_format}"
 
-    artists_list = [{"name": artist, "guid": f"{guid}:artist"}] if artist else []
+    # 字段形状对齐官方本地条目（新版客户端解析严格：缺失 createdAt/score 等
+    # 顶层字段或 artist.coverId/时间戳会导致整条目被丢弃——搜索显示空的根源之一）
+    now_ts = int(time.time())
+    artists_list = ([{
+        "name": artist, "guid": f"{guid}:artist",
+        "coverId": None, "createdAt": now_ts, "updatedAt": now_ts,
+    }] if artist else [])
     album_obj = {
         "name": album,
         "guid": f"{guid}:album",
         "artists": artists_list,
         "coverId": guid,
+        "releaseDate": None,
+        "barcode": None,
+        "createdAt": now_ts,
+        "updatedAt": now_ts,
     }
     audio_spec = {
         "path": spec_path,
@@ -836,6 +846,14 @@ def build_online_track(item: dict) -> dict:
         "hasLyric": bool(item.get("lyric")),
         "genres": [],
         "accessStatus": 0,
+        # 官方本地条目顶层字段对齐（新版客户端缺这些字段会丢条目）
+        "score": 0.0,
+        "createdAt": now_ts,
+        "updatedAt": now_ts,
+        "discNo": None,
+        "trackNo": None,
+        "isrc": None,
+        "year": None,
     }
 
 

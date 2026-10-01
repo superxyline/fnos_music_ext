@@ -48,3 +48,16 @@ def test_artist_subset_matches():
     assert _match_local_track(tr, "缘分一道桥", "王力宏") is tr[0]
     # 无交集仍拒绝
     assert _match_local_track(tr, "缘分一道桥", "五月天") is None
+
+
+def test_prefix_fallback_with_artist_gate():
+    """二级前缀匹配（官方 title 带序号/后缀）：歌手交集是防误配闸。"""
+    tr = [{"guid": "p1", "title": "03.晴天", "artists": [{"name": "周杰伦"}]}]
+    # 前缀 + 歌手交集 → 二级命中
+    assert _match_local_track(tr, "晴天", "周杰伦") is tr[0]
+    # 歌手不同 → 拦住（防"晴天的约定"式误配）
+    assert _match_local_track(tr, "晴天", "五月天") is None
+    # 本地无歌手 → 不启用二级（保持严格相等）
+    strict = [{"guid": "p2", "title": "晴天的约定", "artists": []}]
+    assert _match_local_track(strict, "晴天", "") is None
+    assert _match_local_track(strict, "晴天的约定", "") is strict[0]

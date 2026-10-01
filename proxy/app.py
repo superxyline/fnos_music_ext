@@ -3311,14 +3311,32 @@ def _match_local_track(tracks: list, title: str, artist: str) -> dict | None:
             continue
         if _norm(title_from_track(tr)) != t_norm:
             continue
-        if not local_tokens:
+        artist_ok = True
+        if local_tokens:
+            cand_all = _norm(_artist_names(tr))
+            # 歌手取交集即可：官方条目歌手常不全（如只登记主唱），下载信息含合作
+            # 歌手（王力宏&谭维维 vs 官方仅王力宏）——全包含会让对账永远失败。
+            # 标题已严格相等作主条件，交集判同错配风险可忽略。
+            artist_ok = bool(cand_all) and any(t in cand_all for t in local_tokens)
+        if artist_ok:
             return tr
-        cand_all = _norm(_artist_names(tr))
-        # 歌手取交集即可：官方条目歌手常不全（如只登记主唱），下载信息含合作
-        # 歌手（王力宏&谭维维 vs 官方仅王力宏）——全包含会让对账永远失败。
-        # 标题已严格相等作主条件，交集判同错配风险可忽略。
-        if cand_all and any(t in cand_all for t in local_tokens):
-            return tr
+    # 二级放宽：官方刮削 title 可能带序号/后缀（"03.晴天" vs "晴天"、
+    # "错错错 (Live)" vs "错错错"）——严格相等无果时按归一化前缀包含再试一轮。
+    # 仅在本地有歌手时启用：歌手交集是防误配的闸（"晴天" vs "晴天的约定"
+    # 会被不同歌手拦下），无歌手时保持严格相等。
+    if local_tokens:
+        for tr in tracks:
+            if not isinstance(tr, dict):
+                continue
+            cand_t = _norm(title_from_track(tr))
+            if not cand_t or not t_norm:
+                continue
+            # 互含（序号在前 "03晴天" 或后缀在后 "错错错live" 都能命中），限长防极端泛化
+            if not ((t_norm in cand_t or cand_t in t_norm) and abs(len(cand_t) - len(t_norm)) <= 8):
+                continue
+            cand_all = _norm(_artist_names(tr))
+            if cand_all and any(t in cand_all for t in local_tokens):
+                return tr
     return None
 
 
@@ -3368,6 +3386,16 @@ async def _reconcile_official_links_for_user(cred_headers: dict, user_guid: str)
                 continue
             target = _match_local_track(tracks, title, str(entry.get("artist") or ""))
             if not target:
+                # 匹配失败不再静默：每条目只打一次（对账每 10s 一轮，防刷屏）
+                if not entry.get("loggedNoMatch") and tracks:
+                    first = tracks[0] if isinstance(tracks[0], dict) else {}
+                    logger.info(
+                        "Favorite link no match %s: local=%r/%r first=%r/%r candidates=%d",
+                        entry["guid"], title, str(entry.get("artist") or "")[:40],
+                        title_from_track(first),
+                        str(artist_from_track(first))[:40], len(tracks),
+                    )
+                    entry["loggedNoMatch"] = True
                 continue
             official_guid = str(target.get("guid") or "")
             if not official_guid or is_online_guid(official_guid):
@@ -4398,6 +4426,26 @@ async def favorite_track_list(request: Request):
                 current_favs = load_online_favorites(user_guid)
             before = len(_pending_official_links)
             _seed_pending_from_favorites(user_guid, current_favs)
+            # 自愈：在线收藏但本地文件缺失（下载失败/从未完成）→ 补触发后台下载。
+            # 列表场景把 30 分钟失败冷却缩短为 2 分钟节流——下载失败不再永久卡死。
+            for it in current_favs:
+                g = str(it.get("guid") or "")
+                if not is_online_guid(g) or find_cache_file(g):
+                    continue
+                task = _full_fetch_tasks.get(g)
+                if task is not None and not task.done():
+                    continue
+                failed_at = _full_fetch_failed.get(g)
+                if failed_at is not None and time.monotonic() - failed_at < 120.0:
+                    continue
+                _full_fetch_failed.pop(g, None)
+                snap = it.get("track") if isinstance(it.get("track"), dict) else None
+                logger.info("Favorite link redl retry for %s", g)
+                _register_favorite_download(
+                    request, g,
+                    info_hint=_snapshot_to_info(snap) if snap else None,
+                    user_guid=user_guid,
+                )
             hit = sum(1 for e in _pending_official_links.values() if e.get("userGuid") == user_guid)
             if hit:
                 logger.info("Favorite link reconcile prelist user=%s pending=%d/%d favs=%d",

@@ -598,7 +598,9 @@ async function matchPoll() {
     for (const r of t.results || []) {
       const cell = $(`[data-status-for="${r.guid}"]`);
       if (cell) {
-        cell.textContent = r.ok ? "✓ 已写入" : (r.error || "失败");
+        cell.textContent = r.ok
+          ? (r.source ? `✓ 已写入（${r.source}）` : "✓ 已写入")
+          : (r.error || "失败");
         cell.style.color = r.ok ? "var(--ok)" : "var(--err)";
       }
     }

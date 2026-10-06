@@ -62,7 +62,13 @@ SEARCH_TIMEOUT = float(_env("FNMUSIC_SEARCH_TIMEOUT", "15") or 15)
 
 
 def _enabled_sources() -> list[str]:
+    # qq/kugou 默认开启（QRC/KRC 逐字歌词与封面质量更好），排在前作为
+    # 标题吻合时的优先候选；musicdl/netease/lx 维持原有默认关闭。
     out = []
+    if _env("FNMUSIC_QQ_ENABLED", "true").lower() in ("true", "1", "yes"):
+        out.append("qq")
+    if _env("FNMUSIC_KUGOU_ENABLED", "true").lower() in ("true", "1", "yes"):
+        out.append("kugou")
     if _env("FNMUSIC_MUSICDL_ENABLED", "false").lower() in ("true", "1", "yes"):
         out.append("musicdl")
     if _env("FNMUSIC_NETEASE_ENABLED", "false").lower() in ("true", "1", "yes"):
@@ -470,7 +476,103 @@ async def _search_lx(client: httpx.AsyncClient, keyword: str) -> list[dict]:
     return out
 
 
-_SEARCHERS = {"musicdl": _search_musicdl, "netease": _search_netease, "lx": _search_lx}
+def _enhance_platform(src: str):
+    """按需加载 enhance_search 平台模块（纯标准库，取自 FnMusicEnhance）。"""
+    try:
+        import enhance_search.platforms as reg
+        return reg.SOURCE_REGISTRY.get(src, {}).get("impl")
+    except Exception as e:  # 包缺失/导入失败时该源静默不可用
+        logger.warning("enhance_search %s unavailable: %s", src, type(e).__name__)
+        return None
+
+
+def _map_enhance_song(it: dict, src: str) -> dict | None:
+    sid = str(it.get("id") or "")
+    if not sid:
+        return None
+    return {
+        "source": src, "id": sid,
+        "title": str(it.get("title") or ""),
+        "artist": str(it.get("artist") or ""),
+        "album": str(it.get("album") or ""),
+        "duration": int(it.get("duration") or 0),
+        "cover_url": str(it.get("picUrl") or ""),
+        "internal": it.get("internal") if isinstance(it.get("internal"), dict) else {},
+    }
+
+
+async def _search_enhance(client: httpx.AsyncClient, keyword: str, src: str) -> list[dict]:
+    impl = _enhance_platform(src)
+    if impl is None:
+        return []
+    items = await asyncio.to_thread(impl.search_songs, keyword, 1, 10, SEARCH_TIMEOUT)
+    out = []
+    for it in items or []:
+        if isinstance(it, dict):
+            cand = _map_enhance_song(it, src)
+            if cand:
+                out.append(cand)
+    return out
+
+
+async def _search_qq(client: httpx.AsyncClient, keyword: str) -> list[dict]:
+    return await _search_enhance(client, keyword, "qq")
+
+
+async def _search_kugou(client: httpx.AsyncClient, keyword: str) -> list[dict]:
+    return await _search_enhance(client, keyword, "kugou")
+
+
+_SEARCHERS = {
+    "qq": _search_qq, "kugou": _search_kugou,
+    "musicdl": _search_musicdl, "netease": _search_netease, "lx": _search_lx,
+}
+
+
+def _structured_to_lrc(lines) -> str:
+    """enhance_search structured 行数组 → 行级 LRC 文本（词级 payload 拼整行）。"""
+    if not lines:
+        return ""
+    out = []
+    for item in lines:
+        if not isinstance(item, list) or len(item) < 3:
+            continue
+        start = item[0]
+        payload = item[2]
+        if isinstance(payload, list):
+            text = "".join(
+                w[2] for w in payload if isinstance(w, list) and len(w) > 2
+            )
+        else:
+            text = str(payload)
+        if not text.strip():
+            continue
+        out.append(
+            "[%02d:%02d.%02d]%s"
+            % (int(start) // 60000, (int(start) % 60000) // 1000,
+               (int(start) % 1000) // 10, text)
+        )
+    return "\n".join(out)
+
+
+async def _enhance_lyric(src: str, cand: dict) -> str:
+    """取 enhance_search 源歌词（QRC/KRC 逐字优先），转为行级 LRC 文本。"""
+    impl = _enhance_platform(src)
+    if impl is None:
+        return ""
+    song = {
+        "songId": cand.get("id"), "id": cand.get("id"),
+        "hash": (cand.get("internal") or {}).get("hash", ""),
+        "title": cand.get("title") or "", "album": cand.get("album") or "",
+        "artist": cand.get("artist") or "", "duration": int(cand.get("duration") or 0),
+        "internal": cand.get("internal") or {},
+    }
+    try:
+        d = await asyncio.to_thread(impl.get_lyrics, song, SEARCH_TIMEOUT)
+    except Exception as e:
+        logger.warning("Match %s get_lyrics failed: %s", src, type(e).__name__)
+        return ""
+    return _structured_to_lrc((d or {}).get("original"))
 
 
 async def search_candidates(client: httpx.AsyncClient, keyword: str) -> list[dict]:
@@ -527,6 +629,14 @@ async def fetch_candidate_detail(client: httpx.AsyncClient, cand: dict) -> dict:
                             ld = lr.json()
                             if isinstance(ld, dict) and ld.get("ok") is not False:
                                 lyric = str((ld.get("data") or {}).get("lyric") or "")
+        elif src == "qq":
+            # 搜索结果已带 y.gtimg.cn 专辑封面；歌词走 GetPlayLyricInfo QRC 逐字
+            lyric = await _enhance_lyric("qq", cand)
+            cover_url = str(cand.get("cover_url") or "")
+        elif src == "kugou":
+            # 歌词走 KRC 签名接口（需 internal.hash）；封面来自搜索结果
+            lyric = await _enhance_lyric("kugou", cand)
+            cover_url = str(cand.get("cover_url") or "")
     except Exception as e:
         logger.warning("Match candidate detail failed %s/%s: %s", src, sid, type(e).__name__)
     return {"lyric": lyric.strip(), "cover_url": cover_url.strip()}
@@ -556,7 +666,8 @@ async def _download_image(client: httpx.AsyncClient, url: str) -> bytes | None:
 async def match_one(client: httpx.AsyncClient, guid: str, wants: list[str]) -> dict:
     """匹配一首歌：搜候选 → 标题校验 → 写歌词/封面。返回结果 dict。"""
     result = {"guid": guid, "ok": False, "lyricOk": False, "coverOk": False,
-              "error": "", "matchedTitle": "", "matchedArtist": "", "keyword": ""}
+              "error": "", "matchedTitle": "", "matchedArtist": "", "keyword": "",
+              "source": ""}
     track = _track_row(guid)
     if not track:
         result["error"] = "未找到曲目"
@@ -585,6 +696,7 @@ async def match_one(client: httpx.AsyncClient, guid: str, wants: list[str]) -> d
         return result
     result["matchedTitle"] = picked.get("title") or ""
     result["matchedArtist"] = picked.get("artist") or ""
+    result["source"] = str(picked.get("source") or "")
 
     detail = await fetch_candidate_detail(client, picked)
     ok_any = False

@@ -5,6 +5,18 @@
 
 > 以下 v2.3.1 起为本仓库（superxyline 二次开发版）的增量变更；v2.3.0 及之前为上游 javycoder/fnos_music_ext 的变更。
 
+## [2.3.17] - 2026-10-06
+
+### 新增
+
+- **歌曲匹配页接入 QQ / 酷狗音源**（合并 [kuilei0926/FnMusicEnhance](https://github.com/kuilei0926/FnMusicEnhance) 的搜索内核，鸣谢！）：
+  - 新增 `proxy/enhance_search/` 包（整体取自 FnMusicEnhance 的 `app/server/search/`，纯标准库实现，上游可溯至 musicdl 与 Lyrico），本仓库目前注册 QQ / 酷狗两平台；
+  - **歌词质量提升**：QQ 走 `GetPlayLyricInfo`（QRC 逐字 + 3DES 解密，老接口行级 LRC 降级），酷狗走 KRC 签名接口（XOR 解密），均带翻译/罗马音解析管线，写回官方 `lyric-sqlite` 时转为行级 LRC（与官方歌词格式同构）；
+  - **封面质量提升**：QQ 封面取 `y.gtimg.cn` 官方专辑图库（800px），酷狗取官方 `stdmusic` 图，来自搜索结果自带 URL，无额外请求；
+  - **默认开启**（`FNMUSIC_QQ_ENABLED` / `FNMUSIC_KUGOU_ENABLED`，均默认 `true`，可在 `.env` 关闭、热重载生效），且排序在 musicdl/netease/lx 之前——标题吻合时优先采用 QQ/酷狗的候选；两个新源为直连官方接口，**无需登录态**，与三音源互斥开关互不影响；
+  - 匹配结果状态列显示命中的音源（`✓ 已写入（qq）`），便于核对来源；
+  - 匹配失败隔离：单源搜索/歌词失败只影响该源，静默降级到其余源。
+
 ## [2.3.16] - 2026-10-01
 
 ### 修复

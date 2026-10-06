@@ -35,6 +35,7 @@
 - **曲库/滚动缓存分治**（v2.3.6）：支持「关掉边听边存、只开收藏自动下载」的纯净用法——播放只留临时滚动缓存不进曲库；红心时区分三种情况：曲库已有（unknown 修复）、只在滚动缓存（定名挪进曲库，不重复下载）、都没有（后台下载）；
 - **歌曲匹配（歌词/封面批量写回）**（v2.3.8）：管理 WebUI 新增「歌曲匹配」页面——从当前音源**多平台**搜索候选，把**歌词**与**封面**写回官方数据（music.db 的 lyric 表 + `lyric-sqlite` 分片库 + 封面文件），标题/歌手/专辑等信息字段不动；支持勾选批量、按「缺歌词/缺封面/缺任一」筛选后一键匹配、进度实时展示。写入与官方同构，飞牛官方页面立即可见。参考了 [kuilei0926/FnMusicEnhance](https://github.com/kuilei0926/FnMusicEnhance) 的匹配/写回思路，鸣谢！
 - **重复清理**（v2.3.11）：WebUI「歌曲匹配」页可按**歌名**归组扫描曲库重复（忽略文件名差异），组内保留音质最好的（无损 > 码率 > 大小），其余移入回收站（可找回），收藏/歌单/播放历史引用自动迁移到保留副本——重复文件不再占用空间，红心和歌单完好；
+- **匹配页 QQ / 酷狗音源**（v2.3.17）：「歌曲匹配」页在 musicdl/netease/洛雪之外新增 QQ（QRC 逐字歌词 + 3DES 解密）与酷狗（KRC XOR 解密）两路音源——冷门歌与翻译歌词的命中率和准确度明显提升，封面取 QQ/酷狗官方高清图库；默认开启（`FNMUSIC_QQ_ENABLED` / `FNMUSIC_KUGOU_ENABLED` 可关）、无需登录态、失败自动降级其余源，结果列显示命中音源。搜索内核取自 [kuilei0926/FnMusicEnhance](https://github.com/kuilei0926/FnMusicEnhance)（纯标准库），鸣谢！
 - **对账搜索根因修复**（v2.3.7）：对账改用官方搜索真正接受的 `q` 参数（此前 `keyword` 被 100002 拒绝导致转官方收藏从未成功过），并放行红心链路诊断日志（takeover 白名单）——**下载完成 → 打开收藏页 → 自动出现在收藏列表**的完整闭环由此打通。
 
 ### 推荐配置
@@ -151,6 +152,7 @@ curl -s --unix-socket /var/run/trim_music.socket http://localhost/_ext/healthz
 | 配置项 | 默认值 | 说明 |
 | :--- | :--- | :--- |
 | `FNMUSIC_MUSICDL_ENABLED` / `FNMUSIC_NETEASE_ENABLED` / `FNMUSIC_LX_ENABLED` | 单选 | 三音源互斥开关，只能一个为 `true`（热重载） |
+| `FNMUSIC_QQ_ENABLED` / `FNMUSIC_KUGOU_ENABLED` | `true` | 歌曲匹配页 QQ/酷狗音源开关（与三音源开关独立，热重载；QQ 用 QRC 逐字歌词、酷狗用 KRC，均无需登录态） |
 | `FNMUSIC_WEBUI_ENABLED` | `false` | 管理 WebUI 开关（端口 8774，无鉴权） |
 | `LX_SOURCE_URL` | *(空)* | 洛雪自定义源脚本地址：`http(s)://` URL 或 `file:///data/lxmusic/uploads/<名字>.js`（管理页上传/NAS 选择生成）；建议在 WebUI 里「测试并保存」 |
 | `LX_SOURCES` | `kg,wy,mg,kw` | lxmusic 启用的平台（kg/wy/mg/kw/tx） |
@@ -224,6 +226,7 @@ sudo python3 tests/integration/fpk_lifecycle.py --auto-restore
 ## 鸣谢
 
 - **[javycoder/fnos_music_ext](https://github.com/javycoder/fnos_music_ext) 原项目及作者 [@javycoder](https://github.com/javycoder)**：本仓库是其二开版本，Socket 接管架构、三音源体系、管理 WebUI、在线收藏/歌单/播放历史等所有基础能力均出自原项目，没有原作者的工作就没有这个二开版，特此致谢！
+- **[kuilei0926/FnMusicEnhance](https://github.com/kuilei0926/FnMusicEnhance)**：歌曲匹配页 QQ/酷狗音源的搜索/解密内核（`proxy/enhance_search/`）取自该项目，特此致谢！
 - 上游致谢：[CharlesPikachu/musicdl](https://github.com/CharlesPikachu/musicdl)、[darknessomi/musicbox](https://github.com/darknessomi/musicbox)、洛雪音乐（LX Music）社区及其自定义源规范。
 
 ## 免责与版权声明

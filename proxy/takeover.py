@@ -505,12 +505,20 @@ def diagnostic(text):
 # dictionaries, config values or URLs appended to them. This deliberately small
 # allowlist covers source/search/stream/auth/recommend failures in the current app.
 _SAFE_OUTCOME = re.compile(
-    r'(?:Failed to fetch online search from (?:musicdl|lxmusic)|'
+    r'(?:\[dl-capture\] [ -~]{0,600}|'
+    r'audio decode check failed for [!-~]{1,120} \(ext=[a-z0-9]{1,8} bytes=[0-9]{1,12}\)|'
+    r'retrying [!-~]{1,120} with mp3 tier after corrupt lossless stream|'
+    r'tee finalize rejected corrupt lossless for [!-~]{1,120}|'
+    r'Background full fetch failed for [!-~]{1,120}: [A-Za-z_]{1,40}|'
+    r'Failed to fetch online search from (?:musicdl|lxmusic)|'
     r'Failed to fetch musicbox search|musicdl search partial errors|'
     r'Suggest musicdl error|Stream startup failed|'
     r'Stream aborted mid-way for [!-~]{1,140}: [A-Za-z_][A-Za-z0-9_.]{0,60}|'
     r'stream probe: (?:GET|HEAD) [!-~]{1,140} range=[!-~]{0,80} '
     r'cached=(?:True|False) tee_eligible=(?:True|False)|'
+    r'tee (?:diag|finalize|metadata) [ -~]{0,400}|'
+    r'album detail not synthesizable: source=[!-~]{1,40}|'
+    r'forward-unhandled (?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS) /[!-~]{1,140}(?: \(\#[0-9]+\))?|'
     r'Upstream auth probe failed|'
     r'(?:musicbox|lxmusic|musicdl)(?: /info| lyric fetch(?: in _online_info)?)? failed|'
     r'lyric sidecar fetch failed|resolve_(?:lx|netease)_url error|'

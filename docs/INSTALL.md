@@ -37,9 +37,9 @@ v2.0.0 起部署形态固定为两部分：
 | 端口 | 绑定地址 | 用途 |
 | :--- | :--- | :--- |
 | 8768 | 127.0.0.1 | musicdl 音源（仅代理访问） |
-| 8770 | 0.0.0.0 | musicbox 音源（局域网扫码登录） |
+| 8770 | 127.0.0.1 | musicbox 音源（仅本机；扫码走已登录的管理页） |
 | 8772 | 127.0.0.1 | lxmusic 音源（仅代理访问） |
-| 8774 | 0.0.0.0 | 管理 WebUI（无鉴权，仅限可信内网） |
+| 8774 | 127.0.0.1 | 管理 WebUI（仅本机；浏览器走飞牛网关，仅管理员） |
 
 数据卷：项目目录 `sources-data/`（网易登录态、洛雪源脚本缓存与状态）；仓库目录挂载到容器 `/repo`（WebUI 读写 `.env` 用）。容器无特权、不挂 docker.sock。
 
@@ -53,7 +53,7 @@ v2.0.0 起部署形态固定为两部分：
 
 1. 向导中选择**初始音源**（musicdl / musicbox / lxmusic，选 lxmusic 需填写源脚本 URL）；
 2. 保持「安装完成后立即启用扩展」开启，安装即自动完成容器构建、代理接管与全链路验收；
-3. 桌面出现「fnMusic 扩展管理」图标，点击在飞牛桌面窗口内打开管理页（`http://<NAS_IP>:8774`）。
+3. 桌面出现「fnMusic 扩展管理」图标，用飞牛管理员点击打开管理页（`/app/fnmusic-ext`）。
 
 日常启停在应用中心完成：「停止」秒级还原官方直连，「启动」恢复扩展。卸载会先自动备份配置与数据到存储卷根目录（`fnmusic-ext-backup-<时间戳>.tar.gz`）再清理。
 
@@ -83,7 +83,7 @@ sudo appcenter-cli uninstall fnmusic-ext                # 卸载（自动备份�
    - `1` 网易云 musicbox：安装后自动进入扫码登录；
    - `2` musicdl：进入平台多选子菜单（默认精选酷我+咪咕；全部平台编号见 [../musicdl-service/PLATFORMS.md](../musicdl-service/PLATFORMS.md)）；
    - `3` 洛雪 lxmusic：直接安装（无源状态），源脚本装好在管理页 WebUI 配置；也可在安装命令附 `--lx-source-url`（URL / 本机 `.js` 路径），安装时进行「下载→初始化→搜索→解析→探活」全链路校验；
-2. **是否安装管理 WebUI**（端口 8774，默认否；无鉴权，仅限可信内网）；
+2. **是否安装管理 WebUI**（仅本机 8774，默认否；打开时走飞牛管理员登录）；
 3. **大模型每日推荐（可选）**：OpenAI 兼容 API，仅在未启用网易音源时作为推荐兜底；
 4. **一键启用**：确认后自动调用 `./extend.sh` 接管验收。
 
@@ -133,7 +133,7 @@ sudo appcenter-cli uninstall fnmusic-ext                # 卸载（自动备份�
 ./restore.sh --full
 ```
 
-**运行期换源/调参**：浏览器打开 `http://<NAS_IP>:8774`（若已装 WebUI），
+**运行期换源/调参**：用飞牛管理员打开桌面「fnMusic 扩展管理」（若已装 WebUI），
 在「音乐源」分区单选切换——写配置与容器内进程切换一步完成，代理侧由热重载
 同步，全程无需命令行。音质偏好、推荐开关、边听边存、LLM 同理。
 
@@ -167,8 +167,8 @@ sudo appcenter-cli uninstall fnmusic-ext                # 卸载（自动备份�
 ./install.sh --qr        # 或 ./netease_login.sh / ./extend.sh --qr
 ```
 
-或局域网浏览器访问 `http://<NAS_IP>:8770/api/v1/auth/login/qr.png` 扫码。
-登录凭证持久化在 `sources-data/`，无需重复扫码；WebUI 内亦可扫码。
+或登录管理页后在「音乐源」扫码。
+登录凭证持久化在 `sources-data/`，无需重复扫码。
 
 ---
 
@@ -258,8 +258,32 @@ v1.x 允许多音源并存，v2.0.0 起三音源互斥单选。升级安装时�
 ### 洛雪源测试失败
 
 WebUI 或安装向导的错误分类含义：**下载失败**（URL 不可达/超 9MB）、**格式无效**
-（缺少洛雪源头部注释）、**初始化失败**（脚本运行报错，多为与主流源规范不兼容）、
-**无可用平台**、**解析失败**（源声明平台均无法出直链）。依次检查 URL、换源后重试。
+（缺少洛雪源头部注释）、**格式不支持**（musicApi.json 类 JSON API 源——本项目只支持
+洛雪桌面版自定义源 JS 脚本）、**初始化失败**（脚本运行报错，多为与主流源规范不兼容）、
+**无可用平台**、**解析失败**（源声明平台均无法出直链）、**搜索取不到样本**（源脚本
+初始化正常，但内置搜索接口限流/波动导致无法验证——不代表源不可用，稍后重试即可）。
+报告里的"平台明细"按平台给出 ok/failed/untested 细分结论。依次检查 URL、换源后重试。
+
+### fpk 安装一直卡在 55% 左右（issue #24）
+
+55% 对应 fpk 安装器执行 `install.sh` 的阶段，本身可能要几分钟，卡住几乎都是
+**网络拉取慢**（国内直连境外源受限）。排查步骤：
+
+1. **看真实进度**：安装日志在 `/var/log/apps/fnmusic-ext-install.log`（卸载也不删）。
+   v2.5.0 起拉取镜像/等待服务每 30 秒打一行心跳，能看到"仍在拉取…（已等 Ns）"即代表
+   在正常推进，耐心等完即可。
+2. **自测网络**（任一失败即网络受限）：
+   ```bash
+   curl -s -o /dev/null -m 8 -w '%{http_code}\n' https://mirrors.tencent.com/pypi/simple/
+   curl -s -o /dev/null -m 8 -w '%{http_code}\n' https://docker.m.daocloud.io/v2/
+   ```
+3. **为 Docker 配代理后重试**（社区反馈最有效的解法）：编辑 Docker 的
+   `daemon.json`（fnOS 上通常在 `/usr/local/apps/docker/config/daemon.json` 或
+   fnOS Docker 设置界面）加 `proxies` 段，重启 Docker 后重新安装。
+4. **手动换镜像源**：`FNMUSIC_DOCKER_MIRRORS="docker.m.daocloud.io docker.1ms.run"`
+   或直接 `BASE_IMAGE=docker.m.daocloud.io/library/python:3.13-slim ./install.sh`。
+5. 反馈问题时运行 `bash scripts/collect_support_info.sh`，把输出整段贴到 issue
+   （只读收集，不含任何密钥）。
 
 ### 构建时报 `failed to resolve source metadata for python:3.13-slim ... 401 Unauthorized` 或拉取超时
 

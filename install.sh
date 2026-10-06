@@ -11,7 +11,7 @@ set -euo pipefail
 #     3 lxmusic  洛雪音乐自定义源（用户自带源 URL 解析播放）
 #   musicdl 平台粒度: --sources musicdl-kuwo,musicdl-migu 或全局编号 --sources 2,4
 #   （全部平台编号见 musicdl-service/PLATFORMS.md）
-# - 管理 Web UI（可选，端口 8774，无鉴权·仅限可信内网）：
+# - 管理 Web UI（可选，端口 8774，仅本机；经飞牛登录的管理员打开）：
 #   源切换 / 平台选择 / 扫码登录 / 音质模式 / 边听边存 / LLM 配置
 # - 每日推荐默认采信音源原生推荐（网易每日推荐/榜单 + lxmusic 免登录榜单）；
 #   大模型（OpenAI 兼容）仅当网易音源未启用时作为兜底，可选配置
@@ -93,7 +93,7 @@ usage() {
                           留空=无源安装，装好在管理页 WebUI 配置）
   --lx-skip-verify       跳过洛雪源可用性校验（下载→init→搜索→解析→探活）直接激活；
                          源是否可用装好后在管理页 WebUI 查看，适合不想因源故障中断安装的场景
-  --webui                安装管理 Web UI（端口 8774；无鉴权，仅限可信内网使用）
+  --webui                安装管理 Web UI（仅本机 8774；由已登录的飞牛管理员打开）
   --no-webui             不安装管理 Web UI（非交互默认）
   --non-interactive      无交互，缺省值：音源=musicdl，不装 WebUI，不开启每日推荐
   --enable-recommend     开启大模型兜底推荐（需同时给 base-url 与 api-key；
@@ -757,7 +757,7 @@ if [ "${NON_INTERACTIVE}" -eq 0 ]; then
     fi
     if [ -z "${WEBUI_CHOICE}" ]; then
         echo "【管理 Web UI】(端口 8774)：音源切换 / 扫码登录 / 平台选择 / 音质模式 /"
-        echo "  边听边存 / LLM 配置，手机/桌面自适应。无鉴权，仅限可信内网使用。"
+        echo "  边听边存 / LLM 配置。只在本机提供，由已登录的飞牛管理员打开。"
         webui_choice="$(prompt "是否安装管理 Web UI? [y/N]" "N")"
         case "${webui_choice}" in
             y|Y|yes|YES) WEBUI_CHOICE="yes" ;;
@@ -847,7 +847,7 @@ if [ "${ENABLE_LX}" -eq 1 ]; then
             ;;
     esac
     if [ -z "${LX_SOURCE_URL_CLI}" ]; then
-        log_info "未提供洛雪源（无源安装）：装好后在管理页 WebUI（桌面「fnMusic 扩展管理」或 http://<NAS_IP>:8774）配置源脚本并激活"
+        log_info "未提供洛雪源（无源安装）：装好后在飞牛管理员打开的管理页配置源脚本并激活"
     fi
     case "${LX_SOURCE_URL_CLI}" in
         ""|http://*|https://*|file://*) : ;;
@@ -900,7 +900,12 @@ mkdir -p "${BASE_DIR}/cache" "${BASE_DIR}/online_favorites" "${BASE_DIR}/playlis
     "${SOURCES_DATA_DIR}/config/netease-musicbox" \
     "${SOURCES_DATA_DIR}/netease-musicbox" \
     "${SOURCES_DATA_DIR}/lxmusic"
-chmod -R 0755 "${SOURCES_DATA_DIR}" 2>/dev/null || true
+# 数据卷权限收紧：属主对齐容器 appuser（uid 1000，Dockerfile 固定），group/other 全收——
+# 网易 cookie/state.json 等凭据不可被本机其他用户读取；chown 需 root（fpk 安装即 root），
+# 交互安装时调用者本身即属主（fnOS 默认 admin=1000）兜底
+chown -R 1000:1000 "${SOURCES_DATA_DIR}" 2>/dev/null || true
+find "${SOURCES_DATA_DIR}" -type d -exec chmod 0700 {} + 2>/dev/null || true
+find "${SOURCES_DATA_DIR}" -type f -exec chmod 0600 {} + 2>/dev/null || true
 
 # 归一化服务源码权限：umask 077 环境检出的文件为 600，会导致镜像内 appuser 读不到 app.py
 chmod 0644 \
@@ -1074,18 +1079,55 @@ cleanup_legacy_sources() {
     # 旧 v1.x 部署形态清理：宿主机三 unit + 三容器（单容器接管端口 8768/8770/8772）
     local unit
     for unit in fnmusic-musicdl fnmusic-musicbox fnmusic-lxmusic; do
-        stop_owned_source_unit "${unit}"
-        remove_owned_container "${unit}"
+        if [ "${ADOPT:-0}" -eq 1 ]; then
+            stop_owned_source_unit "${unit}" --adopt
+            remove_owned_container "${unit}" --adopt
+        else
+            stop_owned_source_unit "${unit}"
+            remove_owned_container "${unit}"
+        fi
     done
+}
+
+# 所选音源/WebUI 的 healthz 是否已全部就绪（单次探测不重试：仅用于判断是否需要
+# 重启容器对齐进程集，真正的就绪等待交给随后的 wait_http）。
+sources_quick_ready() {
+    local url urls=""
+    [ "${ENABLE_MUSICBOX}" -eq 1 ] && urls="${urls} http://127.0.0.1:8770/healthz"
+    [ "${ENABLE_MUSICDL}" -eq 1 ] && urls="${urls} http://127.0.0.1:8768/healthz"
+    [ "${ENABLE_LX}" -eq 1 ] && urls="${urls} http://127.0.0.1:8772/healthz"
+    [ "${WEBUI_FLAG}" = "true" ] && urls="${urls} http://127.0.0.1:8774/healthz"
+    # shellcheck disable=SC2086
+    for url in ${urls}; do
+        curl --fail --silent --max-time 3 "${url}" >/dev/null 2>&1 || return 1
+    done
+    return 0
 }
 
 install_sources_container() {
     log_info "构建并启动单容器 ${CONTAINER_NAME}（所选音源 + WebUI 按需启动）..."
     cleanup_legacy_sources
-    reclaim_container "${CONTAINER_NAME}" || return 1
+    if [ "${ADOPT:-0}" -eq 1 ]; then
+        reclaim_container "${CONTAINER_NAME}" --adopt || return 1
+    else
+        reclaim_container "${CONTAINER_NAME}" || return 1
+    fi
+    # issue #24：构建日志逐层可见（非 tty 下默认进度条会被压成静默，看似"卡在 55%"）
+    export BUILDKIT_PROGRESS="${BUILDKIT_PROGRESS:-plain}"
     if ! run_docker compose -f "${BASE_DIR}/docker-compose.yml" up -d --build; then
         log_err "Docker 镜像构建或启动失败（compose up --build）。"
+        log_err "若日志里反复出现 apt/pip 拉取超时：多为国内网络直连境外源受限，"
+        log_err "可为 Docker 配置代理后重试，或检查 /var/log/apps/fnmusic-ext-install.log 定位具体步骤。"
         return 1
+    fi
+    # entrypoint 只在容器启动时读一次 /repo/.env，而 compose 对镜像与配置均未变的
+    # 运行中容器不会重启（切源/升级恢复 .env 后输出仍是 "Container ... Running"）：
+    # 所选音源与旧进程集不一致时，下方 healthz 必然等满超时，先重启对齐再等待。
+    # 同参数幂等重跑（所选服务全部已健康）不重启，保持快速路径；restart 亦会重新
+    # 解析 bind mount，治愈 target 回滚重建目录后容器挂旧 inode 的现场。
+    if env_newer_than_container && ! sources_quick_ready; then
+        log_info "检测到 .env 更新且所选音源未运行，重启容器使音源开关生效..."
+        run_docker restart "${CONTAINER_NAME}" || return 1
     fi
     # 按所选音源等待 healthz（entrypoint 只拉起所选程序，其余端口无人监听是预期行为）
     local waited=0
@@ -1095,6 +1137,7 @@ install_sources_container() {
             log_info "musicbox 已就绪 http://127.0.0.1:8770/healthz"
         else
             log_err "等待 musicbox healthz 超时"
+            diagnose_sources_container "${CONTAINER_NAME}"
             return 1
         fi
     fi
@@ -1104,6 +1147,7 @@ install_sources_container() {
             log_info "musicdl 已就绪 http://127.0.0.1:8768/healthz"
         else
             log_err "等待 musicdl healthz 超时"
+            diagnose_sources_container "${CONTAINER_NAME}"
             return 1
         fi
     fi
@@ -1113,6 +1157,7 @@ install_sources_container() {
             log_info "lxmusic 已就绪 http://127.0.0.1:8772/healthz"
         else
             log_err "等待 lxmusic healthz 超时"
+            diagnose_sources_container "${CONTAINER_NAME}"
             return 1
         fi
     fi
@@ -1121,6 +1166,7 @@ install_sources_container() {
             log_info "WebUI 已就绪 http://127.0.0.1:8774/healthz"
         else
             log_err "等待 WebUI healthz 超时"
+            diagnose_sources_container "${CONTAINER_NAME}"
             return 1
         fi
     fi
@@ -1261,7 +1307,7 @@ log_info "【音源服务状态】（未启用的音源进程不驻留内存）"
 [ "${ENABLE_MUSICDL}" -eq 1 ] && log_info "  • musicdl   [8768] 聚合音源${MDL_SUMMARY:+ 平台${MDL_SUMMARY}}   http://127.0.0.1:8768/healthz"
 [ "${ENABLE_LX}" -eq 1 ] && log_info "  • lxmusic   [8772] 洛雪自定义源${LX_SUMMARY:+ 平台${LX_SUMMARY}}   http://127.0.0.1:8772/healthz"
 if [ "${WEBUI_FLAG}" = "true" ]; then
-    log_info "  • WebUI     [8774] 管理界面      http://<NAS_IP>:8774（无鉴权，仅限可信内网）"
+    log_info "  • WebUI     [8774] 管理界面      飞牛桌面「fnMusic 扩展管理」（仅管理员）"
 fi
 log_info "------------------------------------------------------------"
 log_info "【后续验证与使用指引】"
@@ -1276,18 +1322,16 @@ log_info "2. 验证搜索与试听："
 log_info "   打开飞牛音乐 Web 端或手机 App，在搜索框中搜索歌曲（例如“晴天”或“周杰伦”），"
 log_info "   点击在线源歌曲试听，确认可以流畅播放并显示歌词与封面。"
 if [ "${WEBUI_FLAG}" = "true" ]; then
-    log_info "3. 管理 Web UI：http://<NAS_IP>:8774"
+    log_info "3. 管理 Web UI：飞牛桌面「fnMusic 扩展管理」，或已登录管理员打开 /app/fnmusic-ext"
     log_info "   • 音源三选一随时切换（秒级）、musicdl 平台多选、网易扫码登录"
     log_info "   • 音质模式（高音质/平衡/流畅）、边听边存、推荐开关、LLM 配置"
-    log_info "   • 无鉴权设计：请勿暴露到公网，仅限可信内网使用"
 fi
 if [ "${ENABLE_MUSICBOX}" -eq 1 ]; then
     log_info "4. 网易云扫码登录（可选）："
     log_info "   部分网易云 VIP/无损歌曲需要账号凭证："
     log_info "   • 命令行扫码登录（推荐）: ./install.sh --qr 或 ./netease_login.sh"
     log_info "     （自动展示二维码、轮询登录状态、过期自动刷新，支持随时 Ctrl+C 跳过）"
-    log_info "   • 局域网浏览器图片（备选）: http://<NAS_IP>:8770/api/v1/auth/login/qr.png"
-    log_info "   • WebUI 内扫码（安装了 WebUI 时最方便）"
+    log_info "   • 管理页内扫码（安装了 WebUI 时，在「音乐源」扫码）"
 fi
 if [ "${ENABLE_RECOMMEND}" = "yes" ]; then
     log_info "5. 大模型每日推荐："

@@ -741,8 +741,20 @@ _LOSSLESS = {"flac", "wav", "ape", "wv", "aiff", "dff", "dsf", "tta", "alac"}
 _LOSSY = {"mp3", "m4a", "aac", "ogg", "opus", "wma"}
 
 
+# 简繁折叠：标题归一化前把简体字统一折到繁体再比较，使「山水之间/山水之間」
+# 这类标签简繁不同的孪生条目能被重复清理归为同组（enhance_search 自带 _S2T
+# 简转繁表，缺字用补充表兜底；本来就是繁体的字不在表里、保持不变）。
+try:
+    from enhance_search.lyric_tools import _S2T as _S2T_BASE
+except Exception:  # 包缺失时退化为仅补充表
+    _S2T_BASE = {}
+_S2T_FOLD_EXTRA = {"毁": "毀", "牵": "牽", "着": "著"}
+_S2T_FOLD = {**_S2T_BASE, **_S2T_FOLD_EXTRA}
+
+
 def _norm_title(s: str) -> str:
     s = (s or "").lower()
+    s = "".join(_S2T_FOLD.get(c, c) for c in s)
     return re.sub(r"[\s\-_·・.,，。!！?？'\"“”‘’:：;；、()\[\]【】]+", "", s)
 
 

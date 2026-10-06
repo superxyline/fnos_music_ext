@@ -303,6 +303,25 @@ def test_remove_duplicate_migrates_and_trashes(dedup_env):
     conn.close()
 
 
+def test_norm_title_folds_simplified_traditional():
+    assert match_core._norm_title("山水之間") == match_core._norm_title("山水之间")
+    assert match_core._norm_title("毀人不倦") == match_core._norm_title("毁人不倦")
+    assert match_core._norm_title("我想牵著你的手") == match_core._norm_title("我想牵着你的手")
+
+
+def test_scan_duplicates_groups_s2t_twins(dedup_env):
+    """简繁标签不同的孪生条目应归入同一重复组（2.3.18）。"""
+    conn = sqlite3.connect(match_core.MUSIC_DB)
+    conn.execute("INSERT INTO audio_file (id, path, name, suffix) VALUES (8, '/m/twin.flac', 'twin', 'flac')")
+    conn.execute("INSERT INTO track (id, guid, audio_file_id, title) VALUES (8, 'guid8', 8, '同首歌名繁體寫法')")
+    conn.execute("UPDATE track SET title = '同首歌名' WHERE id = 1")
+    conn.execute("UPDATE track SET title = '同首歌名繁体写法' WHERE id = 2")
+    conn.commit()
+    conn.close()
+    rep = match_core.scan_duplicates()
+    assert rep["totalGroups"] == 1 and rep["totalExtra"] == 1
+
+
 def test_remove_duplicate_rejects_different_title(dedup_env):
     conn = sqlite3.connect(match_core.MUSIC_DB)
     conn.execute("INSERT INTO audio_file (id, path, name, suffix) VALUES (9, '/m/x.mp3', 'x', 'mp3')")

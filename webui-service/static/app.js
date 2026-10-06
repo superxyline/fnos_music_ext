@@ -285,6 +285,40 @@ function renderPlatformChips() {
 $("#platform-search").addEventListener("input", renderPlatformChips);
 $("#platform-reload").addEventListener("click", loadPlatforms);
 
+/* -- musicdl 音源测试搜索：输入歌名逐平台验证是否出歌 -- */
+async function musicdlTest() {
+  const q = $("#musicdl-test-q").value.trim();
+  const box = $("#musicdl-test-result");
+  if (!q) return toast("请输入歌名", "fail");
+  box.hidden = false;
+  box.className = "report";
+  box.textContent = "测试中…（部分慢平台可能要等十几秒）";
+  const btn = $("#musicdl-test-run");
+  btn.disabled = true;
+  try {
+    const body = await api("/api/musicdl/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keyword: q, sources: platforms.enabled }),
+    });
+    const rows = (body.platforms || []).map((p) => {
+      const ok = p.count > 0;
+      const head = ok ? `✓ ${p.count} 条：${(p.samples || []).join(" / ")}` : `✗ ${p.error || "无结果"}`;
+      return `<div class="kv" style="color:${ok ? "var(--ok)" : "var(--err)"}"><b>${escapeHtml(p.source)}</b> ${escapeHtml(head)}</div>`;
+    });
+    box.innerHTML = rows.join("") || '<div class="kv muted">没有勾选任何平台</div>';
+    const bad = !(body.platforms || []).length || (body.platforms || []).some((p) => !p.count);
+    box.className = "report " + (bad ? "fail" : "ok");
+  } catch (e) {
+    box.className = "report fail";
+    box.textContent = `测试失败：${e.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+$("#musicdl-test-run").addEventListener("click", musicdlTest);
+$("#musicdl-test-q").addEventListener("keydown", (e) => { if (e.key === "Enter") musicdlTest(); });
+
 /* -------------------------------------------------------------- 网易扫码 */
 async function syncNeteaseAccount(retries = 0) {
   // 把网易账号态同步到 #qr-check（已登录显示昵称；未登录/失败清空）

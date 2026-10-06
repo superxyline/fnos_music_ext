@@ -585,6 +585,68 @@ async def api_platforms(request: Request):
     return {"ok": True, "enabled": data.get("enabled") or [], "registered": data.get("registered") or []}
 
 
+class MusicdlTestBody(BaseModel):
+    keyword: str
+    sources: list[str] = []
+
+
+def _summarize_musicdl_search(data: dict) -> list[dict]:
+    """把 musicdl /search 响应按平台聚合成测试报告行（含无结果/出错平台）。"""
+    items = data.get("items") or []
+    errors = data.get("errors") or {}
+    by_source: dict[str, list[dict]] = {}
+    for it in items:
+        if isinstance(it, dict) and it.get("source"):
+            by_source.setdefault(str(it["source"]), []).append(it)
+    sources = list(dict.fromkeys(list(by_source.keys()) + [str(s) for s in errors]))
+    out = []
+    for src in sources:
+        group = by_source.get(src) or []
+        out.append({
+            "source": src,
+            "count": len(group),
+            "samples": [
+                f"{i.get('title') or ''} - {i.get('artist') or ''}".strip(" -")
+                for i in group[:3]
+            ],
+            "error": None if group else (errors.get(src) or "无结果"),
+        })
+    return out
+
+
+@app.post("/api/musicdl/test")
+async def api_musicdl_test(body: MusicdlTestBody, request: Request):
+    """用歌名实测 musicdl 音源：转发 /search（limit=3），按平台聚合并报告。
+
+    只读操作，不写曲库；sources 为空时用 musicdl 当前启用的平台白名单。
+    """
+    keyword = body.keyword.strip()
+    if not keyword:
+        raise HTTPException(status_code=400, detail="请输入歌名")
+    preview_renew("musicdl")  # 预览期间测试视为活跃，续期倒计时
+    params: dict = {"keyword": keyword, "limit": 3}
+    srcs = [s.strip() for s in body.sources if s.strip()]
+    if srcs:
+        params["sources"] = ",".join(srcs)
+    started = time.monotonic()
+    client = get_http(request)
+    try:
+        resp = await client.get(f"{CONF['musicdl_url']}/search", params=params, timeout=35.0)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"musicdl 服务不可达: {exc}") from exc
+    data = _resp_json(resp)
+    if not isinstance(data, dict) or not data.get("ok"):
+        detail = data.get("error") if isinstance(data, dict) else None
+        raise HTTPException(status_code=502,
+                            detail=detail or f"musicdl 返回异常（HTTP {resp.status_code}）")
+    return {
+        "ok": True,
+        "keyword": keyword,
+        "tookMs": int((time.monotonic() - started) * 1000),
+        "platforms": _summarize_musicdl_search(data),
+    }
+
+
 # ------------------------------------------------- 网易扫码（反代 musicbox） --
 
 @app.api_route("/api/netease/auth/{path:path}", methods=["GET", "POST"])

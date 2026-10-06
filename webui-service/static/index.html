@@ -99,6 +99,15 @@
             <div id="platform-list" class="chip-grid pad"></div>
             <p class="hint" id="platform-note"></p>
           </div>
+          <div class="card">
+            <div class="card-title">音源测试</div>
+            <p class="hint">输入歌名，用当前勾选的平台试搜一次（只读，不写曲库），逐平台报告是否出歌。</p>
+            <div class="btn-row">
+              <input class="input grow" id="musicdl-test-q" placeholder="歌名，如：晴天" value="晴天">
+              <button class="btn" id="musicdl-test-run">测试搜索</button>
+            </div>
+            <div id="musicdl-test-result" class="report" hidden></div>
+          </div>
         </div>
 
         <!-- lx：源 URL / 文件上传 -->

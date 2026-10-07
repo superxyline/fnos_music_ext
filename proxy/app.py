@@ -132,6 +132,12 @@ CONF = {
     "lyric_field": os.environ.get("FNMUSIC_LYRIC_FIELD", "data.lyric"),
     "search_timeout": float(os.environ.get("FNMUSIC_SEARCH_TIMEOUT", "15")),
     "search_probe": os.environ.get("FNMUSIC_SEARCH_PROBE", "false").lower() in ("true", "1", "yes"),
+    # App 1.0.2（build 102013）搜索会调 /music/api/v1/search/tracks（复数）端点，
+    # 官方后端无此路由、返回 SPA HTML，App 解析失败=搜索永远无结果。拦截后按
+    # 单数 /search/track 同款逻辑增强；关闭则透传官方（仅旧版 App 可用）。
+    "app_v2_search": os.environ.get("FNMUSIC_APP_V2_SEARCH", "true").lower() in ("true", "1", "yes"),
+    # search 请求日志附带 query（截断），App 端搜索兼容问题远程定位用
+    "search_log_query": os.environ.get("FNMUSIC_SEARCH_LOG_QUERY", "true").lower() in ("true", "1", "yes"),
     "search_cache_ttl": float(os.environ.get("FNMUSIC_SEARCH_CACHE_TTL", "604800")),
     "late_page_wait_s": float(os.environ.get("FNMUSIC_LATE_PAGE_WAIT_S", "5.0")),
     "fav_dir": os.environ.get(
@@ -453,6 +459,8 @@ _ENV_WATCH_KEYS: dict[str, tuple[str, str]] = {
     "FNMUSIC_ONLINE_SOURCES": ("online_sources", "str"),
     "LX_SOURCES": ("lx_sources", "lx_sources"),
     "FNMUSIC_SEARCH_PROBE": ("search_probe", "bool"),
+    "FNMUSIC_APP_V2_SEARCH": ("app_v2_search", "bool"),
+    "FNMUSIC_SEARCH_LOG_QUERY": ("search_log_query", "bool"),
     "FNMUSIC_QUALITY_MODE": ("quality_mode", "quality_mode"),
     "FNMUSIC_TEE_SAVE_ENABLED": ("tee_save_enabled", "bool"),
     "FNMUSIC_TEE_SAVE_DIR": ("tee_save_dir", "str"),
@@ -2786,6 +2794,16 @@ async def log_client_requests(request: Request, call_next):
     response = await call_next(request)
     if request.url.path.startswith("/music/"):
         ua = re.sub(r"\s+", " ", request.headers.get("user-agent") or "-")[:100]
+        if CONF.get("search_log_query") and request.url.path.startswith("/music/api/v1/search"):
+            # query 截断（App 搜索兼容定位用）；takeover 白名单按固定格式放行
+            logger.info(
+                "search request %s %s?%s status=%s ua=%s",
+                request.method,
+                request.url.path,
+                request.url.query[:120],
+                response.status_code,
+                ua,
+            )
         logger.info(
             "client request %s %s status=%s ua=%s",
             request.method,
@@ -2850,8 +2868,13 @@ async def ext_healthz(request: Request):
 
 @app.get("/music/api/v1/search/track")
 @app.get("/music/api/v1/search/track/{subpath:path}")
+@app.get("/music/api/v1/search/tracks")
+@app.get("/music/api/v1/search/tracks/{subpath:path}")
 async def search_track(request: Request):
     upstream_client = get_upstream_client(request.app)
+    # App 1.0.2 新端点（复数）：开关关闭时透传官方（返回 HTML，仅老版 App 可搜）
+    if request.url.path.startswith("/music/api/v1/search/tracks") and not CONF.get("app_v2_search"):
+        return await forward_to_upstream(request, upstream_client)
     musicdl_client = get_musicdl_client(request.app)
     musicbox_client = get_musicbox_client(request.app)
     keyword = extract_keyword(request)
@@ -2875,6 +2898,10 @@ async def search_track(request: Request):
         size = 50
 
     url_path = request.url.path
+    # 复数端点：官方后端只有单数 /search/track 路由（复数会返回 SPA HTML），
+    # 转发官方前把路径改写回单数，查询串不动。
+    if url_path.startswith("/music/api/v1/search/tracks"):
+        url_path = url_path.replace("/music/api/v1/search/tracks", "/music/api/v1/search/track", 1)
     if request.url.query:
         url_path = f"{url_path}?{request.url.query}"
     headers = copy_incoming_headers(request)

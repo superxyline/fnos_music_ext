@@ -160,6 +160,10 @@
           <label class="switch-row"><span>逐曲探活(beta)<div class="sub">搜索时预先对候选歌曲进行直链解析与网络探活，确保“搜得到必能播”；但由于第三方音源解析较慢，开启后容易造成搜索超时甚至无法搜出结果，建议保持关闭。</div></span><input type="checkbox" id="search-probe"></label>
         </div>
         <div class="card">
+          <label class="switch-row"><span>App 新版搜索端点兼容<div class="sub">飞牛音乐 App 1.0.2 起搜索改用 /search/tracks 新端点，官方后端并不支持（返回网页导致搜索永远无结果）。开启后由代理接管该端点并叠加在线搜索结果；仅当旧版 App 搜索异常时才尝试关闭。</div></span><input type="checkbox" id="app-v2-search"></label>
+          <label class="switch-row"><span>搜索日志带关键词<div class="sub">在服务日志中记录 App 搜索请求的关键词（已截断），便于远程定位搜索问题。</div></span><input type="checkbox" id="search-log-query"></label>
+        </div>
+        <div class="card">
           <label class="field"><span>搜索超时时间</span>
             <input class="input" id="search-timeout" type="number" min="1" max="60" step="1" inputmode="numeric">
           </label>

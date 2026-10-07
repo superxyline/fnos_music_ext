@@ -74,7 +74,6 @@ SCHEMA: dict[str, dict] = {
     "FNMUSIC_FAVORITE_DOWNLOAD_ENABLED": {"kind": "bool", "default": "true", "group": "tee", "reload": "hot", "label": "收藏自动下载"},
     "FNMUSIC_TEE_SAVE_DIR": {"kind": "str", "default": "", "group": "tee", "reload": "hot", "label": "保存路径（留空自动探测）"},
     "FNMUSIC_TEE_CACHE_MAX": {"kind": "int", "default": "2", "min": 1, "max": 100, "group": "tee", "reload": "hot", "label": "关闭时滚动缓存数"},
-    "FNMUSIC_FAV_AUTO_BIND": {"kind": "bool", "default": "false", "group": "tee", "reload": "hot", "label": "收藏自动绑定本地"},
     "FNMUSIC_AUTO_COVER": {"kind": "bool", "default": "true", "group": "tee", "reload": "hot", "label": "自动下载封面"},
     "FNMUSIC_LYRIC_AUTO_DL": {"kind": "bool", "default": "false", "group": "tee", "reload": "hot", "label": "自动下载歌词"},
     "FNMUSIC_OFFICIAL_BIND_TIMEOUT_S": {"kind": "int", "default": "120", "min": 10, "max": 3600, "group": "tee", "reload": "hot", "label": "官方绑定等待（秒）"},
@@ -85,6 +84,8 @@ SCHEMA: dict[str, dict] = {
     "FNMUSIC_LLM_MODEL": {"kind": "str", "default": "gpt-4o-mini", "group": "llm", "reload": "hot", "label": "模型"},
     "FNMUSIC_SEARCH_TIMEOUT": {"kind": "int", "default": "15", "min": 1, "max": 60, "group": "search", "reload": "hot", "label": "搜索超时时间"},
     "FNMUSIC_SEARCH_PROBE": {"kind": "bool", "default": "false", "group": "search", "reload": "hot", "label": "逐曲探活(beta)"},
+    "FNMUSIC_APP_V2_SEARCH": {"kind": "bool", "default": "true", "group": "search", "reload": "hot", "label": "App 新版搜索端点兼容"},
+    "FNMUSIC_SEARCH_LOG_QUERY": {"kind": "bool", "default": "true", "group": "search", "reload": "hot", "label": "搜索请求日志带关键词"},
     "FNMUSIC_NETEASE_MY_PLAYLISTS": {"kind": "bool", "default": "false", "group": "source", "reload": "hot", "label": "网易账号歌单"},
 }
 

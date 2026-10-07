@@ -2507,3 +2507,79 @@ def test_search_track_pagination_respected_size_untouched():
         p2 = client.get("/music/api/v1/search/track?keyword=x&page=2&size=10").json()
     # 返回条数(10)不超 size(10)：原样透传第 2 页，不被切片清空
     assert [str(i["guid"]) for i in p2["data"]["list"]] == [f"local:{i}" for i in range(10, 20)]
+
+
+def _tracks_v2_clients(upstream_json, seen_paths=None):
+    def upstream_handler(request: httpx.Request) -> httpx.Response:
+        if seen_paths is not None:
+            seen_paths.append(str(request.url))
+        return httpx.Response(200, json=upstream_json)
+
+    def musicbox_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"ok": False, "data": []})
+
+    def musicdl_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": True, "items": []})
+
+    app.state.upstream_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream_handler), base_url="http://unix"
+    )
+    app.state.musicdl_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(musicdl_handler), base_url="http://127.0.0.1:8768"
+    )
+    app.state.musicbox_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(musicbox_handler), base_url="http://127.0.0.1:8770"
+    )
+
+
+def test_search_tracks_plural_intercepted_like_singular():
+    """App 1.0.2 用 /search/tracks（复数）端点：拦截后与单数同款增强。
+
+    官方后端只有单数路由（复数返回 SPA HTML），转发官方的路径必须改写回单数。
+    """
+    seen: list[str] = []
+    _tracks_v2_clients(
+        {
+            "code": 0,
+            "msg": "OK",
+            "data": {"list": [{"guid": "local:7", "title": "最佳损友", "artist": "陈奕迅"}], "total": 1},
+        },
+        seen_paths=seen,
+    )
+    with TestClient(app) as client:
+        resp = client.get("/music/api/v1/search/tracks?q=最佳损友&page=1&size=20")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 0
+    assert body["data"]["total"] == 1
+    assert [it["guid"] for it in body["data"]["list"]] == ["local:7"]
+    # 转发官方的路径已改写为单数（query 原样保留）
+    assert seen and "/music/api/v1/search/track?" in seen[0]
+    assert "search/tracks" not in seen[0]
+
+
+def test_search_tracks_plural_passthrough_when_disabled(monkeypatch):
+    """开关 FNMUSIC_APP_V2_SEARCH=false 时复数端点透传官方（旧行为）。"""
+    monkeypatch.setitem(CONF, "app_v2_search", False)
+    marker = {"hits": 0}
+
+    def upstream_handler(request: httpx.Request) -> httpx.Response:
+        marker["hits"] += 1
+        return httpx.Response(200, json={"code": 0, "data": {"list": [], "total": 0}})
+
+    app.state.upstream_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream_handler), base_url="http://unix"
+    )
+    app.state.musicdl_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"ok": True, "items": []})),
+        base_url="http://127.0.0.1:8768",
+    )
+    app.state.musicbox_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(404, json={"ok": False})),
+        base_url="http://127.0.0.1:8770",
+    )
+    with TestClient(app) as client:
+        resp = client.get("/music/api/v1/search/tracks?q=x")
+    assert resp.status_code == 200
+    assert resp.json() == {"code": 0, "data": {"list": [], "total": 0}}
+    assert marker["hits"] == 1

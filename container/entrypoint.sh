@@ -46,6 +46,16 @@ else
     log "未配置任何音源（FNMUSIC_MUSICDL_ENABLED/FNMUSIC_NETEASE_ENABLED/FNMUSIC_LX_ENABLED 均未启用）"
 fi
 
+# 网易账号歌单（FNMUSIC_NETEASE_MY_PLAYLISTS）：无论音源选谁，musicbox 常驻
+# 提供网易登录态/歌单/网易曲目取流（不参与搜索）。三选一已启动时 supervisor
+# 对 RUNNING 程序的 start 幂等失败，先查状态避免多一条 WARN 日志。
+if [ "$(env_flag FNMUSIC_NETEASE_MY_PLAYLISTS)" = "true" ]; then
+    _MB_STATE="$(supervisorctl -c "$SUP_CONF" status musicbox 2>/dev/null | awk '{print $2}')"
+    if [ "$_MB_STATE" != "RUNNING" ]; then
+        start_prog musicbox
+    fi
+fi
+
 # WebUI 默认随容器启动（--no-webui 安装会写 FNMUSIC_WEBUI_ENABLED=false）
 if [ "$(env_flag FNMUSIC_WEBUI_ENABLED)" = "true" ]; then
     start_prog webui

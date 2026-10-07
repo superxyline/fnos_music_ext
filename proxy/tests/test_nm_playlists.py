@@ -114,8 +114,10 @@ def test_playlist_list_injects_own_playlists_before_official():
         assert resp.status_code == 200
         lst = resp.json()["data"]["list"]
     guids = [it["guid"] for it in lst]
-    # 仅自建歌单注入（收藏的他人歌单 user_id != 账号 uid 不显示），插在官方歌单之前
-    assert guids == ["online:playlist:nm:111", "online:playlist:nm:333", "localpl"]
+    # v2.4.2 默认收藏歌单也注入（FNMUSIC_NETEASE_SUBSCRIBED）：按网易 API 行序，
+    # 插在官方歌单之前
+    assert guids == ["online:playlist:nm:111", "online:playlist:nm:222",
+                     "online:playlist:nm:333", "localpl"]
     card = lst[0]
     assert card["name"] == "我喜欢的音乐"
     assert card["isDaily"] is True
@@ -125,6 +127,40 @@ def test_playlist_list_injects_own_playlists_before_official():
     assert card["coverId"].startswith("track_") and len(card["coverId"]) == 38
     assert fake_official_guid(card["guid"]) == card["coverId"][6:]
     assert mb.state["calls"] == 1
+
+
+def test_playlist_list_subscribed_opt_out(monkeypatch):
+    """FNMUSIC_NETEASE_SUBSCRIBED=false：回到旧行为，仅注入自建歌单。"""
+    monkeypatch.setitem(CONF, "netease_subscribed", False)
+    _wire(_musicbox_handler(rows=PLAYLIST_ROWS, tracks=TRACK_ROWS))
+    with TestClient(app) as client:
+        resp = client.get("/music/api/v1/playlist/list")
+    guids = [it["guid"] for it in resp.json()["data"]["list"]]
+    assert guids == ["online:playlist:nm:111", "online:playlist:nm:333", "localpl"]
+
+
+def test_playlist_list_injection_without_netease_source(monkeypatch):
+    """音源非网易（netease_enabled=False）时歌单注入不再被音源绑定挡住。"""
+    monkeypatch.setitem(CONF, "netease_enabled", False)
+    monkeypatch.setitem(CONF, "musicdl_enabled", True)
+    _wire(_musicbox_handler(rows=PLAYLIST_ROWS, tracks=TRACK_ROWS))
+    with TestClient(app) as client:
+        resp = client.get("/music/api/v1/playlist/list")
+    guids = [it["guid"] for it in resp.json()["data"]["list"]]
+    assert "online:playlist:nm:111" in guids
+
+
+def test_source_enabled_allows_netease_when_playlists_on(monkeypatch):
+    """_source_enabled：网易歌单开启即放行网易曲目播放/歌词/详情链路。"""
+    from proxy.app import _source_enabled
+    guid = "online:netease:101"
+    monkeypatch.setitem(CONF, "netease_enabled", False)
+    monkeypatch.setitem(CONF, "netease_my_playlists", True)
+    assert _source_enabled(guid) is True
+    monkeypatch.setitem(CONF, "netease_my_playlists", False)
+    assert _source_enabled(guid) is False
+    monkeypatch.setitem(CONF, "netease_enabled", True)
+    assert _source_enabled(guid) is True
 
 
 def test_toggle_off_no_injection():
@@ -140,9 +176,24 @@ def test_toggle_off_no_injection():
         CONF["netease_my_playlists"] = True
 
 
-def test_source_disabled_no_injection():
+def test_source_disabled_injection_still_works():
+    """v2.4.2：音源非网易时歌单注入不再被挡（musicbox 由歌单开关常驻拉起）。"""
     mb = _wire(_musicbox_handler(rows=PLAYLIST_ROWS, tracks=TRACK_ROWS))
     CONF["netease_enabled"] = False
+    try:
+        with TestClient(app) as client:
+            resp = client.get("/music/api/v1/playlist/list")
+            lst = resp.json()["data"]["list"]
+        assert "online:playlist:nm:111" in [it["guid"] for it in lst]
+        assert mb.state["calls"] == 1
+    finally:
+        CONF["netease_enabled"] = True
+
+
+def test_playlists_switched_off_no_injection():
+    """网易账号歌单开关关闭：完全不注入，也不敲 musicbox。"""
+    mb = _wire(_musicbox_handler(rows=PLAYLIST_ROWS, tracks=TRACK_ROWS))
+    CONF["netease_my_playlists"] = False
     try:
         with TestClient(app) as client:
             resp = client.get("/music/api/v1/playlist/list")
@@ -150,7 +201,7 @@ def test_source_disabled_no_injection():
         assert [it["guid"] for it in lst] == ["localpl"]
         assert mb.state["calls"] == 0
     finally:
-        CONF["netease_enabled"] = True
+        CONF["netease_my_playlists"] = True
 
 
 def test_musicbox_down_silent_and_cooldown():

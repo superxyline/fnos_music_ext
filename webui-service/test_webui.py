@@ -694,7 +694,9 @@ def test_netease_my_playlists_defaults_and_saves(env_file):
         saved = client.put("/api/config", json={"values": {"FNMUSIC_NETEASE_MY_PLAYLISTS": True}})
         assert saved.status_code == 200
         assert "FNMUSIC_NETEASE_MY_PLAYLISTS" in saved.json()["changed"]
-        assert saved.json()["actions"] == []  # 热键无进程动作
+        # v2.4.2：开启歌单即常驻拉起 musicbox（测试环境 supervisorctl 缺失 → ok=False 但动作在）
+        actions = saved.json()["actions"]
+        assert any(a.get("program") == "musicbox" and a.get("op") == "start" for a in actions)
     assert "FNMUSIC_NETEASE_MY_PLAYLISTS='true'" in env_file.read_text(encoding="utf-8")
     with authed_client() as client:
         again = client.get("/api/config")

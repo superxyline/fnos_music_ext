@@ -72,19 +72,17 @@
           </label>
         </div>
 
-        <!-- musicbox：扫码登录 -->
-        <div class="subpanel" id="panel-musicbox" hidden>
-          <div class="card">
-            <div class="card-title">网易扫码登录</div>
-            <p class="hint">手机网易云音乐 App 扫码授权。登录态保存在数据卷，重启不丢失。</p>
-            <div class="qr-area">
-              <img id="qr-img" alt="登录二维码" hidden>
-              <div id="qr-status" class="muted">点击下方按钮生成二维码</div>
-            </div>
-            <div class="btn-row">
-              <button class="btn" id="qr-btn">生成二维码</button>
-              <span id="qr-check" class="muted"></span>
-            </div>
+        <!-- 网易账号登录：任意音源下常显（网易账号歌单/每日推荐的数据来源） -->
+        <div class="card">
+          <div class="card-title">网易账号登录</div>
+          <p class="hint">手机网易云音乐 App 扫码授权，任意音源下都可登录。登录态保存在数据卷，重启不丢失；用于网易账号歌单与每日推荐的网易名额。</p>
+          <div class="qr-area">
+            <img id="qr-img" alt="登录二维码" hidden>
+            <div id="qr-status" class="muted">点击下方按钮生成二维码</div>
+          </div>
+          <div class="btn-row">
+            <button class="btn" id="qr-btn">生成二维码</button>
+            <span id="qr-check" class="muted"></span>
           </div>
         </div>
 
@@ -131,7 +129,8 @@
 
         <div class="card">
           <div class="card-title">网易账号歌单</div>
-          <label class="switch-row"><span>音乐页显示网易账号歌单<div class="sub">需要「网易云音乐盒子」已启用并扫码登录。开启后，网易账号里自己创建的歌单会出现在音乐页「热门推荐」下方、官方歌单上方，点开就能听；收藏的他人歌单不显示。歌单只读：在音乐页往里加歌、移歌或删除都不会写回网易。默认关闭，保存后立即生效。</div></span><input type="checkbox" id="netease-my-playlists"></label>
+          <label class="switch-row"><span>音乐页显示网易账号歌单<div class="sub">任意音源下可用：开启后自动在后台拉起网易组件（只提供登录态与网易取流，不参与搜索）。网易账号里自己创建的歌单会出现在音乐页「热门推荐」下方、官方歌单上方，点开就能听。歌单只读：在音乐页往里加歌、移歌或删除都不会写回网易。默认关闭，保存后立即生效。</div></span><input type="checkbox" id="netease-my-playlists"></label>
+          <label class="switch-row"><span>显示收藏/关注的歌单<div class="sub">开启后，账号收藏的他人歌单连同自建歌单一起显示（「我喜欢的音乐」始终显示）；关闭则只显示自己创建的歌单。仅在上一项开启时生效。默认开启。</div></span><input type="checkbox" id="netease-subscribed"></label>
         </div>
       </section>
 

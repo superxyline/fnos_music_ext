@@ -110,7 +110,7 @@ function applyConfigToForm() {
     : v.FNMUSIC_LX_ENABLED === "true" ? "lxmusic" : "";
   $$("input[name=provider]").forEach((el) => { el.checked = el.value === provider; });
   syncProviderPanels(provider);
-  if (provider === "musicbox") syncNeteaseAccount();
+  syncNeteaseAccount(); // 扫码卡片常显：任意音源下都同步网易登录态
   const quality = v.FNMUSIC_QUALITY_MODE || "high";
   $$("input[name=quality]").forEach((el) => { el.checked = el.value === quality; });
   $("#recommend-hot").checked = v.FNMUSIC_RECOMMEND_HOT === "true";
@@ -134,6 +134,7 @@ function applyConfigToForm() {
   $("#app-v2-search").checked = v.FNMUSIC_APP_V2_SEARCH !== "false";
   $("#search-log-query").checked = v.FNMUSIC_SEARCH_LOG_QUERY !== "false";
   $("#netease-my-playlists").checked = v.FNMUSIC_NETEASE_MY_PLAYLISTS === "true";
+  $("#netease-subscribed").checked = v.FNMUSIC_NETEASE_SUBSCRIBED !== "false";
   $("#lx-url").value = v.LX_SOURCE_URL || "";
   lxVerifiedUrl = v.LX_SOURCE_URL || null;
   renderPlatformChips();
@@ -165,6 +166,7 @@ function collectConfig() {
     FNMUSIC_APP_V2_SEARCH: $("#app-v2-search").checked,
     FNMUSIC_SEARCH_LOG_QUERY: $("#search-log-query").checked,
     FNMUSIC_NETEASE_MY_PLAYLISTS: $("#netease-my-playlists").checked,
+    FNMUSIC_NETEASE_SUBSCRIBED: $("#netease-subscribed").checked,
   };
   if (provider === "musicdl") {
     values.FNMUSIC_ONLINE_SOURCES = platforms.enabled.join(",");
@@ -240,7 +242,6 @@ async function startPreview(provider) {
 
 function syncProviderPanels(provider) {
   $$(".provider-card").forEach((el) => el.classList.toggle("selected", el.dataset.provider === provider));
-  $("#panel-musicbox").hidden = provider !== "musicbox";
   $("#panel-musicdl").hidden = provider !== "musicdl";
   $("#panel-lxmusic").hidden = provider !== "lxmusic";
 }
@@ -801,7 +802,7 @@ $("#dedup-run").addEventListener("click", async () => {
 ["#tee-dir", "#tee-max", "#llm-base", "#llm-key", "#llm-model", "#lx-url", "#search-timeout", "#bind-timeout", "#handoff-max", "#scan-path"].forEach((sel) =>
   $(sel).addEventListener("input", () => markDirty()));
 $$("input[name=quality]").forEach((el) => el.addEventListener("change", () => markDirty("音质偏好需保存后生效")));
-["#recommend-hot", "#recommend-daily", "#search-probe", "#app-v2-search", "#search-log-query", "#tee-enabled", "#fav-download-enabled", "#auto-cover", "#lyric-auto-dl", "#netease-my-playlists"].forEach((sel) =>
+["#recommend-hot", "#recommend-daily", "#search-probe", "#app-v2-search", "#search-log-query", "#tee-enabled", "#fav-download-enabled", "#auto-cover", "#lyric-auto-dl", "#netease-my-playlists", "#netease-subscribed"].forEach((sel) =>
   $(sel).addEventListener("change", () => markDirty()));
 
 function updateTeeCountLabel() {

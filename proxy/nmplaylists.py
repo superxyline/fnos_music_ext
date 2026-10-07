@@ -275,16 +275,21 @@ def _iter_known_cards() -> list:
     return cards
 
 
-async def peek_summaries(client: httpx.AsyncClient) -> list:
-    """网易账号自建歌单卡片（热门推荐与官方歌单之间注入用）。
+async def peek_summaries(client: httpx.AsyncClient, include_subscribed: bool = True) -> list:
+    """网易账号歌单卡片（热门推荐与官方歌单之间注入用）。
+
+    include_subscribed=True（默认）时收藏/关注的他人歌单与自建歌单一起注入；
+    False 仅注入自建（旧行为）。「我喜欢的音乐」是网易自建歌单第一个，
+    两种模式都包含。开关切换后缓存模式不匹配会立即重拉。
 
     成功 → 内存 TTL 5 分钟 + 落盘；失败 / 未登录 → 冷却 2 分钟并回落磁盘
     （24h 内）；任何异常都只返回 []，绝不影响官方列表响应。
     """
     global _summaries, _fail_until, _disk_cards
     now = time.monotonic()
+    mode = bool(include_subscribed)
     cached = _summaries
-    if cached and now - cached["saved_at"] < _SUMMARY_TTL_S:
+    if cached and cached.get("mode") == mode and now - cached["saved_at"] < _SUMMARY_TTL_S:
         return list(cached["cards"])
     if now < _fail_until:
         return list((cached or {}).get("cards") or [])
@@ -320,8 +325,8 @@ async def peek_summaries(client: httpx.AsyncClient) -> list:
             owner = int(row.get("user_id") or 0)
         except (TypeError, ValueError):
             owner = 0
-        if owner != uid:
-            continue  # 收藏的他人歌单不注入
+        if owner != uid and not include_subscribed:
+            continue  # 收藏的他人歌单：仅在 include_subscribed 开启时注入
         card = _card_from_row(row)
         if card:
             cards.append(card)
@@ -329,7 +334,7 @@ async def peek_summaries(client: httpx.AsyncClient) -> list:
             if pid and _cover_urls.get(pid):
                 new_covers[pid] = _cover_urls[pid]
     _fail_until = 0.0
-    _summaries = {"cards": cards, "saved_at": now}
+    _summaries = {"cards": cards, "saved_at": now, "mode": mode}
     _disk_cards = None  # 内存新数据已覆盖，磁盘视图按需重读
     if cards:
         _persist_summaries(cards, new_covers)

@@ -87,6 +87,7 @@ SCHEMA: dict[str, dict] = {
     "FNMUSIC_APP_V2_SEARCH": {"kind": "bool", "default": "true", "group": "search", "reload": "hot", "label": "App 新版搜索端点兼容"},
     "FNMUSIC_SEARCH_LOG_QUERY": {"kind": "bool", "default": "true", "group": "search", "reload": "hot", "label": "搜索请求日志带关键词"},
     "FNMUSIC_NETEASE_MY_PLAYLISTS": {"kind": "bool", "default": "false", "group": "source", "reload": "hot", "label": "网易账号歌单"},
+    "FNMUSIC_NETEASE_SUBSCRIBED": {"kind": "bool", "default": "true", "group": "source", "reload": "hot", "label": "网易收藏歌单"},
 }
 
 _PROVIDER_KEYS = set(PROVIDERS.values())
@@ -170,17 +171,33 @@ def supervisor_status() -> dict[str, dict]:
 
 
 def switch_provider_process(old: str, new: str) -> list[dict]:
-    """切源进程：先停旧再起新；失败逐项记录，不抛出。"""
+    """切源进程：先停旧再起新；失败逐项记录，不抛出。
+
+    网易账号歌单开启时 musicbox 常驻（提供网易登录态/歌单/取流），切源不停它。
+    """
     actions: list[dict] = []
     if old and old != new:
-        code, out = supervisorctl("stop", old)
-        actions.append({"kind": "process", "program": old, "op": "stop",
-                        "ok": code == 0, "error": "" if code == 0 else out})
+        if old == "musicbox" and musicbox_pinned():
+            actions.append({"kind": "process", "program": "musicbox", "op": "keep",
+                            "ok": True, "error": ""})
+        else:
+            code, out = supervisorctl("stop", old)
+            actions.append({"kind": "process", "program": old, "op": "stop",
+                            "ok": code == 0, "error": "" if code == 0 else out})
     if new:
         code, out = supervisorctl("start", new)
         actions.append({"kind": "process", "program": new, "op": "start",
                         "ok": code == 0, "error": "" if code == 0 else out})
     return actions
+
+
+def musicbox_pinned(values: "dict[str, str] | None" = None) -> bool:
+    """网易账号歌单开启时 musicbox 常驻：不参与预览清退与切源停止。"""
+    try:
+        kv = values if values is not None else read_env()
+    except Exception:  # noqa: BLE001
+        return False
+    return str(kv.get("FNMUSIC_NETEASE_MY_PLAYLISTS", "")).lower() in ("true", "1", "yes")
 
 
 # ------------------------------------------------------------------ 音源预览（临时拉起） --
@@ -214,7 +231,7 @@ def preview_reap() -> list[str]:
     stopped: list[str] = []
     enabled = current_provider(read_env())
     for provider, deadline in list(_preview_until.items()):
-        if provider == enabled:
+        if provider == enabled or (provider == "musicbox" and musicbox_pinned()):
             _preview_until.pop(provider, None)
         elif deadline <= time.monotonic():
             code, out = supervisorctl("stop", PROVIDER_PROGRAM[provider])
@@ -228,11 +245,14 @@ def preview_reap() -> list[str]:
 
 
 def preview_reconcile_after_save() -> list[dict]:
-    """保存成功后的收尾：预览转正的进程保留，其余预览进程立即停止。"""
+    """保存成功后的收尾：预览转正的进程保留，其余预览进程立即停止。
+
+    网易账号歌单开启时 musicbox 常驻，不做预览清退。
+    """
     enabled = current_provider(read_env())
     actions: list[dict] = []
     for provider in list(_preview_until):
-        if provider == enabled:
+        if provider == enabled or (provider == "musicbox" and musicbox_pinned()):
             _preview_until.pop(provider, None)
             continue
         _preview_until.pop(provider, None)
@@ -515,6 +535,14 @@ async def api_config_put(body: ConfigBody, request: Request):
     ):
         code, out = supervisorctl("restart", "musicdl")
         actions.append({"kind": "process", "program": "musicdl", "op": "restart",
+                        "ok": code == 0, "error": "" if code == 0 else out})
+
+    # 网易账号歌单开启：立即常驻拉起 musicbox（不等容器重启）；关闭时进程保留，
+    # 下次容器重启自然收回（避免保存瞬间打断正在播放的网易歌单曲目）
+    if "FNMUSIC_NETEASE_MY_PLAYLISTS" in changed and musicbox_pinned(after):
+        _preview_until.pop("musicbox", None)
+        code, out = supervisorctl("start", "musicbox")
+        actions.append({"kind": "process", "program": "musicbox", "op": "start",
                         "ok": code == 0, "error": "" if code == 0 else out})
 
     # 预览收尾：保存启用的转正常驻，其余预览进程立即停止

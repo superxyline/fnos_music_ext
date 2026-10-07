@@ -157,6 +157,9 @@ CONF = {
     # 网易账号歌单注入（2.6.0）：默认关；需网易盒子启用并扫码登录，
     # 音乐页在热门推荐与官方歌单之间展示账号自建歌单（只读，不回写网易）
     "netease_my_playlists": os.environ.get("FNMUSIC_NETEASE_MY_PLAYLISTS", "false").lower() in ("true", "1", "yes"),
+    # 收藏/关注的他人歌单也注入（v2.4.2）：默认开；仅在 netease_my_playlists 开启时生效。
+    # musicbox 拉取的账号歌单本就含自建+收藏，此前一律过滤 owner!=uid 的收藏歌单
+    "netease_subscribed": os.environ.get("FNMUSIC_NETEASE_SUBSCRIBED", "true").lower() in ("true", "1", "yes"),
     "cover_enrich": os.environ.get("FNMUSIC_COVER_ENRICH", "true").lower() in ("true", "1", "yes"),
     "env_watch": os.environ.get("FNMUSIC_ENV_WATCH", "true").lower() in ("true", "1", "yes"),
     # 官方端点取证：未拦截的 /music/api 请求首见 INFO、之后每 50 次采样一条；
@@ -473,6 +476,7 @@ _ENV_WATCH_KEYS: dict[str, tuple[str, str]] = {
     "FNMUSIC_RECOMMEND_HOT": ("recommend_hot", "bool"),
     "FNMUSIC_RECOMMEND_DAILY": ("recommend_daily", "bool"),
     "FNMUSIC_NETEASE_MY_PLAYLISTS": ("netease_my_playlists", "bool"),
+    "FNMUSIC_NETEASE_SUBSCRIBED": ("netease_subscribed", "bool"),
     "FNMUSIC_COVER_ENRICH": ("cover_enrich", "bool"),
     "FNMUSIC_TRACE_FORWARD": ("trace_forward", "bool"),
     "FNMUSIC_LLM_BASE_URL": ("llm_base_url", "llm_url"),
@@ -623,15 +627,23 @@ def _search_scope(request: Request) -> str:
 
 def _source_enabled(guid: str) -> bool:
     source = source_from_online_guid(guid)
-    if not CONF.get({"netease": "netease_enabled", "lx": "lx_enabled"}.get(source, "musicdl_enabled")):
-        return False
-    if source == "lx":
+    if source == "netease":
+        # 网易账号歌单（FNMUSIC_NETEASE_MY_PLAYLISTS）拉起 musicbox 后，网易
+        # 曲目的播放/歌词/详情链路不再要求音源三选一选中网易；搜索聚合仍由
+        # netease_enabled 单独控制（_aggregate_search / fetch_musicbox_search）。
+        if not (CONF.get("netease_enabled") or CONF.get("netease_my_playlists")):
+            return False
+    elif source == "lx":
         # lx 平台白名单（online:lx:<platform>:<id>）；未配置 = 跟随 lx 服务全部已启用平台
+        if not CONF.get("lx_enabled"):
+            return False
         selected = CONF.get("lx_sources") or []
         if selected:
             parts = guid.split(":")
             return len(parts) >= 4 and parts[2] in selected
         return True
+    elif not CONF.get("musicdl_enabled"):
+        return False
     if source != "netease" and CONF.get("online_sources"):
         selected = {name.strip().lower().removesuffix("musicclient") for name in str(CONF["online_sources"]).split(",")}
         return source.lower() in selected
@@ -6073,8 +6085,10 @@ async def playlist_list(request: Request):
         return auth_resp or JSONResponse(content=envelope, headers=headers)
 
     kinds = _recommend_injectable_kinds(user_guid)
-    # 网易账号歌单：实例级内容（同热门推荐），shared 会话同样可见
-    nm_on = bool(CONF.get("netease_my_playlists")) and bool(CONF.get("netease_enabled"))
+    # 网易账号歌单：实例级内容（同热门推荐），shared 会话同样可见。
+    # v2.4.2 起不再要求音源=网易：开关打开即由 entrypoint/切源逻辑常驻拉起
+    # musicbox（只提供登录态/歌单/网易取流，不参与搜索）
+    nm_on = bool(CONF.get("netease_my_playlists"))
     if not kinds and not nm_on:
         # 两个推荐开关全关（或 shared 会话无任何可注入类型）且账号歌单关闭：不注入
         return JSONResponse(content=envelope, headers=headers)
@@ -6104,7 +6118,10 @@ async def playlist_list(request: Request):
     nm_cards: list[dict] = []
     if nm_on:
         try:
-            nm_cards = await nmpl.peek_summaries(get_musicbox_client(request.app))
+            nm_cards = await nmpl.peek_summaries(
+                get_musicbox_client(request.app),
+                include_subscribed=bool(CONF.get("netease_subscribed", True)),
+            )
             for card in nm_cards:
                 g = str(card.get("guid") or "")
                 if is_online_guid(g):

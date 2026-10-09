@@ -716,3 +716,60 @@ def test_api_accessible_without_admin_header(env_file):
         saved = client.put("/api/config", json={"values": {"FNMUSIC_QUALITY_MODE": "smooth"}})
         assert saved.status_code == 200
     assert "FNMUSIC_QUALITY_MODE='smooth'" in env_file.read_text(encoding="utf-8")
+
+# ------------------------------------------------- v2.7.0 T7：预览回滚与重试激活 ---
+
+def test_preview_endpoint_healthcheck_failure_rolls_back(env_file, monkeypatch):
+    """预览进程启动成功但健康检查不过：停掉进程回滚，不留半死预览（上游 T7，单进程适配）。"""
+    calls: list[tuple] = []
+
+    def fake_supervisorctl(cmd, prog, timeout=20.0):
+        calls.append((cmd, prog))
+        return 0, "ok"
+
+    monkeypatch.setattr(webui, "supervisorctl", fake_supervisorctl)
+    # 轮询压到 2 次 × 0：快速走到健康检查失败分支（不 patch 全局 asyncio.sleep，
+    # 那会连 TestClient 的调度一起废掉导致忙等卡死——实测教训）
+    monkeypatch.setattr(webui, "PREVIEW_HEALTH_TRIES", 2)
+    monkeypatch.setattr(webui, "PREVIEW_HEALTH_INTERVAL", 0)
+    # healthz 恒 500：轮询走满后健康检查失败
+    webui.app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(500, json={"ok": False})))
+    with authed_client() as client:
+        r = client.post("/api/preview", json={"provider": "musicdl"})
+        assert r.status_code == 504
+        assert "musicdl" not in webui._preview_until
+    assert ("start", "musicdl") in calls
+    assert ("stop", "musicdl") in calls
+
+
+def test_api_config_put_retries_lx_activate_when_env_unchanged(env_file, svctl):
+    """.env 无 diff 时重新提交 LX_SOURCE_URL：仍重试 lx 激活（上游 T7）。"""
+    import json
+    env_content = (
+        "FNMUSIC_NETEASE_ENABLED='false'\n"
+        "FNMUSIC_MUSICDL_ENABLED='false'\n"
+        "FNMUSIC_LX_ENABLED='true'\n"
+        "LX_SOURCE_URL='http://lx.test/source.js'\n"
+    )
+    env_file.write_text(env_content, encoding="utf-8")
+    activate_calls: list[dict] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/source":
+            activate_calls.append(json.loads(request.content.decode()))
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(404, json={"ok": False})
+
+    webui.app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler))
+
+    with authed_client() as client:
+        r = client.put("/api/config", json={"values": {"LX_SOURCE_URL": "http://lx.test/source.js"}})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+        lx_actions = [a for a in data["actions"] if a["kind"] == "lx_activate"]
+        assert len(lx_actions) == 1
+        assert lx_actions[0]["ok"] is True, f"lx_activate failed: {lx_actions[0].get('error')}"
+    assert len(activate_calls) == 1
+    assert activate_calls[0]["url"] == "http://lx.test/source.js"

@@ -773,3 +773,15 @@ def test_api_config_put_retries_lx_activate_when_env_unchanged(env_file, svctl):
         assert lx_actions[0]["ok"] is True, f"lx_activate failed: {lx_actions[0].get('error')}"
     assert len(activate_calls) == 1
     assert activate_calls[0]["url"] == "http://lx.test/source.js"
+
+
+def test_html_and_static_served_with_no_cache(env_file):
+    """升级后 WebView 不得沿用旧页面：HTML/静态资源必须带 no-cache（协商缓存）。"""
+    (webui.STATIC_DIR / "app.js").write_text("// js", encoding="utf-8")
+    (webui.STATIC_DIR / "index.html").write_text("<html></html>", encoding="utf-8")
+    with authed_client() as client:
+        assert client.get("/").headers["cache-control"] == "no-cache"
+        assert client.get("/static/app.js").headers["cache-control"] == "no-cache"
+        # 接口响应不受影响（本来就是动态的）
+        r = client.get("/api/config")
+    assert "cache-control" not in r.headers

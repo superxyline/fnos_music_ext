@@ -18,6 +18,7 @@ from netease_ext import (
     playlist_track_ids,
     reset_api,
     search_web_fallback,
+    song_detail_raw,
     song_lyric_pair,
     user_playlists as fetch_user_playlists,
 )
@@ -108,11 +109,28 @@ def search(
     keyword: str = Query(...),
     type: str = Query("song"),
     limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
 ):
     if not keyword.strip():
         raise HTTPException(status_code=400, detail="keyword cannot be empty")
     if type not in SEARCH_TYPES:
         raise HTTPException(status_code=400, detail=f"Invalid type {type!r}")
+
+    if offset > 0:
+        # CLI search 无 offset 参数；深分页直接走官方 web 搜索接口（原生分页）。
+        try:
+            page_items = search_web_fallback(keyword, stype=type, limit=limit, offset=offset)
+        except Exception as exc:
+            logger.warning("offset search failed: %s", exc)
+            page_items = []
+        if page_items and type == "song":
+            song_ids = [it["song_id"] for it in page_items if it.get("song_id")]
+            if song_ids:
+                playable = filter_playable_song_ids(song_ids)
+                filtered = [it for it in page_items if it.get("song_id") in playable]
+                if filtered:
+                    page_items = filtered
+        return {"ok": True, "code": 200, "data": page_items}
 
     res = None
     fallback_needed = False
@@ -187,6 +205,11 @@ def song_url(song_id: int = Path(..., ge=1), quality: str = Query("exhigh")):
 
 @app.get("/api/v1/song/{song_id}/info")
 def song_info(song_id: int = Path(..., ge=1)):
+    # 进程内直取优先（毫秒级）：CLI 子进程冷启动常超代理侧 4s 预算，导致
+    # 封面/时长主路径超时回落。异常或空结果再降级 CLI 兜底。
+    raw = song_detail_raw(song_id)
+    if raw is not None:
+        return {"ok": True, "data": raw}
     return exec_musicbox(["song", "info", str(song_id), "--json"])
 
 
@@ -252,7 +275,11 @@ def _cli_error_or_raise(exc: UpstreamException) -> Any:
 
 
 def _playable_recommendation_rows(rows: Any, limit: int) -> list[dict]:
-    """CLI 推荐输出 -> 批量详情 + 可播过滤（未登录剔除 VIP/试听片段）。"""
+    """CLI 推荐输出 -> 批量详情 + 可播过滤（未登录剔除 VIP/试听片段）。
+
+    2.8.0 起批量详情不再内联可播过滤（封面与可播性解耦），推荐行的可播
+    过滤在此显式执行——推荐是可播列表用途，与纯展示封面不同。
+    """
     ids: list[int] = []
     if isinstance(rows, list):
         for it in rows:
@@ -264,7 +291,9 @@ def _playable_recommendation_rows(rows: Any, limit: int) -> list[dict]:
                 sid = 0
             if sid > 0:
                 ids.append(sid)
-    return batch_song_details(ids[:100])[:limit]
+    hydrated = batch_song_details(ids[:100])
+    playable = filter_playable_song_ids([int(row["song_id"]) for row in hydrated])
+    return [row for row in hydrated if int(row["song_id"]) in playable][:limit]
 
 
 @app.get("/api/v1/recommend/songs")

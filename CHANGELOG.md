@@ -5,6 +5,14 @@
 
 > 以下 v2.3.1 起为本仓库（superxyline 二次开发版）的增量变更；v2.3.0 及之前为上游 javycoder/fnos_music_ext 的变更。
 
+## [3.1.0] - 2026-10-11
+
+### 新增
+
+- **B 站音源（自研平台，musicdl 体系第三平台）**：B 站海量免费歌曲 MV/投稿抓音轨当音源——官方 web API 搜索（实测无需 cookie/签名 0.43s）+ DASH 音轨解析（未登录即可 192k AAC，登录可更高），直链搜索期即解析好、失效走既有 refresh 重搜重解析；播放/收藏/边听边存/来源标记 `[dl]` 全链路自动继承。**视频标题清洗为正经歌名+歌手**（书名号提取/装饰块剥离/keyword 锚定分段/平局取短段等规则，11 形态用例锁定）——飞牛官方刮削按"歌名+歌手"匹配，视频标题原样落库即废。musicdl 库自带失效的 BilibiliMusicClient 由自研实现旁路；B 站标准 AAC 流跳过 3MB 无损解码探针。启用：WebUI「musicdl 平台」勾选 BilibiliMusicClient（.env 的 FNMUSIC_ONLINE_SOURCES/MUSICDL_SOURCES 同步）。
+
+
+
 ## [3.0.0] - 2026-10-11
 
 ### 合并上游 v2.8.0/v2.8.1（精选三项 + 安全子集）

@@ -198,8 +198,28 @@ def _cache_get(song_id: str):
         return _SONG_CACHE.get(song_id)
 
 
+# === B 站音源（自研，2026-10-11）=============================================
+# B 站有大量免费歌曲 MV/投稿，DASH 流音轨（m4a AAC 64k/132k/192k，未登录即
+# 可取 192k）抓出来即可当音源。musicdl 库自带的 BilibiliMusicClient 已失效
+# （实测静默 0 条），改用 bili_source.py 自研接入（官方 web API，实测无需
+# cookie/签名），对上层保持同一契约：搜索产出 duck-typing SongInfo（直链
+# 搜索期即解析好，几小时有效，过期走既有 refresh 重搜重解析），播放/收藏/
+# 边听边存全链路自动继承。标题清洗（bili_source.parse_title）产出正经歌名
+# +歌手——飞牛官方刮削按"歌名+歌手"匹配，视频标题原样落库即废。
+
+_BILI_SOURCE = "BilibiliMusicClient"
+
+
+def _bili_search_songs(keyword: str, limit: int) -> list:
+    import bili_source
+    return bili_source.search_songs(keyword, limit)
+
+
 def _search_one_source(source: str, keyword: str, limit: int) -> list:
     """单个源搜索（工作线程内执行，阻塞）。"""
+    if source == _BILI_SOURCE:
+        # B 站自研分支：绕过 musicdl 库（其自带 B 站源已失效），见上方区段注释
+        return _bili_search_songs(keyword, min(max(int(limit or 1), 1), int(CONF["search_page_cap"])))
     client = musicdl.MusicClient(
         music_sources=[source],
         init_music_clients_cfg={
@@ -519,8 +539,10 @@ async def _maybe_downgrade(id: str, entry: dict, url: str, quality: str,
                            range_header: "str | None") -> "tuple[str, dict]":
     """无损档坏流探测与 mp3 降级；返回最终 (url, 源站请求头)。"""
     ext = str(entry["item"].get("ext") or "").lower()
+    src = str(entry["item"].get("source") or "").lower()
     want_mp3 = str(quality or "").strip().lower() == "mp3"
-    if not want_mp3 and ext in _PROBE_EXTS:
+    # B 站音轨是官方转码的标准 AAC，无"损坏无损流"问题，跳过 3MB 解码探针
+    if not want_mp3 and ext in _PROBE_EXTS and src != "bilibili":
         probe_headers = dict(entry.get("download_headers") or {})
         if not await _head_probe(url, probe_headers, id):
             logger.warning("lossless stream corrupt for %s (ext=%s), downgrading to mp3", id, ext)

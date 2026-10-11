@@ -92,12 +92,14 @@ def clean_text(text: str) -> str:
 
 
 def _strip_known(song: str, artist: str) -> str:
-    """歌手候选里去掉与歌名重复的部分（如"《晴天》- 晴天"→""）。"""
+    """歌手候选里去掉与歌名重复的部分与歌词引文。"""
     artist = (artist or "").strip()
     if song and song.lower() in artist.lower():
         artist = artist.lower().replace(song.lower(), " ").strip()
         artist = _SPACE_RE.sub(" ", artist).strip(" -—–|")
-    return artist
+    # 歌词视频标题常见"歌手 -'歌词引文'"：引号段超 6 字视为引文丢弃
+    artist = re.sub(r"['‘’“”「」『』][^'‘’“”「」『』]{6,}['‘’“”「」『』]", " ", artist)
+    return _SPACE_RE.sub(" ", artist).strip(" -—–|")
 
 
 def parse_title(title: str, keyword: str) -> "tuple[str, str]":

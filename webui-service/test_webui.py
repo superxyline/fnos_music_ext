@@ -775,10 +775,12 @@ def test_api_config_put_retries_lx_activate_when_env_unchanged(env_file, svctl):
     assert activate_calls[0]["url"] == "http://lx.test/source.js"
 
 
-def test_html_and_static_served_with_no_cache(env_file):
+def test_html_and_static_served_with_no_cache(env_file, tmp_path, monkeypatch):
     """升级后 WebView 不得沿用旧页面：HTML/静态资源必须带 no-cache（协商缓存）。"""
-    (webui.STATIC_DIR / "app.js").write_text("// js", encoding="utf-8")
-    (webui.STATIC_DIR / "index.html").write_text("<html></html>", encoding="utf-8")
+    # 必须指向 tmp 目录：STATIC_DIR 是真实仓库前端文件，直接写会污染工作区（教训）
+    monkeypatch.setattr(webui, "STATIC_DIR", tmp_path)
+    (tmp_path / "app.js").write_text("// js", encoding="utf-8")
+    (tmp_path / "index.html").write_text("<html></html>", encoding="utf-8")
     with authed_client() as client:
         assert client.get("/").headers["cache-control"] == "no-cache"
         assert client.get("/static/app.js").headers["cache-control"] == "no-cache"

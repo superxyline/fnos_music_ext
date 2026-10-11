@@ -3626,21 +3626,30 @@ def _tee_finalize(part: str, guid: str, ext: str, info: dict | None, tee_enabled
             artist = artist or tag_artist
             album = album or tag_album
         dest = library_media_path(guid, title, ext, artist=artist, directory=tee_save_dir())
-        os.replace(part, dest)
+        if os.path.exists(dest):
+            # issue #52 同曲复用：同 guid 重复落盘或同曲跨 guid（聚合搜索多源
+            # 条目/跨平台候选切换）二次落库时，复用曲库已有文件——丢弃本次字节
+            # 绝不覆盖（用户自有文件与已有标签都不动），只刷新 guid 引用。
+            # 跨文件系统（缓存目录与曲库不同挂载点）时 os.replace 失败退化为
+            # 复制+删除，这里提前命中即无需处理。
+            _remove_quiet(part)
+            logger.info("library file already exists for %s, reuse %s", guid, dest)
+        else:
+            os.replace(part, dest)
+            if title.strip() or artist.strip():
+                write_audio_tags(dest, title, artist, album)
+                # 自动下载封面：音乐文件已完整落库才走到这里（下载失败根本进不了
+                # finalize），封面字节直接内嵌进音频——不产生独立封面文件，无孤儿
+                cover_url = _cover_url_of(src)
+                if cover_url and CONF.get("auto_cover", True):
+                    try:
+                        fetched = download_cover_bytes(cover_url)
+                        if fetched and embed_audio_cover(dest, fetched[0], fetched[1]):
+                            logger.info("cover embedded for %s: %s", guid, dest)
+                    except Exception as e:
+                        logger.debug("cover embed step skipped for %s: %s", guid, e)
         remember_media_path(guid, dest)
         adopt_library_perms(dest)
-        if title.strip() or artist.strip():
-            write_audio_tags(dest, title, artist, album)
-            # 自动下载封面：音乐文件已完整落库才走到这里（下载失败根本进不了
-            # finalize），封面字节直接内嵌进音频——不产生独立封面文件，无孤儿
-            cover_url = _cover_url_of(src)
-            if cover_url and CONF.get("auto_cover", True):
-                try:
-                    fetched = download_cover_bytes(cover_url)
-                    if fetched and embed_audio_cover(dest, fetched[0], fetched[1]):
-                        logger.info("cover embedded for %s: %s", guid, dest)
-                except Exception as e:
-                    logger.debug("cover embed step skipped for %s: %s", guid, e)
         # 自动下载歌词开启时，无音频时代落在 cache 的影子歌词跟随音频进曲库，词曲贴身
         if CONF.get("lyric_auto_dl"):
             promote_shadow_lyric(guid, dest)

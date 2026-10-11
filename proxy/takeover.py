@@ -526,7 +526,8 @@ _SAFE_OUTCOME = re.compile(
     r'Failed to (?:read|write|load|save|parse|remember)|failed to (?:read|write|load|map|purge)|'
     r'(?:favorite|play history) list degraded to official-only|'
     r'client request (?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS) /[!-~]{1,180} status=[1-5][0-9]{2} ua=[ -~]{1,100}|'
-    r'search request (?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS) /[!-~]{1,180}\?[!-~]{0,140} status=[1-5][0-9]{2} ua=[ -~]{1,100})',
+    r'search request (?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS) /[!-~]{1,180}\?[!-~]{0,140} status=[1-5][0-9]{2} ua=[ -~]{1,100}|'
+    r'\[diag\] [ -~]{0,300})',
     re.I,
 )
 

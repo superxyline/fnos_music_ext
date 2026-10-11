@@ -40,12 +40,14 @@ try:
     from .cache_gc import purge_rolling, sweep_orphan_lyrics
     from .env_merge import parse_env_file
     from .version import get_version
+    from .fnlog import diag as fn_diag  # noqa: F401  统一诊断日志（[diag] 固定格式过 takeover 白名单）
 except ImportError:  # uvicorn --app-dir proxy
     import recommend as dailyrec  # type: ignore
     import nmplaylists as nmpl  # type: ignore
     from cache_gc import purge_rolling, sweep_orphan_lyrics  # type: ignore
     from env_merge import parse_env_file  # type: ignore
     from version import get_version  # type: ignore
+    from fnlog import diag as fn_diag  # type: ignore  # noqa: F401
 
 logger = logging.getLogger("fnmusic_proxy")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")

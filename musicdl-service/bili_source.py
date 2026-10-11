@@ -9,7 +9,9 @@ playurl 0.18s、音轨直链免 Referer）。本模块不依赖 musicdl 库，�
 """
 from __future__ import annotations
 
+import logging
 import re
+import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 
@@ -48,26 +50,33 @@ _SEG_SPLIT_RE = re.compile(r"\s+(?:-|—|–|/)\s+|[｜|]")
 
 _RESOLVE_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="bili")
 
+logger = logging.getLogger("bili_source")
+
 
 def _get_json(path: str, params: dict, timeout: float = 5.0) -> "dict | None":
-    """B 站 web API GET；非 0 code / 网络失败返回 None。"""
+    """B 站 web API GET；非 0 code / 网络失败返回 None（B 站限流表现为 412/空结果）。"""
     url = f"{_BILI_BASE}{path}"
     try:
         if HAS_CURL_CFFI:
             r = curl_requests.get(url, params=params, headers=_BILI_HEADERS,
                                   impersonate="chrome", timeout=timeout)
-            if r.status_code != 200:
-                return None
-            data = r.json()
+            status, payload = r.status_code, r.json()
         else:
             with httpx.Client(timeout=timeout) as cx:
                 r = cx.get(url, params=params, headers=_BILI_HEADERS)
-                if r.status_code != 200:
-                    return None
-                data = r.json()
-    except Exception:
+                status, payload = r.status_code, r.json()
+    except Exception as exc:
+        logger.warning("bili api %s failed: %s", path, type(exc).__name__)
         return None
-    return data if isinstance(data, dict) and data.get("code") == 0 else None
+    if status != 200:
+        logger.warning("bili api %s http %s（多为风控限流，稍后重试可恢复）", path, status)
+        return None
+    if not isinstance(payload, dict) or payload.get("code") != 0:
+        logger.warning("bili api %s code=%r msg=%r", path,
+                       payload.get("code") if isinstance(payload, dict) else "?",
+                       str(payload.get("message"))[:60] if isinstance(payload, dict) else "?")
+        return None
+    return payload
 
 
 def clean_text(text: str) -> str:
@@ -159,31 +168,44 @@ def dur_to_s(raw: str) -> int:
 
 
 def search_videos(keyword: str, limit: int, timeout: float = 5.0) -> "list[dict]":
-    """B 站视频搜索（过滤超长合集），[{bvid,title,author,duration_s,cover}]。"""
-    data = _get_json("/x/web-interface/search/type", {
-        "search_type": "video", "keyword": keyword,
-        "page": 1, "page_size": min(30, limit * 3),
-    }, timeout=timeout)
-    if not data:
-        return []
-    rows = (data.get("data") or {}).get("result") or []
-    out = []
-    for it in rows:
-        if not isinstance(it, dict) or not it.get("bvid"):
+    """B 站视频搜索（过滤超长合集），[{bvid,title,author,duration_s,cover}]。
+
+    B 站对高频搜索有间歇性限流（HTTP 200 空结果或 412）：空结果退避 1s 重试
+    一次可吸收大部分抖动窗口（实测 2026-10-11）。
+    """
+    for attempt in (1, 2):
+        data = _get_json("/x/web-interface/search/type", {
+            "search_type": "video", "keyword": keyword,
+            "page": 1, "page_size": min(30, limit * 3),
+        }, timeout=timeout)
+        if data is None:
+            if attempt == 1:
+                time.sleep(1.0)
+                continue
+            return []
+        rows = (data.get("data") or {}).get("result") or []
+        if not rows and attempt == 1:
+            # code=0 但结果空：同为限流形态，退避重试一次
+            time.sleep(1.0)
             continue
-        dur = dur_to_s(it.get("duration"))
-        if dur and dur > MAX_DURATION_S:
-            continue
-        out.append({
-            "bvid": it.get("bvid"),
-            "title": it.get("title") or "",
-            "author": it.get("author") or "",
-            "duration_s": dur,
-            "cover": it.get("pic") or "",
-        })
-        if len(out) >= limit:
-            break
-    return out
+        out = []
+        for it in rows:
+            if not isinstance(it, dict) or not it.get("bvid"):
+                continue
+            dur = dur_to_s(it.get("duration"))
+            if dur and dur > MAX_DURATION_S:
+                continue
+            out.append({
+                "bvid": it.get("bvid"),
+                "title": it.get("title") or "",
+                "author": it.get("author") or "",
+                "duration_s": dur,
+                "cover": it.get("pic") or "",
+            })
+            if len(out) >= limit:
+                break
+        return out
+    return []
 
 
 def resolve_audio(bvid: str, timeout: float = 5.0) -> "tuple[str, int] | None":

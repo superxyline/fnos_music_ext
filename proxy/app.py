@@ -4740,6 +4740,76 @@ def _match_local_track(tracks: list, title: str, artist: str) -> dict | None:
     return None
 
 
+def _repair_filename_track_metadata(track_guid: str, title: str, artist: str) -> None:
+    """把"文件名整段入库"的官方行补写成刮削形态（收藏/列表显示正确）。
+
+    老曲库文件被官方按文件名入库：track.title='谢霆锋 - 因为爱所以爱'、
+    track_artist 无关联——收藏列表显示"歌手 - 歌名"且歌手空。对账匹配成功后
+    用快照的权威歌名/歌手补写 DB 并补齐 artist 关联（写入先例：匹配页写
+    lyric/cover_guid）。只在形态明显更差（title 含分隔符且不等）或 artists
+    全无时动手，幂等。
+    """
+    title = str(title or "").strip()
+    if not title:
+        return
+    db_path = str(CONF.get("music_db") or "")
+    if not db_path or not os.path.exists(db_path):
+        return
+    artists = [p.strip() for p in re.split(r"\s*[/&,、]\s*", str(artist or "")) if p.strip()]
+    try:
+        conn = sqlite3.connect(db_path, timeout=10)
+        try:
+            row = conn.execute(
+                "select id, title from track where guid = ? and is_audio_file_deleted = 0",
+                (str(track_guid),),
+            ).fetchone()
+            if not row:
+                return
+            track_id, cur_title = row[0], str(row[1] or "")
+            has_artist = conn.execute(
+                "select 1 from track_artist where track_id = ? limit 1", (track_id,)
+            ).fetchone() is not None
+            need_title = bool(cur_title) and cur_title != title and (" - " in cur_title or " _ " in cur_title)
+            need_artist = bool(artists) and not has_artist
+            if not (need_title or need_artist):
+                return
+            with conn:
+                if need_title:
+                    conn.execute(
+                        "update track set title = ?, updated_at = CURRENT_TIMESTAMP where id = ?",
+                        (title, track_id),
+                    )
+                if need_artist:
+                    for order, name in enumerate(artists):
+                        found = conn.execute(
+                            "select id from artist where name = ? limit 1", (name,)
+                        ).fetchone()
+                        if found:
+                            artist_id = found[0]
+                        else:
+                            artist_id = conn.execute(
+                                "insert into artist (guid, name, metadata_mode) values (?, ?, 2)",
+                                (uuid4().hex, name),
+                            ).lastrowid
+                        exists = conn.execute(
+                            "select 1 from track_artist where track_id = ? and artist_id = ?",
+                            (track_id, artist_id),
+                        ).fetchone()
+                        if not exists:
+                            conn.execute(
+                                "insert into track_artist (track_id, artist_id, artist_order) values (?, ?, ?)",
+                                (track_id, artist_id, order),
+                            )
+            logger.info(
+                "Official row metadata repaired for %s: title %r -> %r, artists %r added=%s",
+                str(track_guid)[:36], cur_title[:40], title[:40], artists, not has_artist,
+            )
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning("Official row metadata repair failed for %s: %s", str(track_guid)[:36], type(e).__name__)
+
+
 async def _reconcile_official_links_for_user(cred_headers: dict, user_guid: str) -> bool:
     """对该用户的待关联条目做一轮对账：查官方库→建官方红心→撤对应在线收藏。
 
@@ -4800,6 +4870,9 @@ async def _reconcile_official_links_for_user(cred_headers: dict, user_guid: str)
             official_guid = str(target.get("guid") or "")
             if not official_guid or is_online_guid(official_guid):
                 continue
+            # 老曲库"文件名整段入库"行：用快照权威元数据补写，收藏/列表显示刮削形态
+            await asyncio.to_thread(
+                _repair_filename_track_metadata, official_guid, title, str(entry.get("artist") or ""))
             req = client.build_request(
                 "POST", "/music/api/v1/favorite-track/create",
                 headers=headers, json={"trackGUID": official_guid},

@@ -2372,7 +2372,61 @@ async def resolve_lx_url(client: httpx.AsyncClient, song_id: str) -> "dict | Non
     return None
 
 
-async def resolve_netease_url(client: httpx.AsyncClient, song_id: str) -> str | None:
+# 网易直链钉住（移植上游 v2.8.0 issue #50，2026-10-12 实测断流根因）：
+# 每个 Range 分片都重新 resolve，quality 阶梯两次可能给出不同 rendition
+# （实测同曲 Range 请求拿 flac、全量请求拿 mp3）——新旧文件字节布局不同，
+# 带偏移的续拉错位即"播几十秒断"。同首歌在直链有效期内钉住同一条 URL。
+# 网易返回 expi=1200s，pin TTL 取 1100s 留余量；单曲播放远小于该值。
+_NETEASE_URL_PIN: "dict[str, tuple[str, float]]" = {}
+_NETEASE_URL_PIN_MAX = 512
+_NETEASE_URL_PIN_TTL_S = 1100.0
+_NETEASE_URL_LOCKS: "dict[str, asyncio.Lock]" = {}
+
+
+def _netease_url_pin_drop(song_id: str) -> None:
+    _NETEASE_URL_PIN.pop(str(song_id), None)
+
+
+def _netease_url_pin_store(song_id: str, url: str, ttl: float) -> None:
+    """写入钉链并做容量治理：先清已过期项，仍满则淘汰最早过期者。"""
+    now = time.monotonic()
+    if len(_NETEASE_URL_PIN) >= _NETEASE_URL_PIN_MAX:
+        for k in [k for k, v in _NETEASE_URL_PIN.items() if v[1] <= now]:
+            _NETEASE_URL_PIN.pop(k, None)
+        if len(_NETEASE_URL_PIN) >= _NETEASE_URL_PIN_MAX:
+            oldest = min(_NETEASE_URL_PIN, key=lambda k: _NETEASE_URL_PIN[k][1])
+            _NETEASE_URL_PIN.pop(oldest, None)
+    _NETEASE_URL_PIN[str(song_id)] = (url, now + ttl)
+
+
+async def resolve_netease_url(client: httpx.AsyncClient, song_id: str, refresh: bool = False) -> str | None:
+    """带钉住的取链：有效期内同曲复用同一 URL（防换 rendition 断流）。"""
+    key = str(song_id)
+    if not refresh:
+        pin = _NETEASE_URL_PIN.get(key)
+        if pin and time.monotonic() < pin[1]:
+            return pin[0]
+    lock = _NETEASE_URL_LOCKS.get(key)
+    if lock is None:
+        # 并发分片共用一把锁：同 key 只解析一次，等待者复用结果
+        if len(_NETEASE_URL_LOCKS) >= _NETEASE_URL_PIN_MAX:
+            for k in list(_NETEASE_URL_LOCKS)[: _NETEASE_URL_PIN_MAX // 2]:
+                _NETEASE_URL_LOCKS.pop(k, None)
+        lock = asyncio.Lock()
+        _NETEASE_URL_LOCKS[key] = lock
+    async with lock:
+        pin = _NETEASE_URL_PIN.get(key)
+        if not refresh and pin and time.monotonic() < pin[1]:
+            return pin[0]
+        if refresh:
+            _netease_url_pin_drop(key)
+        url = await _resolve_netease_url_uncached(client, key)
+        if url:
+            _netease_url_pin_store(key, url, _NETEASE_URL_PIN_TTL_S)
+        return url
+
+
+async def _resolve_netease_url_uncached(client: httpx.AsyncClient, song_id: str) -> str | None:
     primary = str(CONF.get("netease_quality") or "lossless").strip()
     qualities = quality_order(_NETEASE_QUALITY_LADDER, CONF.get("quality_mode"), primary)
     if primary and primary not in qualities:
@@ -3991,6 +4045,9 @@ async def _open_online_stream(request: Request, guid: str, range_header: str | N
                 or resp.headers.get("content-encoding", "identity").strip().lower() not in ("", "identity")):
             # Reject servers ignoring identity: decoded bytes cannot use encoded
             # Content-Length/Range offsets, and must not enter the audio cache.
+            if source == "netease":
+                # 非法响应=该钉链已失效（过期/风控），摘掉避免死链循环重试
+                _netease_url_pin_drop(song_id_from_online_guid(guid).split(":")[-1])
             return None
         chunks = resp.aiter_bytes()
         first = await anext(chunks, b"")
@@ -4631,25 +4688,37 @@ def _match_local_track(tracks: list, title: str, artist: str) -> dict | None:
         文件名自带歌手，可做交集把关，否则交集恒空对账永不命中。"""
         return _norm(_artist_names(tr)) or _norm(title_from_track(tr))
 
-    def _title_hit(tr: dict) -> bool:
+    def _title_strict(tr: dict) -> bool:
+        return _norm(title_from_track(tr)) == t_norm
+
+    def _title_seg(tr: dict) -> bool:
+        # 文件名整段形态（"黄征 _ 羽·泉 - 奔跑"）：按" - "切段，任一段与歌名相等。
+        # 只作第二轮——刮削形态行（title=纯歌名+artists 关联）必须优先命中，
+        # 否则同曲双行并存时收藏会挂到文件名形态老行，显示"歌手 - 歌名"。
         raw = str(title_from_track(tr) or "")
-        if _norm(raw) == t_norm:
-            return True
-        # 文件名整段形态（"黄征 _ 羽·泉 - 奔跑"）：按" - "切段，任一段与歌名相等
         return any(_norm(seg) == t_norm for seg in re.split(r"\s+-\s+", raw) if _norm(seg))
+
+    def _artist_gate(tr: dict) -> bool:
+        if not local_tokens:
+            return True
+        cand_all = _cand_artist_text(tr)
+        return bool(cand_all) and any(t in cand_all for t in local_tokens)
+
+    # 轮1：严格标题相等——刮削形态行（title=纯歌名）优先，双行并存时收藏挂好行
     for tr in tracks:
         if not isinstance(tr, dict):
             continue
-        if not _title_hit(tr):
+        if not _title_strict(tr):
             continue
-        artist_ok = True
-        if local_tokens:
-            cand_all = _cand_artist_text(tr)
-            # 歌手取交集即可：官方条目歌手常不全（如只登记主唱），下载信息含合作
-            # 歌手（王力宏&谭维维 vs 官方仅王力宏）——全包含会让对账永远失败。
-            # 标题已严格相等作主条件，交集判同错配风险可忽略。
-            artist_ok = bool(cand_all) and any(t in cand_all for t in local_tokens)
-        if artist_ok:
+        if _artist_gate(tr):
+            return tr
+    # 轮2：文件名整段形态段相等（老曲库行兜底）
+    for tr in tracks:
+        if not isinstance(tr, dict):
+            continue
+        if not _title_seg(tr):
+            continue
+        if _artist_gate(tr):
             return tr
     # 二级放宽：官方刮削 title 可能带序号/后缀（"03.晴天" vs "晴天"、
     # "错错错 (Live)" vs "错错错"）——严格相等无果时按归一化前缀包含再试一轮。

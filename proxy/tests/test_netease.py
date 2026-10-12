@@ -1189,3 +1189,50 @@ def test_search_musicbox_only_skips_musicdl(monkeypatch):
         assert len(items) == 1
         assert items[0]["guid"] == fake_official_guid("online:netease:228908")
         assert called["musicdl"] == 0
+
+
+# ---- 网易直链钉住（2026-10-12 断流根因：每片 resolve 换 rendition）----
+
+def _pin_mock_client(monkeypatch):
+    """musicbox /song/{id}/url 轮流返回 flac/mp3 两个不同 URL（模拟阶梯不稳）。"""
+    import httpx as _httpx
+    from proxy import app as _app
+    urls = iter(["http://x/flac-a", "http://x/mp3-b", "http://x/flac-a"])
+
+    def handler(request):
+        # 每次解析给出不同 rendition：不钉住时调用方会拿到不同 URL
+        return _httpx.Response(200, json={"ok": True, "data": {
+            "code": 200, "url": next(urls)}})
+
+    _app._NETEASE_URL_PIN.clear()
+    _app._NETEASE_URL_LOCKS.clear()
+    return _httpx.AsyncClient(transport=_httpx.MockTransport(handler),
+                              base_url="http://127.0.0.1:8770")
+
+
+@pytest.mark.anyio
+async def test_netease_url_pinned_across_calls(monkeypatch):
+    """同 song_id 有效期内多次 resolve 返回同一条 URL（防换档断流）。"""
+    from proxy.app import resolve_netease_url, _NETEASE_URL_PIN
+    client = _pin_mock_client(monkeypatch)
+    u1 = await resolve_netease_url(client, "167850")
+    u2 = await resolve_netease_url(client, "167850")
+    u3 = await resolve_netease_url(client, "167850")
+    assert u1 == u2 == u3 == "http://x/flac-a"
+    assert "167850" in _NETEASE_URL_PIN
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_netease_url_refresh_repins(monkeypatch):
+    """refresh=True 强制重解析并更新钉链（死链恢复路径）。"""
+    from proxy.app import resolve_netease_url, _netease_url_pin_drop
+    client = _pin_mock_client(monkeypatch)
+    u1 = await resolve_netease_url(client, "209719")
+    u2 = await resolve_netease_url(client, "209719")          # 钉住命中
+    assert u1 == u2
+    u3 = await resolve_netease_url(client, "209719", refresh=True)
+    assert u3 == "http://x/mp3-b"                              # 刷新拿到新档
+    u4 = await resolve_netease_url(client, "209719")
+    assert u4 == "http://x/mp3-b"                              # 钉到新档
+    await client.aclose()

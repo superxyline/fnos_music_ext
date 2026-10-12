@@ -89,3 +89,20 @@ def test_filename_entry_partial_artist_intersection():
     """交集即可：快照歌手与文件名写法不同（羽·泉 token 化后交集命中）。"""
     hit = _match_local_track([FILENAME_TR[0]], "奔跑", "羽泉")
     assert hit and hit["guid"] == "old1"
+
+
+def test_scraped_row_wins_over_filename_row():
+    """同曲双行并存：刮削形态行（title=纯歌名）必须优先于文件名形态老行。
+
+    2026-10-12 用户反馈收藏显示"歌手 - 歌名"：段匹配混在第一轮会先命中
+    文件名老行——严格相等必须排在段匹配之前。
+    """
+    BOTH = [
+        {"guid": "old", "title": "黄征 _ 羽·泉 - 奔跑", "artists": []},
+        {"guid": "new", "title": "奔跑", "artists": [{"name": "黄征"}, {"name": "羽·泉"}]},
+    ]
+    hit = _match_local_track(BOTH, "奔跑", "黄征 / 羽·泉")
+    assert hit and hit["guid"] == "new"
+    # 反序（搜索结果顺序不定）：轮1跨候选严格扫描，仍命中刮削行
+    hit = _match_local_track(list(reversed(BOTH)), "奔跑", "黄征 / 羽·泉")
+    assert hit and hit["guid"] == "new"

@@ -61,3 +61,31 @@ def test_prefix_fallback_with_artist_gate():
     strict = [{"guid": "p2", "title": "晴天的约定", "artists": []}]
     assert _match_local_track(strict, "晴天", "") is None
     assert _match_local_track(strict, "晴天的约定", "") is strict[0]
+
+
+# ---- 老曲库"文件名整段入库"形态（2026-10-12 用户报红心不落本地的根因）----
+
+FILENAME_TR = [
+    # 官方按文件名整段入库：title=完整文件名、track_artist 无关联行
+    {"guid": "old1", "title": "黄征 _ 羽·泉 - 奔跑", "artists": []},
+    {"guid": "old2", "title": "羽·泉 - 冷酷到底", "artists": []},
+]
+
+
+def test_filename_entry_title_segment_match():
+    """title="歌手 - 歌名"整段、artists 空：切段相等 + title 文本做歌手交集命中。"""
+    hit = _match_local_track(FILENAME_TR, "奔跑", "黄征 / 羽·泉")
+    assert hit and hit["guid"] == "old1"
+    hit = _match_local_track(FILENAME_TR, "冷酷到底", "羽·泉")
+    assert hit and hit["guid"] == "old2"
+
+
+def test_filename_entry_wrong_artist_rejected():
+    """歌手交集仍把关：官方文件名无该歌手 → 拒绝（防同名误配）。"""
+    assert _match_local_track(FILENAME_TR, "奔跑", "周杰伦") is None
+
+
+def test_filename_entry_partial_artist_intersection():
+    """交集即可：快照歌手与文件名写法不同（羽·泉 token 化后交集命中）。"""
+    hit = _match_local_track([FILENAME_TR[0]], "奔跑", "羽泉")
+    assert hit and hit["guid"] == "old1"

@@ -4624,14 +4624,27 @@ def _match_local_track(tracks: list, title: str, artist: str) -> dict | None:
 
     t_norm = _norm(title)
     local_tokens = _artist_tokens(artist)  # 占位符被过滤 → 空 = 不约束歌手
+
+    def _cand_artist_text(tr: dict) -> str:
+        """官方歌手文本；artists 关联为空（老曲库按文件名整段入库，title=
+        "歌手1 _ 歌手2 - 歌名" 且 track_artist 无行）时退回 title 全段——
+        文件名自带歌手，可做交集把关，否则交集恒空对账永不命中。"""
+        return _norm(_artist_names(tr)) or _norm(title_from_track(tr))
+
+    def _title_hit(tr: dict) -> bool:
+        raw = str(title_from_track(tr) or "")
+        if _norm(raw) == t_norm:
+            return True
+        # 文件名整段形态（"黄征 _ 羽·泉 - 奔跑"）：按" - "切段，任一段与歌名相等
+        return any(_norm(seg) == t_norm for seg in re.split(r"\s+-\s+", raw) if _norm(seg))
     for tr in tracks:
         if not isinstance(tr, dict):
             continue
-        if _norm(title_from_track(tr)) != t_norm:
+        if not _title_hit(tr):
             continue
         artist_ok = True
         if local_tokens:
-            cand_all = _norm(_artist_names(tr))
+            cand_all = _cand_artist_text(tr)
             # 歌手取交集即可：官方条目歌手常不全（如只登记主唱），下载信息含合作
             # 歌手（王力宏&谭维维 vs 官方仅王力宏）——全包含会让对账永远失败。
             # 标题已严格相等作主条件，交集判同错配风险可忽略。
@@ -4652,7 +4665,7 @@ def _match_local_track(tracks: list, title: str, artist: str) -> dict | None:
             # 互含（序号在前 "03晴天" 或后缀在后 "错错错live" 都能命中），限长防极端泛化
             if not ((t_norm in cand_t or cand_t in t_norm) and abs(len(cand_t) - len(t_norm)) <= 8):
                 continue
-            cand_all = _norm(_artist_names(tr))
+            cand_all = _cand_artist_text(tr)
             if cand_all and any(t in cand_all for t in local_tokens):
                 return tr
     return None

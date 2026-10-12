@@ -4280,8 +4280,91 @@ async def _info_for_background_save(request: Request, guid: str, info: dict | No
     return base
 
 
+def _audio_probe_duration_s(path: str) -> "float | None":
+    """按内容魔数嗅探音频真实格式并读取时长（秒）。
+
+    老曲库常见"后缀与内容不符"（.flac 装 mp3），mutagen 按扩展名会失败，
+    必须按头部字节选解析器。解析失败返回 None（调用方不阻断）。
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4096)
+    except OSError:
+        return None
+    try:
+        from mutagen.flac import FLAC
+        from mutagen.mp3 import MP3
+        from mutagen.mp4 import MP4
+        from mutagen.oggvorbis import OggVorbis
+        if head[:4] == b"fLaC":
+            return float(FLAC(path).info.length)
+        if head[4:8] == b"ftyp":
+            return float(MP4(path).info.length)
+        if head[:4] == b"OggS":
+            return float(OggVorbis(path).info.length)
+        if head[:3] == b"ID3" or (head[0] == 0xFF and head[1] in (0xFB, 0xF3, 0xFA, 0xF2)):
+            return float(MP3(path).info.length)
+    except Exception:
+        return None
+    return None
+
+
+def _sniff_audio_ext(path: str) -> "str | None":
+    """按内容魔数返回真实扩展名（修正"标称 flac 实为 mp3"的落库命名）。"""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(64)
+    except OSError:
+        return None
+    if head[:4] == b"fLaC":
+        return "flac"
+    if head[4:8] == b"ftyp":
+        return "m4a"
+    if head[:4] == b"OggS":
+        return "ogg"
+    if head[:3] == b"ID3" or (head[0] == 0xFF and head[1] in (0xFB, 0xF3, 0xFA, 0xF2)):
+        return "mp3"
+    return None
+
+
+async def _find_alt_full_version(request: Request, title: str, artist: str) -> "dict | None":
+    """网易仅给试听片段时，从 musicdl 源（kuwo/migu/bili）找同名完整版。
+
+    返回可播在线曲目条目（含 guid）；找不到返回 None。
+    """
+    keyword = f"{title} {artist}".strip()
+    if not keyword:
+        return None
+    try:
+        data = await fetch_musicdl_search(get_musicdl_client(request.app), keyword, CONC_LIMIT := 10)
+    except Exception as e:
+        logger.warning("alt source search failed for %r: %s", keyword[:40], type(e).__name__)
+        return None
+    items = (data or {}).get("items") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return None
+    t_norm = re.sub(r"[\s\-_·・.,，。!！?？'\"“”‘’:：;；、()\[\]【】&+/]+", "", str(title or "").lower())
+
+    def norm(v: object) -> str:
+        return re.sub(r"[\s\-_·・.,，。!！?？'\"“”‘’:：;；、()\[\]【】&+/]+", "", str(v or "").lower())
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        if not str(it.get("download_url") or "").startswith(("http", "/")):
+            continue
+        if norm(it.get("title")) != t_norm or not t_norm:
+            continue
+        cand_artist = norm(it.get("artist"))
+        a_tokens = [norm(t) for t in re.split(r"[&/,、\s]+", str(artist or "")) if norm(t)]
+        if a_tokens and cand_artist and not any(t in cand_artist for t in a_tokens):
+            continue
+        return it
+    return None
+
+
 async def _full_fetch_download(
-    guid: str, cred_headers: dict, info_hint: dict | None = None, favorite_context: dict | None = None
+    guid: str, cred_headers: dict, info_hint: dict | None = None, favorite_context: dict | None = None,
+    _fetch_depth: int = 0,
 ) -> None:
     """后台整轨下载 online guid 并落盘（独立于客户端连接，不占播放路径预算）。"""
     part = None
@@ -4325,6 +4408,36 @@ async def _full_fetch_download(
                     written += len(chunk)
         if written < 1024 or (expected is not None and written != expected):
             raise RuntimeError(f"size mismatch written={written} expected={expected}")
+        # 试听片段检测：网易对无版权/VIP 曲目只给 30s 试听（实测 128kbps/481115B），
+        # 内容自洽能过 size 校验但落库即污染曲库（"收藏的歌只能播几十秒"根因）。
+        actual_s = await asyncio.to_thread(_audio_probe_duration_s, part)
+        nominal_s = float((info or {}).get("duration_s") or hint.get("duration_s") or 0)
+        if actual_s and nominal_s and actual_s < nominal_s * 0.6:
+            logger.warning(
+                "preview snippet detected for %s: actual=%.1fs nominal=%.0fs",
+                guid, actual_s, nominal_s)
+            if _fetch_depth == 0 and source_from_online_guid(guid) == "netease":
+                alt = await _find_alt_full_version(
+                    fake_request,
+                    str((info or {}).get("title") or hint.get("title") or ""),
+                    str((info or {}).get("artist") or hint.get("artist") or ""))
+                if alt:
+                    alt_guid = online_guid_from_item(alt)
+                    _remove_quiet(part)
+                    part = None
+                    with suppress(Exception):
+                        await resp.aclose()
+                    logger.info("alt source fallback %s -> %s (%s)", guid, alt_guid,
+                                str(alt.get("title"))[:40])
+                    return await _full_fetch_download(
+                        alt_guid, cred_headers, {**(info or {}), **hint},
+                        favorite_context, _fetch_depth=1)
+            raise RuntimeError(f"preview snippet actual={actual_s:.1f}s nominal={nominal_s:.0f}s")
+        # 扩展名按内容校正（标称 flac 实为 mp3 会让落库命名与内容不符）
+        sniffed = await asyncio.to_thread(_sniff_audio_ext, part)
+        if sniffed and sniffed != ext:
+            logger.info("ext sniff corrected for %s: %s -> %s", guid, ext, sniffed)
+            ext = sniffed
         info = await _info_for_background_save(fake_request, guid, info)
         ext = ext or (info or {}).get("ext") or "mp3"
         meta = await asyncio.to_thread(_tee_finalize, part, guid, ext, info or {}, True)

@@ -5456,32 +5456,53 @@ def _official_cover_root() -> str | None:
     return None
 
 
-def _album_artist_cover_guid(album_hex: str) -> str | None:
-    """album_ 假 id → 该专辑主歌手的封面资源 guid。
-
-    老曲库专辑图未刮削时官方 album 封面文件缺失（static/cover 404），App 端
-    会因图片加载失败把该位置错显成列表里其他条目的缓存图（2026-10-12 用户
-    报"粉色雨伞 aimer"）。退回歌手封面兜底，保证任何条目都有稳定图。
+def _album_cover_fallback_response(cover_hex: str, size: "str | None") -> Response | None:
+    """官方 album 封面文件缺失时的替代封面链：专辑艺术家封面 → 专辑内 track 封面
+    文件 → 曲目音频内嵌图。任一命中即返回（200），保证客户端不会因 404 把该
+    位置错显成列表里其他条目的缓存图（2026-10-12 用户报"粉色雨伞 aimer"）。
+    注意官方 coverId 是封面资源 guid（cover_guid），不是 album.guid。
     """
     db_path = str(CONF.get("music_db") or "")
-    if not db_path or not os.path.exists(db_path):
-        return None
-    try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    cand_ids: "list[str]" = []
+    track_guid_for_embed: "str | None" = None
+    if db_path and os.path.exists(db_path):
         try:
-            row = conn.execute(
-                "select ar.cover_guid from album a "
-                "join album_artist aa on aa.album_id = a.id "
-                "join artist ar on ar.id = aa.artist_id "
-                "where a.guid = ? and ar.cover_guid is not null and ar.cover_guid != '' "
-                "order by aa.artist_order limit 1",
-                (album_hex,),
-            ).fetchone()
-        finally:
-            conn.close()
-        return str(row[0]) if row and row[0] else None
-    except Exception:
-        return None
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            try:
+                row = conn.execute(
+                    "select ar.cover_guid from album a "
+                    "join album_artist aa on aa.album_id = a.id "
+                    "join artist ar on ar.id = aa.artist_id "
+                    "where a.cover_guid = ? and ar.cover_guid is not null and ar.cover_guid != '' "
+                    "order by aa.artist_order limit 1",
+                    (cover_hex,),
+                ).fetchone()
+                if row and row[0]:
+                    cand_ids.append("artist_" + str(row[0]))
+                row2 = conn.execute(
+                    "select t.guid, t.cover_guid from album a "
+                    "join track t on t.album_id = a.id "
+                    "where a.cover_guid = ? order by (t.cover_guid is null), t.id limit 1",
+                    (cover_hex,),
+                ).fetchone()
+                if row2:
+                    track_guid_for_embed = str(row2[0] or "")
+                    if row2[1]:
+                        cand_ids.append("track_" + str(row2[1]))
+            finally:
+                conn.close()
+        except Exception:
+            pass
+    for cid in cand_ids:
+        resp = _official_cover_file_response(cid, size=size)
+        if resp is not None:
+            return resp
+    if track_guid_for_embed:
+        embedded = _embedded_cover_bytes(track_guid_for_embed)
+        if embedded:
+            art, mime = embedded
+            return Response(content=art, media_type=mime)
+    return None
 
 
 def _official_cover_file_response(cover_id: str, size: str | None = None) -> Response | None:
@@ -5628,12 +5649,10 @@ async def static_cover(request: Request, subpath: str = ""):
         # 专辑封面文件缺失（老曲库专辑图未刮削）：退回主歌手封面，避免 404 后
         # App 端图片位置错显其他条目缓存图（"粉色雨伞 aimer"即此类）
         if str(guid).startswith("album_"):
-            artist_cover = _album_artist_cover_guid(str(guid)[len("album_"):])
-            if artist_cover:
-                fallback = _official_cover_file_response(
-                    "artist_" + artist_cover, size=request.query_params.get("size"))
-                if fallback is not None:
-                    return fallback
+            fallback = _album_cover_fallback_response(
+                str(guid)[len("album_"):], request.query_params.get("size"))
+            if fallback is not None:
+                return fallback
         # 32hex 且不在伪装反查表、官方封面文件也未命中：伪装 id 反解失败取证
         # （典型：代理重启后反查表未热身，App 持有的 coverId 查不到在线曲目）
         raw = str(guid or "")

@@ -22,7 +22,7 @@ import sqlite3
 import tempfile
 import time
 import contextlib
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from copy import deepcopy
 from typing import Any, AsyncGenerator, Callable, Coroutine

@@ -183,16 +183,19 @@ def filter_playable_song_ids(ids: list[int]) -> set[int]:
     return playable_ids
 
 
-def get_song_url(song_id: int, quality: str) -> "dict[str, Any] | None":
+def get_song_url(song_id: int, quality: str, fresh: bool = False) -> "dict[str, Any] | None":
     """进程内解析单曲播放链接（复用常驻实例，免起 CLI 子进程）。
 
     返回对齐 CLI `song url --json` 的 data 字段（含 url/code/fee 等）；接口
     异常或返回空时返回 None，由调用方降级 CLI（保留结构化错误语义）。
     结果短缓存（成功 600s / 失败 60s，键含音质），reset_api 时随实例一并清空。
+    fresh=True 旁路缓存（代理确认钉链失效后的强制重解析必须拿到新链）。
     """
     key = (int(song_id), str(quality))
     now = time.monotonic()
     with _url_cache_lock:
+        if fresh:
+            _url_cache.pop(key, None)
         hit = _url_cache.get(key)
         if hit and now < hit[1]:
             return hit[0]
@@ -442,6 +445,235 @@ def user_playlists(limit: int = 100) -> "dict[str, Any] | None":
             if mapped["playlist_id"] > 0:
                 playlists.append(mapped)
     return {"uid": uid, "playlists": playlists}
+
+
+# --------------------------------------------------------- 公共歌单发现 --
+# 网易公共歌单（榜单/推荐/精选/分类）：官方匿名接口组合，与账号歌单互不依赖。
+# 发现阶段由管理页预选，选中结果落 FNMUSIC_PUBLIC_PLAYLISTS_SELECTION；
+# 音乐页只读展示，播放/取链仍走既有 online:netease 链路。
+
+_PUBLIC_MAX_TRACKS = 1000
+
+# 与 NEMbox.api.BASE_URL 同值。这里写成常量而不是 import 一次，是为了让本模块在
+# 没装 NEMbox 的纯测试环境也能导入（发现链路全部走 mock 时无需真实客户端）。
+_NETEASE_BASE_URL = "https://music.163.com"
+
+
+def _validate_public_response(data: Any) -> dict[str, Any]:
+    """官方 /api 与 /weapi 的 code 语义：200 为成功（0 也接受，部分接口如此返回）。"""
+    if not isinstance(data, dict) or data.get("code", 200) not in (200, 0):
+        code = data.get("code") if isinstance(data, dict) else "invalid"
+        raise RuntimeError(f"netease public request failed: code={code}")
+    return data
+
+
+def _public_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """GET 官方旧版 /api 接口（匿名可用，不加密）。"""
+    with _api_lock:
+        api = _get_api_locked()
+        resp = api._raw_request("GET", f"{_NETEASE_BASE_URL}{path}", params or {})
+    if resp is None:
+        raise RuntimeError(f"netease public GET {path} failed: no response")
+    resp.raise_for_status()
+    return _validate_public_response(resp.json())
+
+
+def _public_post(path: str, params: dict[str, Any]) -> dict[str, Any]:
+    """POST 走 NEMbox 的 weapi 加密通道（分类/分页列表这类接口只认它）。"""
+    with _api_lock:
+        api = _get_api_locked()
+        return _validate_public_response(api.request("POST", path, params))
+
+
+def public_playlist_categories(kind: str = "playlist") -> dict[str, Any]:
+    """歌单分类目录（分类分组 + 精选 Tag）；kind=highquality 只取精选 Tag。"""
+    if kind == "highquality":
+        data = _public_get("/api/playlist/highquality/tags")
+        tags = data.get("tags") if isinstance(data, dict) else []
+        rows = []
+        for item in tags if isinstance(tags, list) else []:
+            tag = (item.get("playlistTag") or item) if isinstance(item, dict) else None
+            if isinstance(tag, dict) and tag.get("name"):
+                rows.append({"id": str(tag.get("name")), "name": str(tag.get("name"))})
+        return {"ok": True, "categories": [{"id": "", "name": "全部"}], "tags": rows}
+
+    data = _public_post("/weapi/playlist/catalogue", {})
+    names = data.get("categories") or {}
+    grouped: dict[str, list[dict]] = {}
+    for raw in data.get("sub") or []:
+        if not isinstance(raw, dict) or not raw.get("name"):
+            continue
+        group = str(names.get(str(raw.get("category")), "其他")) if isinstance(names, dict) else "其他"
+        grouped.setdefault(group, []).append({"id": str(raw["name"]), "name": str(raw["name"])})
+    categories = [{"id": "", "name": "全部"}]
+    categories.extend({"id": name, "name": name} for name in grouped)
+    highquality_tags: list[dict[str, str]] = []
+    try:
+        highquality_tags = public_playlist_categories("highquality").get("tags") or []
+    except Exception:  # noqa: BLE001  # 精选 Tag 拿不到不影响分类主流程
+        pass
+    return {"ok": True, "categories": categories, "tags": grouped, "highquality_tags": highquality_tags}
+
+
+def _public_summary(item: dict[str, Any], kind: str = "playlist") -> dict[str, Any]:
+    creator = item.get("creator") if isinstance(item.get("creator"), dict) else {}
+    cover = str(
+        item.get("coverImgUrl") or item.get("cover_url")
+        or item.get("picUrl") or item.get("cover") or ""
+    )
+    try:
+        updated = int(item.get("updateTime") or item.get("trackNumberUpdateTime") or 0) // 1000
+    except (TypeError, ValueError):
+        updated = 0
+    return {
+        "id": str(item.get("id") or ""),
+        "kind": kind,
+        "source": "netease",
+        "name": str(item.get("name") or ""),
+        "cover_url": cover,
+        "track_count": _int_or_zero(item.get("trackCount") or item.get("trackcount")),
+        "author": str(item.get("nickname") or creator.get("nickname") or ""),
+        "description": str(item.get("description") or item.get("copywriter") or ""),
+        "updated_at": updated,
+    }
+
+
+def public_playlists(
+    channel: str,
+    category: str = "",
+    sort: str = "hot",
+    page: int = 1,
+    limit: int = 30,
+    cursor: str = "",
+) -> dict[str, Any]:
+    """公共歌单发现池：榜单 / 推荐 / 账号推荐 / 精选 / 分类分页。
+
+    channel 五档：
+      charts           网易所有榜单（排行榜，kind=chart）
+      recommend        匿名可用的平台推荐歌单
+      account_recommend 登录后的每日推荐歌单（未登录返回 ok=False）
+      highquality      精选歌单（cursor 翻页）
+      playlist         按分类的分页列表（page 翻页）
+    """
+    page = max(1, int(page or 1))
+    limit = max(1, min(int(limit or 30), 50))
+    if channel == "charts":
+        data = _public_get("/api/toplist")
+        rows = data.get("list") if isinstance(data, dict) else []
+        items = [_public_summary(row, "chart") for row in rows or [] if isinstance(row, dict) and row.get("id")]
+        return {"ok": True, "items": items, "total": len(items), "has_more": False}
+
+    if channel == "recommend":
+        data = _public_get("/api/personalized/playlist", {"limit": min(limit, 30)})
+        rows = data.get("result") if isinstance(data, dict) else []
+        items = [_public_summary(row) for row in rows or [] if isinstance(row, dict) and row.get("id")]
+        return {"ok": True, "items": items, "has_more": False}
+
+    if channel == "account_recommend":
+        with _api_lock:
+            api = _get_api_locked()
+            raw = api.request("POST", "/weapi/v1/discovery/recommend/resource", {})
+        if isinstance(raw, dict) and raw.get("code") == 301:
+            return {"ok": False, "error": "not_logged_in", "logged_in": False}
+        data = _validate_public_response(raw)
+        rows = data.get("recommend") or []
+        if not isinstance(rows, list):
+            raise RuntimeError("netease account recommend returned invalid payload")
+        items = [_public_summary(row) for row in rows if isinstance(row, dict) and row.get("id")]
+        return {"ok": True, "items": items, "has_more": False, "logged_in": True}
+
+    if channel == "highquality":
+        params: dict[str, Any] = {"limit": limit}
+        if category:
+            params["cat"] = category
+        if cursor:
+            params["before"] = cursor
+        data = _public_get("/api/playlist/highquality/list", params)
+        rows = data.get("playlists") if isinstance(data, dict) else []
+        next_cursor = ""
+        if rows:
+            last = rows[-1] if isinstance(rows[-1], dict) else {}
+            next_cursor = str(last.get("updateTime") or "")
+        return {
+            "ok": True,
+            "items": [_public_summary(row) for row in rows or [] if isinstance(row, dict) and row.get("id")],
+            "total": _int_or_zero(data.get("total")),
+            "has_more": bool(data.get("more")) if isinstance(data, dict) else bool(rows),
+            "next_cursor": next_cursor,
+        }
+
+    data = _public_post("/weapi/playlist/list", {
+        "cat": category or "全部",
+        "order": sort if sort in ("hot", "new") else "hot",
+        "offset": (page - 1) * limit,
+        "total": "true",
+        "limit": limit,
+    })
+    rows = data.get("playlists") or []
+    total = _int_or_zero(data.get("total"))
+    return {
+        "ok": True,
+        "items": [_public_summary(row) for row in rows if isinstance(row, dict) and row.get("id")],
+        "total": total,
+        "has_more": bool(data.get("more")) or (page * limit < total if total else bool(rows)),
+    }
+
+
+def public_playlist(playlist_id: int, kind: str = "playlist") -> dict[str, Any]:
+    """单个公共歌单摘要（榜单先查榜单列表，命中即回，省一次详情请求）。"""
+    if kind == "chart":
+        rows = public_playlists("charts").get("items") or []
+        for row in rows:
+            if row.get("id") == str(playlist_id):
+                return {"ok": True, "data": row}
+    with _api_lock:
+        api = _get_api_locked()
+        raw = api.eapi_request("/api/v6/playlist/detail", {
+            "id": int(playlist_id), "n": 0, "s": 0,
+        })
+    playlist = raw.get("playlist") if isinstance(raw, dict) else None
+    if not isinstance(playlist, dict) or not playlist.get("id"):
+        raise RuntimeError(f"playlist {playlist_id} not found")
+    return {"ok": True, "data": _public_summary(playlist, "chart" if kind == "chart" else "playlist")}
+
+
+def public_playlist_tracks(playlist_id: int, kind: str = "playlist") -> dict[str, Any]:
+    """公共歌单曲目：trackIds 保序去重 -> 批量详情；详情缺失视为失败不半成品下发。"""
+    with _api_lock:
+        api = _get_api_locked()
+        raw = api.eapi_request("/api/v6/playlist/detail", {
+            "id": int(playlist_id), "n": _PUBLIC_MAX_TRACKS, "s": 0,
+        })
+    playlist = raw.get("playlist") if isinstance(raw, dict) else None
+    if not isinstance(playlist, dict) or not isinstance(playlist.get("trackIds"), list):
+        raise RuntimeError(f"playlist {playlist_id} tracks unavailable")
+    track_ids_raw = playlist["trackIds"]
+    ids: list[int] = []
+    seen: set[int] = set()
+    truncated = False
+    for item in track_ids_raw or []:
+        sid = item if isinstance(item, int) else (item.get("id") if isinstance(item, dict) else 0)
+        sid = _int_or_zero(sid)
+        if sid <= 0 or sid in seen:
+            continue
+        if len(ids) >= _PUBLIC_MAX_TRACKS:
+            truncated = True
+            break
+        seen.add(sid)
+        ids.append(sid)
+    rows: list[dict[str, Any]] = []
+    for start in range(0, len(ids), 100):
+        rows.extend(batch_song_details(ids[start:start + 100]))
+    by_id = {int(row["song_id"]): row for row in rows}
+    if any(sid not in by_id for sid in ids):
+        raise RuntimeError("netease playlist song details incomplete")
+    total = max(len(track_ids_raw), _int_or_zero(playlist.get("trackCount")))
+    return {
+        "ok": True,
+        "data": [by_id[sid] for sid in ids],
+        "total": total,
+        "truncated": truncated or total > _PUBLIC_MAX_TRACKS,
+    }
 
 
 def playlist_track_ids(playlist_id: int) -> "list[int] | None":

@@ -14,8 +14,11 @@ from netease_ext import (
     batch_song_details,
     check_is_logged_in,
     filter_playable_song_ids,
-    get_song_url,
     playlist_track_ids,
+    public_playlist,
+    public_playlist_categories,
+    public_playlist_tracks,
+    public_playlists,
     reset_api,
     search_web_fallback,
     song_detail_raw,
@@ -24,6 +27,8 @@ from netease_ext import (
 )
 import runner
 from runner import MusicboxTimeoutError, ensure_xdg_dirs
+import playback
+from playback import get_song_url_async
 
 logger = logging.getLogger("musicbox_service.app")
 
@@ -192,12 +197,17 @@ def search(
 
 
 @app.get("/api/v1/song/{song_id}/url")
-def song_url(song_id: int = Path(..., ge=1), quality: str = Query("exhigh")):
+async def song_url(song_id: int = Path(..., ge=1), quality: str = Query("exhigh"),
+                   fresh: int = Query(0)):
     if quality not in QUALITY_WHITELIST:
         raise HTTPException(status_code=400, detail=f"Invalid quality {quality!r}")
-    # 进程内复用常驻实例解析（毫秒级，免 CLI 子进程冷启动）；失败再降级 CLI
-    # 兜底，保留 not_logged_in 等结构化错误语义
-    item = get_song_url(song_id, quality)
+    # issue #56：解析走有界异步共享任务——不阻塞事件循环、同曲同音质并发只解析
+    # 一次、调用者取消不打断共享工作；超预算降级 CLI 兜底（保留结构化错误语义）
+    try:
+        item = await get_song_url_async(song_id, quality, fresh=bool(fresh))
+    except playback.ResolutionTimeout:
+        logger.warning("song url resolve timeout: id=%s quality=%s", song_id, quality)
+        item = None
     if item is not None:
         return {"ok": True, "data": item}
     return exec_musicbox(["song", "url", str(song_id), "--quality", quality, "--json"])
@@ -261,6 +271,70 @@ def user_playlist_tracks(playlist_id: int = Path(..., ge=1)):
     if ids is None:
         return {"ok": False, "error": "not_logged_in", "logged_in": False}
     return {"ok": True, "data": batch_song_details(ids[:1000])}
+
+
+PUBLIC_CHANNELS = ("charts", "recommend", "account_recommend", "highquality", "playlist")
+
+
+@app.get("/api/v1/public-playlists/capabilities")
+def public_playlist_capabilities():
+    """发现能力声明：当前实例支持哪些入口、登录态如何（管理页据此渲染）。"""
+    logged_in = check_is_logged_in()
+    return {
+        "ok": True,
+        "sources": [{
+            "id": "netease",
+            "name": "网易云音乐",
+            "playback_available": True,
+            "logged_in": logged_in,
+            "channels": [c for c in PUBLIC_CHANNELS if c != "account_recommend" or logged_in],
+        }],
+    }
+
+
+@app.get("/api/v1/public-playlists/categories")
+def public_playlist_categories_api(kind: str = Query("playlist")):
+    """分类目录（kind=highquality 只取精选 Tag）。"""
+    try:
+        return public_playlist_categories(kind if kind in ("playlist", "highquality") else "playlist")
+    except Exception as exc:  # noqa: BLE001  # 分类拉取失败不该让管理页整块崩掉
+        return {"ok": False, "error": str(exc)}
+
+
+@app.get("/api/v1/public-playlists")
+def public_playlists_api(
+    channel: str = Query("charts"),
+    category: str = Query(""),
+    sort: str = Query("hot"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(30, ge=1, le=50),
+    cursor: str = Query(""),
+):
+    """公共歌单发现池（榜单/推荐/账号推荐/精选/分类分页）。"""
+    if channel not in PUBLIC_CHANNELS:
+        return {"ok": False, "error": f"unsupported channel: {channel}"}
+    try:
+        return public_playlists(channel, category, sort, page, limit, cursor)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
+@app.get("/api/v1/public-playlists/{playlist_id}")
+def public_playlist_api(playlist_id: int = Path(..., ge=1), kind: str = Query("playlist")):
+    """单个公共歌单摘要。"""
+    try:
+        return public_playlist(playlist_id, "chart" if kind == "chart" else "playlist")
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
+@app.get("/api/v1/public-playlists/{playlist_id}/tracks")
+def public_playlist_tracks_api(playlist_id: int = Path(..., ge=1), kind: str = Query("playlist")):
+    """公共歌单曲目（批量详情，保序去重；超过 1000 首截断并标记）。"""
+    try:
+        return public_playlist_tracks(playlist_id, "chart" if kind == "chart" else "playlist")
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
 
 
 def _cli_error_or_raise(exc: UpstreamException) -> Any:

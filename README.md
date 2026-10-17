@@ -8,6 +8,8 @@
 
 `fnmusic-ext` 是专为 fnOS（飞牛私有云）自带音乐应用（`trim.music`）打造的**无侵入增强扩展**。它通过接管官方后端的 Unix Socket 通信入口，在完全不修改官方程序、nginx 配置与数据库的前提下，让原生飞牛音乐获得在线音乐能力；可随时一条命令还原官方直连。
 
+> 当前版本：**v3.2.0**（公共歌单、关于页/检查更新、首播预热与共享取链、流式禁缓冲；详见 [CHANGELOG.md](CHANGELOG.md)）
+
 ![飞牛桌面里的 fnMusic 扩展管理](preview_image/preview.png)
 
 ## 功能特性
@@ -17,7 +19,7 @@
   - [musicbox](https://github.com/darknessomi/musicbox)：网易云高品质解析，支持扫码登录 VIP/无损曲库与原生每日推荐；
   - [musicdl](https://github.com/CharlesPikachu/musicdl)：酷我/咪咕等 57 个平台聚合，可按平台粒度勾选（编号见 [musicdl-service/PLATFORMS.md](musicdl-service/PLATFORMS.md)）。部分音乐源歌曲少，或返回的音乐不可播放，请自行测试并使用可靠音乐源；
   - **lxmusic**：洛雪音乐自定义源运行时——搜索/歌词/榜单走内置平台接口，播放解析由你提供的洛雪自定义源脚本（Node 沙箱隔离运行）完成。源脚本支持三种配置方式：**粘贴 URL**、**上传电脑上的 `.js` 文件**、**从 NAS 选择 `.js`**（飞牛桌面内），搜索结果以及能否播放视源脚本而定，请自行测试并使用可靠来源；
-- **管理 WebUI**（可选，端口 8774）：浏览器里完成音源切换、musicdl 平台勾选与音源测试搜索（输入歌名逐平台验证是否出歌）、网易扫码、洛雪源配置（URL/上传/NAS 选择）与测试保存、音质偏好、边听边存、推荐开关与 LLM 配置，全部热生效；
+- **管理 WebUI**（可选，端口 8774）：浏览器里完成音源切换、musicdl 平台勾选与音源测试搜索（输入歌名逐平台验证是否出歌）、网易扫码、洛雪源配置（URL/上传/NAS 选择）与测试保存、音质偏好、边听边存、推荐开关与 LLM 配置，全部热生效；v3.2.0 起还有「关于」页（版本/部署形态/仓库链接）与**检查更新**（有新版时导航点红点，点开看更新说明）；
 - **音质偏好**：`高音质`（从高到低）/ `平衡`（取中间档）/ `流畅`（优先最低）三种模式，覆盖全部音源；
 - **智能边听边存**：在线听歌时后台自动缓存，再次播放本地秒开；可选完整试听后保存进本地曲库；
 - **推荐体系**：「热门推荐」与「每日推荐 MM-DD」两个独立歌单、独立开关；默认采信音源原生推荐，未启用网易时可配 OpenAI 兼容大模型兜底；歌单封面取列表里第一首有封面的曲目；
@@ -37,6 +39,14 @@
 - **重复清理**（v2.3.11，v2.3.18 起支持简繁折叠）：WebUI「歌曲匹配」页可按**歌名**归组扫描曲库重复（忽略文件名差异；简繁标题折叠后「山水之间/山水之間」式孪生条目也能归组），组内保留音质最好的（无损 > 码率 > 大小），其余移入回收站（可找回），收藏/歌单/播放历史引用自动迁移到保留副本——重复文件不再占用空间，红心和歌单完好；
 - **上游 2.6.3 合并**（v2.4.0）：官方 9.25 兼容四件套（分页重复/trackGUIDs 删除/中文下载 500/端点透传）、自动封面内嵌（`FNMUSIC_AUTO_COVER`）、洛雪沙箱 CPU 治理、网易账号歌单（`FNMUSIC_NETEASE_MY_PLAYLISTS`）、每日推荐按账户隔离、在线专辑多源、切歌断点续传（`FNMUSIC_TEE_HANDOFF_MAX`）、取消收藏翻译（bind_registry）、musicdl 2.14.0——详见 CHANGELOG；
 - **App 1.0.2 搜索修复**（v2.4.1）：新版官方 App 搜索改调 `/search/tracks` 复数端点，官方后端无此路由、返回网页导致"搜索永远无结果"；代理现拦截该端点并按单数同款逻辑增强（本地优先 + 在线聚合），转发路径自动改写回官方支持的单数路由。可在 WebUI「搜索」页开关（`FNMUSIC_APP_V2_SEARCH` 默认开），并新增带关键词的搜索日志（`FNMUSIC_SEARCH_LOG_QUERY` 默认开）便于远程定位问题；
+- **公共歌单 + 关于页**（v3.2.0）：管理页「播放与推荐 → 公共歌单」可浏览网易官方的**排行榜 / 推荐歌单 / 分类歌单 / 精品歌单 / 账号推荐**，勾选后以只读虚拟歌单注入音乐页（最多 50 份，按选择顺序展示，`FNMUSIC_PUBLIC_PLAYLISTS_ENABLED`）。匿名可用、不要求扫码，musicbox 会按需常驻；歌单只读，加歌/移歌/删除都不回写网易。同版加入：
+  - **关于页与检查更新**：GitHub Release 优先、Gitee 兜底（成功缓存 6 小时），有新版时导航点红点并在弹窗展示更新说明；
+  - **`moo.json` 商店协议源索引**：fnOS 应用商店/第三方商店可直接据此安装与检查升级；
+  - **首播预热与共享取链（issue #56）**：metadata 请求时并行解析网易直链，同曲并发只出网一次、整条音质阶梯共用 30 秒预算，缓解"首播跳歌"；
+  - **流式禁缓冲（issue #49）**：所有媒体响应带 `X-Accel-Buffering: no`，并输出 Range 形态与首块/总耗时投递日志，根治反代下"起播等整段、拖进度条卡住"；
+  - **洛雪 UA 一致化（issue #54）**：播放与探活统一 Chrome 128 PC UA，失效直链 60 秒冷却快速失败；
+  - **可配置曲库命名模板（issue #47）**：`FNMUSIC_LIBRARY_NAME_PATTERN`，占位符 `{artist}` / `{title}` / `{source}`；
+  - **升级 musicdl 2.14.1**：平台表退役 50/54/56，新增 gequke / leedodo / heishan；
 - **B 站音源**（v3.1.0）：musicdl 新增自研 BilibiliMusicClient 平台——B 站免费歌曲 MV 抓 DASH 音轨（192k AAC，无需登录），实测搜索 0.4 秒级；**视频标题自动清洗为正经歌名+歌手**（飞牛刮削友好），WebUI 勾选即用；
 - **上游 2.8.x 精选移植**（v3.0.0）：在线封面同源直出（App 网易曲目整屏无封面根治，磁盘缓存+直链映射）、网易 VIP 封面缺失源头修复、边听边存同曲跨 guid 复用（不覆盖已有文件）、WebUI 静态资源 no-cache（WebView 升级缓存根治）；
 - **上游 2.7.0 A 级移植**（v2.5.0）：本地歌曲封面直读官方封面目录（`FNMUSIC_COVER_DIR`，根治占位图问题且加载更快）、搜索结果在线来源标记 `[music box]`/`[dl]`/`[lx]`（仅展示，入库标题纯净）、卸载默认保留音乐源数据（重装自动恢复）、WebUI 预览启动健康检查回滚与保存重试激活；
@@ -86,7 +96,7 @@ WebUI「边听边存」页：**关闭边听边存、打开收藏自动下载**�
 
 ### 安装（推荐：应用中心 fpk 包）
 
-从 [GitHub Releases](https://github.com/javycoder/fnos_music_ext/releases) 下载最新 `fnmusic-ext-<版本>.fpk`，在 fnOS「应用中心 → 手动安装」选择该文件，按向导选择**初始音源**即可自动完成安装并启用。
+从 [GitHub Releases](https://github.com/superxyline/fnos_music_ext/releases)（国内可用 [Gitee Releases](https://gitee.com/superxyline/fnos_music_ext/releases)）下载最新 `fnmusic-ext-<版本>.fpk`，在 fnOS「应用中心 → 手动安装」选择该文件，按向导选择**初始音源**即可自动完成安装并启用。
 
 - 桌面会出现「fnMusic 扩展管理」图标，点击即在飞牛桌面窗口内打开管理页（音源切换/扫码登录/平台选择/洛雪源配置）；
 - 选洛雪音源时向导不索要任何源信息：装好后打开管理页，在「音乐源 → 洛雪自定义源」里粘贴脚本 URL、上传电脑 `.js` 文件或从 NAS 选择，测试可用后保存即激活；
@@ -102,7 +112,7 @@ WebUI「边听边存」页：**关闭边听边存、打开收藏自动下载**�
 
 ```bash
 sudo apt-get update && sudo apt-get install -y python3 python3-venv git
-git clone https://github.com/javycoder/fnos_music_ext.git fnmusic_ext
+git clone https://github.com/superxyline/fnos_music_ext.git fnmusic_ext
 cd fnmusic_ext
 chmod +x install.sh extend.sh restore.sh proxy/run_proxy.sh
 ./install.sh
@@ -162,6 +172,10 @@ curl -s --unix-socket /var/run/trim_music.socket http://localhost/_ext/healthz
 | `FNMUSIC_LYRIC_AUTO_DL` | `false` | 下载歌曲落库后自动下载同名 .lrc 到同目录（热重载） |
 | `FNMUSIC_TEE_HANDOFF_MAX` | `3` | 切歌续传后台并发上限（0=关，热重载） |
 | `FNMUSIC_NETEASE_MY_PLAYLISTS` | `false` | 网易账号自建歌单只读注入音乐页（需网易源扫码；热重载） |
+| `FNMUSIC_NETEASE_PLAYLIST_RESIDENT` | *(未配置)* | 网易云歌单常驻：切到其它音源时也保活 musicbox 供数（未配置＝有需求即常驻） |
+| `FNMUSIC_PUBLIC_PLAYLISTS_ENABLED` | `false` | 公共歌单开关：管理页勾选网易榜单/推荐/分类歌单后注入音乐页（匿名可用；热重载） |
+| `FNMUSIC_PUBLIC_PLAYLISTS_SELECTION` | *(空)* | 已选公共歌单（JSON 数组，管理页自动维护；空＝默认四大榜，`[]`＝不注入） |
+| `FNMUSIC_LIBRARY_NAME_PATTERN` | `{artist} - {title}` | 曲库文件命名模板，占位符 `{artist}` / `{title}` / `{source}`（对新落盘歌曲生效） |
 | `FNMUSIC_QQ_ENABLED` / `FNMUSIC_KUGOU_ENABLED` | `true` | 歌曲匹配页 QQ/酷狗音源开关（与三音源开关独立，热重载；QQ 用 QRC 逐字歌词、酷狗用 KRC，均无需登录态） |
 | `FNMUSIC_WEBUI_ENABLED` | `false` | 管理 WebUI 开关（端口 8774，无鉴权） |
 | `LX_SOURCE_URL` | *(空)* | 洛雪自定义源脚本地址：`http(s)://` URL 或 `file:///data/lxmusic/uploads/<名字>.js`（管理页上传/NAS 选择生成）；建议在 WebUI 里「测试并保存」 |
@@ -193,7 +207,7 @@ git pull
 1. **三音源互斥**：旧版多音源并存的 `.env` 会被要求重新单选（想换源时在 WebUI 里秒切）；
 2. **`LX_THIRD_PARTY` 移除**：lxmusic 不再内置第三方聚合解析链，播放解析完全由你的洛雪自定义源脚本提供（安装或 WebUI 中配置）。
 
-平台编号变化：`53`（zhuolin）已随上游 musicdl 2.13.11 下线退役，编号永久空缺；新增 `64`（yinyueku）。
+平台编号变化：`53`（zhuolin）、`50`（LivePOO）、`54`（LiziYY）、`56`（ITingWa）已随上游 musicdl 下线退役，编号永久空缺不再复用；新增 `64`（yinyueku）、`65`（gequke）、`66`（leedodo）、`67`（heishan）。
 
 ## 常见问题
 
@@ -217,9 +231,17 @@ python3 -m pytest        # 全量测试（无需 Docker/飞牛环境）
 ./packaging/fpk/build.sh   # 本地打包：组装 + fnpack 校验 → dist/fnmusic-ext-<版本>.fpk
 ```
 
-- 版本号唯一来源为根目录 `VERSION`，打包时注入 manifest；
-- CI 在每次 push/PR 都会构建一次 fpk 防止结构回归；推送 `v<版本>` tag 会自动构建并把 `.fpk` 与校验和发布到 GitHub Release（tag 需与 `VERSION` 一致）；
+- 版本号唯一来源为根目录 `VERSION`，打包时注入 manifest（本仓库无 CI，发布由本地脚本完成）；
+- 发布流程（维护者）：
+  ```bash
+  ./packaging/fpk/build.sh                     # 产物 dist/fnmusic-ext-<版本>.fpk + .sha256
+  git tag -a v<版本> -m "v<版本>" && git push github main --tags && git push gitee main --tags
+  gh release create v<版本> dist/fnmusic-ext-<版本>.fpk dist/*.sha256 --title v<版本> --notes-file <说明>
+  python3 tools/update_moo_index.py            # 刷新 moo.json（只收正式版，版本降序）
+  ```
+  Gitee 侧在仓库「发行版」页面用同名 tag 手工上传同一个 `.fpk`；
 - 打包结构由 `packaging/tests/test_fpk_pack.py` 离线校验（含 fnpack 实测校验规则）；
+- Windows 上打出的 fpk 可能丢失 `cmd/*` 的可执行位，安装前用 `zipfile` 检查一遍（`0o755`），必要时重打包；
 - 实机安装/卸载自动测试（需在飞牛设备上以 root 运行）：
 
 ```bash

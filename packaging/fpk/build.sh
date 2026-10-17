@@ -58,11 +58,6 @@ if [ -z "${STAGE}" ]; then
     STAGE="${FPK_DIR}/.build/fpk"
 fi
 
-command -v rsync >/dev/null 2>&1 || {
-    echo "ERROR: 需要 rsync（Debian: sudo apt-get install -y rsync）" >&2
-    exit 1
-}
-
 # ------------------------------------------------------------------------------
 # 1. 组装打包目录
 # ------------------------------------------------------------------------------
@@ -70,35 +65,83 @@ rm -rf "${STAGE}"
 mkdir -p "${STAGE}/app/repo" "${STAGE}/app/ui"
 
 # 仓库主体（排除开发文件与本地秘密；.env.example 保留作模板）
-rsync -a --delete \
-    --include='.env.example' \
-    --exclude='.env' --exclude='.env.*' \
-    --exclude='.git/' --exclude='.git*' \
-    --exclude='.github/' --exclude='.zcode/' --exclude='.cursor/' \
-    --exclude='.tasks_archive/' --exclude='.tools/' \
-    --exclude='packaging/' --exclude='dist/' \
-    --exclude='tests/' --exclude='docs/' --exclude='pytest.ini' \
-    --exclude='CONTRIBUTING.md' \
-    --exclude='.venv*/' --exclude='__pycache__/' --exclude='.pytest_cache/' \
-    --exclude='*.pyc' --exclude='*.log' --exclude='*.part' --exclude='.DS_Store' \
-    --exclude='cache/' --exclude='sources-data/' --exclude='backup/' \
-    --exclude='musicbox-data/' --exclude='musicdl_outputs/' \
-    --exclude='recommend_cache/' --exclude='play_history/' \
-    --exclude='online_favorites/' --exclude='online_favorites.json' \
-    --exclude='*.fpk' \
-    "${REPO_ROOT}/" "${STAGE}/app/repo/"
+#
+# 优先用 rsync（Debian/CI 标准路径）；Windows Git Bash、精简容器等没有 rsync
+# 的环境回退到 tar（排除规则逐条对齐）。.env.example 在两套路径下都单独补回，
+# 因为 "排除 .env.*" 会连模板一起排掉。
+if command -v rsync >/dev/null 2>&1; then
+    rsync -a --delete \
+        --include='.env.example' \
+        --exclude='.env' --exclude='.env.*' \
+        --exclude='.git/' --exclude='.git*' \
+        --exclude='.github/' --exclude='.zcode/' --exclude='.cursor/' \
+        --exclude='.tasks_archive/' --exclude='.tools/' \
+        --exclude='packaging/' --exclude='dist/' \
+        --exclude='tests/' --exclude='docs/' --exclude='pytest.ini' \
+        --exclude='CONTRIBUTING.md' \
+        --exclude='.venv*/' --exclude='__pycache__/' --exclude='.pytest_cache/' \
+        --exclude='*.pyc' --exclude='*.log' --exclude='*.part' --exclude='.DS_Store' \
+        --exclude='cache/' --exclude='sources-data/' --exclude='backup/' \
+        --exclude='musicbox-data/' --exclude='musicdl_outputs/' \
+        --exclude='recommend_cache/' --exclude='play_history/' \
+        --exclude='online_favorites/' --exclude='online_favorites.json' \
+        --exclude='*.fpk' \
+        "${REPO_ROOT}/" "${STAGE}/app/repo/"
+    [ -f "${REPO_ROOT}/.env.example" ] && cp "${REPO_ROOT}/.env.example" "${STAGE}/app/repo/.env.example"
+else
+    echo "[fpk] 未找到 rsync，回退 tar 复制仓库"
+    ( cd "${REPO_ROOT}" && tar -cf - \
+        --exclude='./.env' --exclude='./.env.*' \
+        --exclude='./.git' --exclude='./.git*' \
+        --exclude='./.github' --exclude='./.zcode' --exclude='./.cursor' \
+        --exclude='./.tasks_archive' --exclude='./.tools' \
+        --exclude='./packaging' --exclude='./dist' \
+        --exclude='./tests' --exclude='./docs' --exclude='./pytest.ini' \
+        --exclude='./CONTRIBUTING.md' \
+        --exclude='./.venv*' --exclude='__pycache__' --exclude='./.pytest_cache' \
+        --exclude='*.pyc' --exclude='*.log' --exclude='*.part' --exclude='.DS_Store' \
+        --exclude='./cache' --exclude='./sources-data' --exclude='./backup' \
+        --exclude='./musicbox-data' --exclude='./musicdl_outputs' \
+        --exclude='./recommend_cache' --exclude='./play_history' \
+        --exclude='./online_favorites' --exclude='./online_favorites.json' \
+        --exclude='*.fpk' \
+        . ) | ( cd "${STAGE}/app/repo" && tar -xf - )
+    if [ -f "${REPO_ROOT}/.env.example" ]; then
+        cp "${REPO_ROOT}/.env.example" "${STAGE}/app/repo/.env.example"
+    fi
+fi
 
+# 换行符规范化：Windows 工作区（core.autocrlf=true）里 .sh 是 CRLF，直接打进
+# 包会让 NAS 上的 bash 报 "bad interpreter: /bin/bash^M" 之类错误。文本类文件
+# 统一回 LF（幂等；二进制文件不在列表里，不会被动）。
+normalize_lf() {
+    for _dir in "$@"; do
+        [ -d "${_dir}" ] || continue
+        find "${_dir}" -type f \( \
+                -name '*.sh' -o -name '*.py' -o -name '*.js' -o -name '*.css' -o -name '*.html' \
+                -o -name '*.json' -o -name '*.md' -o -name '*.txt' -o -name '*.yml' -o -name '*.yaml' \
+                -o -name '*.in' -o -name '*.example' -o -name 'VERSION' -o -name 'cmd' \
+                -o -name '_common' -o -name 'main' -o -name '*_init' -o -name '*_callback' \
+            \) -exec sed -i 's/\r$//' {} + 2>/dev/null || true
+    done
+}
 # 应用骨架。fnpack 要求 manifest 版本为 x.y.z[-r]（r 为整数修订号）；自动
 # 迭代测试构建在 VERSION/文件名上带字母后缀（如 2.2.9a），manifest 只落基础
 # 三段版本。
 MANIFEST_VER="$(echo "${VERSION}" | sed -E 's/([0-9]+\.[0-9]+\.[0-9]+).*/\1/')"
 sed "s/@VERSION@/${MANIFEST_VER}/" "${FPK_DIR}/manifest.in" > "${STAGE}/manifest"
+# manifest 没有扩展名，不在 normalize_lf 的匹配列表里：单独规范
+# （CRLF 会让 fnOS 解析到的字段值末尾带上回车）
+sed -i 's/\r$//' "${STAGE}/manifest"
 cp "${FPK_DIR}/ICON.PNG" "${FPK_DIR}/ICON_256.PNG" "${STAGE}/"
 cp -a "${FPK_DIR}/app/ui/." "${STAGE}/app/ui/"
 cp -a "${FPK_DIR}/cmd" "${STAGE}/cmd"
 cp -a "${FPK_DIR}/config" "${STAGE}/config"
 cp -a "${FPK_DIR}/wizard" "${STAGE}/wizard"
 chmod +x "${STAGE}"/cmd/*
+
+# 骨架与仓库复制完成后再统一换行符（cmd/config/wizard 的源文件同样是 CRLF）
+normalize_lf "${STAGE}/app/repo" "${STAGE}/cmd" "${STAGE}/config" "${STAGE}/wizard"
 
 echo "[fpk] 组装完成: ${STAGE} (version=${VERSION})"
 

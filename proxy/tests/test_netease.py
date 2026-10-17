@@ -1205,7 +1205,10 @@ def _pin_mock_client(monkeypatch):
             "code": 200, "url": next(urls)}})
 
     _app._NETEASE_URL_PIN.clear()
-    _app._NETEASE_URL_LOCKS.clear()
+    # 共享取链改造后：在飞任务字典取代了旧的 per-key 锁表
+    _app._NETEASE_URL_INFLIGHT.clear()
+    _app._NETEASE_PREFETCH.clear()
+    _app._NETEASE_PREHEATED_PINS.clear()
     return _httpx.AsyncClient(transport=_httpx.MockTransport(handler),
                               base_url="http://127.0.0.1:8770")
 

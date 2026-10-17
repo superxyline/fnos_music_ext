@@ -102,7 +102,7 @@ CONF = {
 # 当前激活的用户自定义源（启动时从 state.json / LX_SOURCE_URL 恢复）
 SOURCE_MANAGER = SourceManager(seed_url=CONF["source_url"])
 
-UA_PC = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+UA_PC = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 UA_MOBILE = "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
 
 # id -> {"item": {...}, "ts": float}
@@ -723,7 +723,10 @@ async def _verify_result(client: httpx.AsyncClient, result: dict | None,
         return None
     result = dict(result)
     if not result.get("probed"):
-        ok, final, ct, size = await probe_url(client, result["url"], result.get("headers"),
+        # issue #54：探活必须与播放同一 UA（UA 敏感 CDN 实测按 UA 放行/拒绝）
+        probe_headers = dict(result.get("headers") or {})
+        probe_headers.setdefault("User-Agent", UA_PC)
+        ok, final, ct, size = await probe_url(client, result["url"], probe_headers,
                                             report_transport=report_transport)
         if not ok:
             return None
@@ -731,6 +734,15 @@ async def _verify_result(client: httpx.AsyncClient, result: dict | None,
                       ext=ct.split("/")[-1], probed=True)
     result.update(validation_status="media_verified", completeness="unknown")
     result["actual_tier"] = _actual_tier(result)
+    # issue #54：UA 敏感 CDN（实测酷我）按 User-Agent 差异放行/拒绝——探活用
+    # Chrome PC UA 验链通过、代理取流回退 httpx 默认 UA 就被 403。解析结果出口
+    # 统一带上 UA（含缓存复用与旧条目），代理侧直接透传即可。
+    out_headers = {k: v for k, v in (result.get("headers") or {}).items()
+                   if k.lower() != "user-agent"}
+    out_headers["User-Agent"] = str(
+        next((v for k, v in (result.get("headers") or {}).items() if k.lower() == "user-agent"),
+             UA_PC))
+    result["headers"] = out_headers
     return result
 
 

@@ -238,3 +238,86 @@ input[type="radio"] { accent-color: var(--accent); margin-top: 4px; }
   .provider-grid { grid-template-columns: 1fr; }
   #qr-img { width: min(220px, 72vw); height: auto; aspect-ratio: 1; }
 }
+
+/* ---------------------------------------------------------------- 关于页 */
+.nav-dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  margin-left: 5px;
+  border-radius: 50%;
+  background: #e5484d;
+  vertical-align: middle;
+}
+.about-version { display: flex; align-items: center; gap: 8px; font-size: 20px; font-weight: 700; }
+.new-badge {
+  border: 0; cursor: pointer;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #e5484d; color: #fff;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+  line-height: 1.5;
+}
+.new-badge:hover { filter: brightness(1.06); }
+
+/* ---------------------------------------------------------------- 新版本弹窗 */
+.modal-mask {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; align-items: center; justify-content: center;
+  padding: 18px;
+  background: rgba(12, 20, 34, 0.42);
+}
+/* 作者样式表的 display:flex 会压过浏览器对 hidden 的默认 display:none，
+   必须显式兜底——否则一进管理页就被空弹窗遮罩盖住且关不掉。 */
+.modal-mask[hidden] { display: none; }
+.modal {
+  width: min(560px, 100%);
+  max-height: min(78vh, 640px);
+  display: flex; flex-direction: column;
+  background: var(--card, #fff);
+  border-radius: 14px;
+  box-shadow: 0 18px 48px rgba(10, 20, 36, 0.28);
+  overflow: hidden;
+}
+.modal-head, .modal-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 14px 16px;
+}
+.modal-head { border-bottom: 1px solid var(--line); }
+.modal-foot { border-top: 1px solid var(--line); justify-content: flex-end; }
+.modal-body { padding: 14px 16px; overflow: auto; }
+.update-log {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(16, 30, 54, 0.04);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* -------------------------------------------------- 公共歌单 */
+/* .stack 是 flex 容器，[hidden] 的内联样式会被 display:flex 覆盖，必须显式兜底 */
+.stack[hidden] { display: none; }
+.public-list {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px; max-height: 390px; overflow-y: auto; padding: 2px;
+}
+.public-item, .public-selected {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+  background: var(--card, #fff); font-size: 14px;
+}
+.public-item { cursor: pointer; }
+.public-item img, .public-selected img {
+  width: 42px; height: 42px; border-radius: 6px; object-fit: cover; flex: none;
+  background: rgba(16, 30, 54, 0.06);
+}
+.public-selected img { width: 46px; height: 46px; }
+.public-item .min, .public-selected .min { min-width: 0; flex: 1; }
+.public-item small, .public-selected span { display: block; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.public-selected { justify-content: space-between; }
+.public-selected .btn-row { margin: 0; flex: none; }
+.public-selected .btn { padding: 3px 8px; font-size: 12px; }

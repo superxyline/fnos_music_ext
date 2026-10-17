@@ -46,12 +46,49 @@ else
     log "未配置任何音源（FNMUSIC_MUSICDL_ENABLED/FNMUSIC_NETEASE_ENABLED/FNMUSIC_LX_ENABLED 均未启用）"
 fi
 
-# 网易账号歌单（FNMUSIC_NETEASE_MY_PLAYLISTS）：无论音源选谁，musicbox 常驻
-# 提供网易登录态/歌单/网易曲目取流（不参与搜索）。三选一已启动时 supervisor
-# 对 RUNNING 程序的 start 幂等失败，先查状态避免多一条 WARN 日志。
-if [ "$(env_flag FNMUSIC_NETEASE_MY_PLAYLISTS)" = "true" ]; then
+# 网易云歌单常驻（issue #38）：无论音源选谁，musicbox 常驻提供网易登录态/
+# 歌单/网易曲目取流（不参与搜索）。生效前提＝账号歌单开关已开，且显式常驻
+# 开关未配置（老配置沿用「账号歌单即常驻」）或为 true；显式 false 时不常驻。
+# 盘上有网易 cookie（登录启发）才拉起；权威校验由 webui 开机对账完成
+# （原生形态无 XDG 环境变量可能找不到 cookie，由 webui 兜底）。
+musicbox_cookie_present() {
+    for _f in "${XDG_DATA_HOME:-/nonexistent}/netease-musicbox/cookie.txt" \
+              "${HOME:-/root}/.netease-musicbox/cookie.txt" \
+              "${XDG_CONFIG_HOME:-/nonexistent}/netease-musicbox/cookie.txt"; do
+        if [ -s "$_f" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+resident_flag() {
+    _rf="$(env_flag FNMUSIC_NETEASE_PLAYLIST_RESIDENT true)"
+    case "$_rf" in
+        true) return 0 ;;   # 显式开启（或未配置时的默认）
+        *) return 1 ;;
+    esac
+}
+
+# 公共歌单（issue #55）匿名可用：只要开了开关且选择里含 musicbox 歌单，就同样要拉起
+public_playlists_needed() {
+    [ "$(env_flag FNMUSIC_PUBLIC_PLAYLISTS_ENABLED)" = "true" ] || return 1
+    _sel="$(printf '%s' "${FNMUSIC_PUBLIC_PLAYLISTS_SELECTION:-}" | tr -d ' \n')"
+    case "$_sel" in
+        "") return 0 ;;                       # 空选择＝默认榜单（proxy 侧同口径）
+        *'"provider":"musicbox"'*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+if resident_flag && {
+        [ "$(env_flag FNMUSIC_NETEASE_MY_PLAYLISTS)" = "true" ] || public_playlists_needed
+    }; then
     _MB_STATE="$(supervisorctl -c "$SUP_CONF" status musicbox 2>/dev/null | awk '{print $2}')"
-    if [ "$_MB_STATE" != "RUNNING" ]; then
+    # 账号歌单要盘上有 cookie；只开公共歌单时匿名即可，无需 cookie
+    if [ "$_MB_STATE" != "RUNNING" ] && {
+            [ "$(env_flag FNMUSIC_NETEASE_MY_PLAYLISTS)" != "true" ] || musicbox_cookie_present
+        }; then
         start_prog musicbox
     fi
 fi

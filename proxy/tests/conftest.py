@@ -26,3 +26,19 @@ def _isolate_cover_state(monkeypatch):
 
     monkeypatch.setattr(pa, "_COVER_GUID_URL_MEM", {})
     monkeypatch.setattr(pa, "_COVER_UNRESOLVED_SEEN", set())
+
+
+@pytest.fixture(autouse=True)
+def _isolate_netease_resolution(monkeypatch):
+    """隔离网易直链钉链与共享取链注册表。
+
+    钉链按 song_id 全局记账：不隔离时先跑用例钉住的 URL 会让后续「全部失败应
+    返回 None」的用例直接命中旧钉链，表现为凭空的成功结果。
+    """
+    from proxy import app as pa
+
+    monkeypatch.setattr(pa, "_NETEASE_URL_PIN", {})
+    monkeypatch.setattr(pa, "_NETEASE_URL_INFLIGHT", {})
+    monkeypatch.setattr(pa, "_NETEASE_PREFETCH", set())
+    monkeypatch.setattr(pa, "_NETEASE_PREHEATED_PINS", {})
+    monkeypatch.setattr(pa, "_NETEASE_URL_CONFIG", None)

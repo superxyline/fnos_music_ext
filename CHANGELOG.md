@@ -5,6 +5,27 @@
 
 > 以下 v2.3.1 起为本仓库（superxyline 二次开发版）的增量变更；v2.3.0 及之前为上游 javycoder/fnos_music_ext 的变更。
 
+## [3.2.0] - 2026-10-17
+
+### 新增
+
+- **公共歌单（上游 issue #55）**：管理页「播放与推荐 → 公共歌单」可浏览网易官方的**排行榜 / 推荐歌单 / 分类歌单 / 精品歌单 / 账号推荐**，勾选后以只读虚拟歌单注入音乐页（热门推荐下方、官方歌单上方），最多 50 份、按选择顺序展示。链路：musicbox 新增 `/api/v1/public-playlists/{capabilities,categories,,/{id},/{id}/tracks}` 五档发现接口（匿名可用，账号推荐需登录）→ WebUI `/api/public-playlists/*` 反代（白名单 + 分类/列表短缓存，能力声明与曲目列表不缓存）→ `proxy/publicplaylists.py` 注入（摘要 30 分钟内存 + 失败冷却 2 分钟 + 24 小时磁盘快照，曲目 10 分钟内存 LRU 8 份 + 后台串行预取）。歌单 guid 自包含（`online:playlist:public:musicbox:netease:chart:<id>`），封面 coverId 与曲目 guid 沿用确定性 md5 伪装，播放/歌词/封面全部走既有 `online:netease` 链路；加歌/移歌/删除由 proxy 只读吸收，不回写网易。新增 `FNMUSIC_PUBLIC_PLAYLISTS_ENABLED` / `FNMUSIC_PUBLIC_PLAYLISTS_SELECTION`（热重载）。
+- **网易云歌单常驻扩展到公共歌单**：只要开了公共歌单且选择里含网易歌单，musicbox 就按常驻规则保活（匿名即可，不要求扫码登录）；未登录时只有账号歌单部分告警，公共歌单照常可用。容器入口与健康检查同步识别该需求（公共歌单场景无需盘上 cookie）。
+- **关于页 + 检查更新**：新增「关于」页（版本、部署形态、上游/仓库链接、免责声明），启动与本页打开时各查一次 GitHub Release（失败回退 Gitee，成功缓存 6 小时、失败 10 分钟），有新版时导航点红点并在弹窗展示更新说明（Markdown 清洗为纯文本）。
+- **moo 商店协议源索引**：`moo.json`（`schema_version: "moo"`）由 `tools/update_moo_index.py` 从 GitHub Release 生成（只收正式版，版本降序，顶层 version 与首条一致），支持商店直接安装与升级。
+- **曲库文件命名模板（issue #47）**：`FNMUSIC_LIBRARY_NAME_PATTERN` 支持 `{artist}` / `{title}` / `{source}` 占位符（默认 `{artist} - {title}`）；歌手缺失时自动去掉占位符与多余分隔符，路径分隔符清洗，截断 200 字符。对之后新落盘的歌曲生效。
+- **网易首播预热与共享取链（issue #56 安全子集）**：两侧都改成「一次解析、多方复用」——
+  - musicbox（`musicbox-service/playback.py`）：进程内取链按 (歌曲, 音质) 共享一个 `asyncio.to_thread` 任务，12 秒预算内并发请求只解析一次，调用方取消（App 频繁 seek/切歌）不会打断共享任务，事件循环不被阻塞；单档取链超时由 10s 收紧到 5s，失败快速降档。
+  - proxy：网易取链改为 Task 共享（同曲并发只出网一次），整条音质阶梯共用 30 秒预算（5 档 x 5s 串行会吃满 App 起播耐心），并新增**首播预热**——metadata 请求时并行解析直链，客户端真正起播时直链已在钉链里；预热钉链单独记账，音质配置热重载时统一下掉。新增 `netease_resolve` / `netease_resolve_wait` / `netease_resolve_timeout` / `netease_prefetch` 诊断日志。
+
+### 修复
+
+- **流式播放被反代缓冲（issue #49）**：所有媒体响应补 `X-Accel-Buffering: no`（音频流、HEAD、HLS playlist），根治 nginx 两层反代下"起播要等整段/拖进度条卡住"；新增 Range 形态分类（none/open/suffix/partial/invalid）与首块/总耗时投递日志，客户端中途断开、上游中断各有独立结果标记，便于定位"能播但不流畅"。
+- **酷我 CDN 403（issue #54）**：洛雪取链的 UA 与探活 UA 统一为 Chrome 128 PC UA（proxy 与 lxmusic-service 逐字符一致，新增跨服务一致性测试），并在钉住失效时按冷却 60 秒快速失败，避免反复拿到同一批已失效直链。
+- **musicdl 平台表对齐上游 2.14.1**：退役 50（LivePOO）/54（LiziYY）/56（ITingWa），新增 65（gequke）/66（leedodo）/67（heishan）；`requirements.txt` 提至 `musicdl>=2.14.1`，平台表测试同步锁定退役编号不得复用。
+
+
+
 ## [3.1.2] - 2026-10-12
 
 ### 修复
@@ -55,12 +76,10 @@
 
 ## [2.5.0] - 2026-10-09
 
-<<<<<<< HEAD
 ### 合并上游 v2.7.0（A 级四项，分级清单见 docs/UPSTREAM_PORT_PLAN_2026-10-09.md）
-=======
+
 - **洛雪免登录榜单全部为空，歌单列表只剩每日推荐（issue #47）**：lxmusic 调 lxserver 榜单歌曲接口时参数名误用 `id`，而上游只认 `bangid`（缺失直接 400 "Missing bangid"），错误又被静默吞掉——「热门推荐」构建的 lx 榜单层永远取不到歌，lx 音源用户（尤其未登录网易时）的歌单列表不再出现热门推荐。现参数对齐上游契约，bangid 改为按榜单名从 boards 接口动态解析（进程内缓存 10 分钟，解析失败回退内置默认值，上游换榜 id 不再静默失效），非 200 响应补 warning 日志不再静默；新增 MockTransport 参数契约测试锁定该回归通道。
 - **网易云在线封面在官方手机 App 不显示（issue #48，2.8.0 未修完的部分）**：封面接口此前对在线曲目一律 `302` 跳转源站 CDN 直链，官方手机 App 的封面加载器不跟随跨域重定向（网页端跟随所以正常），导致网易云（含 VIP）曲目在 App 内整屏无封面。现封面接口默认**代理同源直出图片字节**：服务端代拉源站 CDN 后连同磁盘缓存（7 天 TTL、容量/数量上限、惰性清理）一起返回；新增 guid→封面直链映射（内存+磁盘，14 天），App 高频刷列表与网易 info 接口登录态/风控抖动窗口内，已成功出图过的封面直接命中缓存，不再回退占位图。占位图响应改 `Cache-Control: no-store`（兜底图不再被客户端缓存粘住，自愈立即生效）；封面请求带 `.jpg`/`_w120.jpg` 等文件形态尾缀时自动剥离反解；伪装 coverId 反解失败（代理重启热身窗口）留档 `cover_id_unresolved` 诊断日志。新增 `FNMUSIC_COVER_MODE`（`proxy` 默认 / `redirect` 保留旧 302 行为，热重载）。
->>>>>>> cd3fd1b (fix(proxy): 在线封面同源直出字节流，官方手机 App 不再整屏无封面（issue #48）)
 
 - **本地歌曲封面直读**（`FNMUSIC_COVER_DIR` 可配，空=自动探测官方封面根目录）：静态封面端点直读官方封面文件按魔数嗅探返回（JPEG/PNG/WebP），支持 `size` 缩略图，未命中平滑回落官方 UDS 透传——根治接管后本地歌曲封面回退占位图的问题，列表图片加载也更快；
 - **搜索结果在线来源标记**（仅展示）：在线条目歌名前加 `[music box]` / `[dl]` / 洛雪备注名或 `[lx]`，播放/收藏/入库标题保持纯净（`strip_source_tag` 同步清洗事件上报标题）；

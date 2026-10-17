@@ -25,6 +25,7 @@
         <button class="nav-item" data-page="tee">边听边存</button>
         <button class="nav-item" data-page="match">歌曲匹配</button>
         <button class="nav-item" data-page="llm">高级 · 大模型</button>
+        <button class="nav-item" data-page="about">关于<span class="nav-dot" id="about-dot" hidden></span></button>
       </nav>
       <div class="sidebar-foot" id="sidebar-foot"></div>
     </aside>
@@ -130,6 +131,7 @@
         <div class="card">
           <div class="card-title">网易账号歌单</div>
           <label class="switch-row"><span>音乐页显示网易账号歌单<div class="sub">任意音源下可用：开启后自动在后台拉起网易组件（只提供登录态与网易取流，不参与搜索）。网易账号里自己创建的歌单会出现在音乐页「热门推荐」下方、官方歌单上方，点开就能听。歌单只读：在音乐页往里加歌、移歌或删除都不会写回网易。默认关闭，保存后立即生效。</div></span><input type="checkbox" id="netease-my-playlists"></label>
+          <label class="switch-row"><span>网易云歌单常驻<div class="sub">勾选后即使把音源切到 musicdl 或洛雪，网易账号歌单与已选的公共歌单仍留在音乐页、点开即播——musicbox 保持常驻为它们供数（约百兆内存）。账号歌单需要先扫码登录；公共歌单匿名可用。未登录时账号歌单部分不生效（仅公共歌单仍会保活）。不勾选则切走后释放内存（登录态保留，切回不丢）。默认不勾选。</div></span><input type="checkbox" id="netease-resident"></label>
           <label class="switch-row"><span>显示收藏/关注的歌单<div class="sub">开启后，账号收藏的他人歌单连同自建歌单一起显示（「我喜欢的音乐」始终显示）；关闭则只显示自己创建的歌单。仅在上一项开启时生效。默认开启。</div></span><input type="checkbox" id="netease-subscribed"></label>
         </div>
       </section>
@@ -149,6 +151,31 @@
           <div class="card-title">推荐</div>
           <label class="switch-row"><span>热门榜单推荐<div class="sub">独立「热门推荐」歌单：热歌榜/飙升榜原味</div></span><input type="checkbox" id="recommend-hot"></label>
           <label class="switch-row"><span>每日推荐<div class="sub">独立「每日推荐」歌单；其他音源在配置大模型后生效</div></span><input type="checkbox" id="recommend-daily"></label>
+          <label class="switch-row"><span>公共歌单<div class="sub">浏览网易官方的排行榜、推荐歌单与分类歌单，勾选后作为独立只读歌单显示在音乐页「热门推荐」下方。只读：在音乐页加歌、移歌或删除都不会写回网易。需要网易云音乐盒子运行（会按需常驻，匿名即可，不必登录）。默认关闭。</div></span><input type="checkbox" id="public-playlists-enabled"></label>
+          <div id="public-playlists-browser" class="stack" hidden>
+            <div class="btn-row">
+              <select class="input grow" id="public-channel" aria-label="歌单入口"></select>
+              <button class="btn" id="public-refresh">刷新</button>
+            </div>
+            <div class="btn-row">
+              <select class="input grow" id="public-category" aria-label="分类"></select>
+              <select class="input" id="public-sort" aria-label="排序" hidden>
+                <option value="hot">最热</option>
+                <option value="new">最新</option>
+              </select>
+            </div>
+            <p class="hint" id="public-note">选择入口后加载歌单。</p>
+            <div id="public-list" class="public-list"></div>
+            <div class="btn-row">
+              <button class="btn small" id="public-prev">上一页</button>
+              <span id="public-page" class="muted">1</span>
+              <button class="btn small" id="public-next">下一页</button>
+            </div>
+            <div>
+              <div class="card-title">已选歌单（音乐页展示顺序）</div>
+              <div id="public-selected" class="stack"></div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -263,6 +290,30 @@
           <label class="field"><span>模型</span><input class="input" id="llm-model" placeholder="gpt-4o-mini"></label>
         </div>
       </section>
+
+      <!-- 关于 -->
+      <section class="page" id="page-about">
+        <h2>关于</h2>
+        <div class="card">
+          <div class="card-title">版本</div>
+          <div class="about-version">
+            <span id="about-version">—</span>
+            <button class="new-badge" id="about-new" hidden title="发现新版本">NEW</button>
+          </div>
+          <div class="hint" id="about-deploy">部署形态：—</div>
+          <div class="hint" id="about-check-note"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">项目</div>
+          <div class="stack" id="about-links"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">免责声明</div>
+          <p class="hint">本扩展仅用于个人合法拥有/授权内容的播放与管理，不提供任何音源内容存储。
+          在线音源的可用性、合法性与版权归属由提供方负责；请勿用于任何商业用途，
+          由此产生的一切后果由使用者自行承担。</p>
+        </div>
+      </section>
     </main>
   </div>
 
@@ -275,12 +326,30 @@
     <button class="nav-item" data-page="tee">缓存</button>
     <button class="nav-item" data-page="match">匹配</button>
     <button class="nav-item" data-page="llm">高级</button>
+    <button class="nav-item" data-page="about">关于<span class="nav-dot" id="about-dot-m" hidden></span></button>
   </nav>
 
   <!-- 保存条 -->
   <div class="save-bar" id="save-bar">
     <span id="save-note" class="muted"></span>
     <button class="btn primary" id="save-btn">保存并生效</button>
+  </div>
+
+  <div class="modal-mask" id="update-modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="update-title">
+      <div class="modal-head">
+        <div class="card-title" id="update-title">发现新版本</div>
+        <button class="btn" id="update-close" type="button">取消</button>
+      </div>
+      <div class="modal-body">
+        <div class="muted" id="update-meta"></div>
+        <pre class="update-log" id="update-log"></pre>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" id="update-later" type="button">取消</button>
+        <a class="btn primary" id="update-go" target="_blank" rel="noopener noreferrer">升级</a>
+      </div>
+    </div>
   </div>
 
   <div class="toast" id="toast" hidden></div>

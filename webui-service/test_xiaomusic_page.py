@@ -37,6 +37,52 @@ def test_xiaomusic_entry_in_both_navs():
     assert 'id="xm-enabled"' in html
 
 
+def test_done_page_renders_two_independent_health_rows():
+    """完成页必须有两个**独立**状态项（口令轮询 / 小米账号），而不是一行互斥提示。
+
+    回归背景：早期实现只有一个 <p id="xm-mi-state"> 且 pull_ask_on 正常时只显示
+    登录态那一句 —— 用户看不到「口令轮询状态」，误以为状态区没渲染。
+    """
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert 'id="xm-h-poll"' in js, "完成页缺少口令轮询状态行"
+    assert 'id="xm-h-mi"' in js, "完成页缺少小米账号状态行"
+    assert "xmSetHealth" in js
+    # 两行各自独立判定：轮询看 pull_ask_on、账号看 mi_logged，不能写成 if/else 互斥
+    body = js[js.index("function xmRefreshDone"):]
+    body = body[:body.index('\n}')]
+    assert "pull_ask_on" in body and "mi_logged" in body
+    assert body.index("pull_ask_on") < body.index("mi_logged")
+    # 旧的单行实现不应残留
+    assert 'id="xm-mi-state"' not in js
+    css = (STATIC / "style.css").read_text(encoding="utf-8")
+    for cls in (".xm-health-item", ".xm-health-item.ok", ".xm-health-item.err"):
+        assert cls in css, f"样式缺少 {cls}"
+
+
+
+def test_done_page_renders_two_independent_health_rows():
+    """完成页必须有两个**独立**状态项（口令轮询 / 小米账号），而不是一行互斥提示。
+
+    回归背景：早期实现只有一个 <p id="xm-mi-state"> 且 pull_ask_on 正常时只显示
+    登录态那一句 —— 用户看不到「口令轮询状态」，误以为状态区没渲染。
+    """
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert 'id="xm-h-poll"' in js, "完成页缺少口令轮询状态行"
+    assert 'id="xm-h-mi"' in js, "完成页缺少小米账号状态行"
+    assert "xmSetHealth" in js
+    # 两行各自独立判定：轮询看 pull_ask_on、账号看 mi_logged，不能写成 if/else 互斥
+    body = js[js.index("function xmRefreshDone"):]
+    body = body[:body.index("\n}")]
+    assert "pull_ask_on" in body and "mi_logged" in body
+    assert body.index("pull_ask_on") < body.index("mi_logged")
+    # 旧的单行实现不应残留
+    assert 'id="xm-mi-state"' not in js
+    css = (STATIC / "style.css").read_text(encoding="utf-8")
+    for cls in (".xm-health-item", ".xm-health-item.ok", ".xm-health-item.err"):
+        assert cls in css, f"样式缺少 {cls}"
+
+
+
 def test_xiaomusic_schema_key():
     spec = webui.SCHEMA["FNMUSIC_XIAOMUSIC_ENABLED"]
     assert spec["kind"] == "bool"

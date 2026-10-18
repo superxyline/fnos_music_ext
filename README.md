@@ -8,7 +8,7 @@
 
 `fnmusic-ext` 是专为 fnOS（飞牛私有云）自带音乐应用（`trim.music`）打造的**无侵入增强扩展**。它通过接管官方后端的 Unix Socket 通信入口，在完全不修改官方程序、nginx 配置与数据库的前提下，让原生飞牛音乐获得在线音乐能力；可随时一条命令还原官方直连。
 
-> 当前版本：**v3.3.1**（v3.3.0＝小爱音箱接管：xiaomusic 桥接 + 管理台三步配置 + 收藏点歌；v3.3.1＝搜索结果标注具体来源平台 `[kuwo]晴天`；另含 musicbox `playback.py` 漏 COPY、网易扫码不可达等修复；详见 [CHANGELOG.md](CHANGELOG.md)）
+> 当前版本：**v3.3.2**（v3.3.0＝小爱音箱接管：xiaomusic 桥接 + 管理台三步配置 + 收藏点歌；v3.3.1＝搜索结果标注具体来源平台 `[kuwo]晴天`；v3.3.2＝完成页独立展示口令轮询 / 小米账号状态；另含 musicbox `playback.py` 漏 COPY、网易扫码不可达等修复；详见 [CHANGELOG.md](CHANGELOG.md)）
 
 ![飞牛桌面里的 fnMusic 扩展管理](preview_image/preview.png)
 

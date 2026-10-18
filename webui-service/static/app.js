@@ -1423,7 +1423,14 @@ function xmDoneHtml(st) {
   const xmUrl = `http://${escapeHtml(nasIp)}:${st.public_port || 8775}/xm/`;
   return `<div class="card">
     <div class="card-title">配置完成</div>
-    <p class="hint" id="xm-mi-state"></p>
+    <div class="xm-health">
+      <div class="xm-health-item" id="xm-h-poll">
+        <span class="dot"></span><span class="txt">口令轮询：检测中…</span>
+      </div>
+      <div class="xm-health-item" id="xm-h-mi">
+        <span class="dot"></span><span class="txt">小米账号：检测中…</span>
+      </div>
+    </div>
     <p class="hint">现在可以对小爱音箱说「播放收藏」随机播放飞牛音乐收藏，或者说「播放晴天」直接点歌。收藏有增减时约 5 分钟自动同步。</p>
     <div class="xm-status-grid">
       <div class="xm-status-cell"><div class="v" id="xm-d-fav">-</div><div class="k">收藏歌曲</div></div>
@@ -1659,6 +1666,14 @@ async function xmSaveFnmusic() {
   }
 }
 
+function xmSetHealth(id, ok, text) {
+  const el = $(id);
+  if (!el) return;
+  el.className = "xm-health-item " + (ok ? "ok" : "err");
+  const t = el.querySelector(".txt");
+  if (t) t.textContent = text;
+}
+
 function xmRefreshDone(st) {
   const set = (id, v, cls) => {
     const el = $(id);
@@ -1671,18 +1686,27 @@ function xmRefreshDone(st) {
   set("#xm-d-push", st.push_ok ? "正常" : "等待", st.push_ok ? "ok" : "err");
   const err = st.last_error || "";
   set("#xm-d-err", err ? (err.length > 12 ? err.slice(0, 12) + "…" : err) : "无", err ? "err" : "ok");
-  const mi = $("#xm-mi-state");
-  if (mi) {
-    if (st.pull_ask_on === false) {
-      mi.textContent = "⚠️ 口令轮询未开启（语音指令到不了桥接）——请到 xiaomusic 高级设置开启「监听新消息」";
-      mi.style.color = "var(--err)";
-    } else if (st.mi_logged) {
-      mi.textContent = "小米账号登录态：正常（口令经小米云正常下发）";
-      mi.style.color = "var(--ok)";
-    } else {
-      mi.textContent = "⚠️ 小米账号登录已失效（口令无法下发）——请点下方「重新配置」重新登录小米账号";
-      mi.style.color = "var(--err)";
-    }
+
+  // ① 口令轮询（桥接 enable_pull_ask）：false 时 poller 空转，语音指令永远到不了桥接
+  const pollOn = st.pull_ask_on;
+  const chan = st.ask_channel === "mina" ? "mina 通道" : "小爱对话记录通道";
+  if (pollOn === true) {
+    xmSetHealth("#xm-h-poll", true, `口令轮询：正常（${chan}）`);
+  } else if (pollOn === false) {
+    xmSetHealth("#xm-h-poll", false,
+      "口令轮询：未开启 — 语音指令到不了桥接，请到「xiaomusic 高级设置」开启「监听新消息」");
+  } else {
+    xmSetHealth("#xm-h-poll", false, "口令轮询：状态未知（桥接未返回 pull_ask_on，可能未启动）");
+  }
+
+  // ② 小米账号登录态：失效时口令无法经小米云下发到音箱
+  if (st.mi_logged === true) {
+    xmSetHealth("#xm-h-mi", true, "小米账号：登录有效，口令可正常下发到音箱");
+  } else if (st.mi_logged === false) {
+    xmSetHealth("#xm-h-mi", false,
+      "小米账号：登录已失效 — 口令无法下发，请点下方「重新配置」重新扫码登录");
+  } else {
+    xmSetHealth("#xm-h-mi", false, "小米账号：状态未知（桥接未返回 mi_logged）");
   }
 }
 

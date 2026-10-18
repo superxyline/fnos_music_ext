@@ -380,3 +380,21 @@ input[type="radio"] { accent-color: var(--accent); margin-top: 4px; }
 .xm-msg { padding: 9px 12px; border-radius: 8px; font-size: 13px; margin-top: 10px; }
 .xm-msg.ok { background: var(--accent-soft); color: var(--accent); }
 .xm-msg.err { background: #fdeeee; color: var(--err); }
+/* 完成页运行状态条：口令轮询 / 小米登录态（.xm-health-item.ok / .err 切换配色） */
+.xm-health { display: grid; gap: 8px; margin: 12px 0 14px; }
+.xm-health-item {
+  display: flex; align-items: flex-start; gap: 9px;
+  border: 1px solid var(--line); border-left: 3px solid var(--muted);
+  border-radius: 8px; padding: 10px 12px;
+  font-size: 13px; line-height: 1.5; background: var(--bg);
+}
+.xm-health-item .dot {
+  width: 8px; height: 8px; border-radius: 50%; flex: none;
+  margin-top: 6px; background: var(--muted);
+}
+.xm-health-item .txt { color: var(--text); }
+.xm-health-item.ok { border-left-color: var(--ok); }
+.xm-health-item.ok .dot { background: var(--ok); }
+.xm-health-item.err { border-left-color: var(--err); }
+.xm-health-item.err .dot { background: var(--err); }
+.xm-health-item.err .txt { color: var(--err); }

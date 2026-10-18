@@ -788,12 +788,22 @@ async def _fetch_devices(trigger_login: bool = False):
             data = r.json()
         devices = data.get("device_list") or []
         # deviceID -> did 映射（getsetting 的 device_list 里可能没有 did 字段，
-        # 而 xiaomusic 的 mi_did 配置需要 did；从 device_manager 拿真实映射）
+        # 而 xiaomusic 的 mi_did 配置需要 did；从 device_manager 拿真实映射）。
+        # 扫码登录后立刻拉列表时映射可能还没建立（登录流程是异步的）——
+        # 此时主动刷新一次设备信息再取，拿不到 did 的设备由调用方拒绝勾选，
+        # 绝不允许退回 deviceID（UUID）——mi_did 存 UUID 会导致口令只对
+        # 单台生效甚至完全不生效（音箱走自己的音乐播放）。
         id2did = {}
         try:
             id2did = dict(XM.device_manager.device_id_did or {})
         except Exception:
             pass
+        if not id2did and XM is not None and XM.auth_manager is not None:
+            try:
+                await XM.device_manager.update_device_info(XM.auth_manager)
+                id2did = dict(XM.device_manager.device_id_did or {})
+            except Exception as e:
+                log.warning("刷新设备映射失败: %s", e)
         return [
             {"deviceID": d.get("deviceID"), "name": d.get("name"),
              "hardware": d.get("hardware", ""),
@@ -816,9 +826,17 @@ async def wizard_devices_get():
 async def wizard_devices(request: Request):
     """Step2：保存勾选的小爱音箱"""
     data = await request.json()
-    dids = data.get("dids") or []
+    dids = [str(d).strip() for d in (data.get("dids") or []) if str(d).strip()]
     if not dids:
         return JSONResponse({"ok": False, "message": "请至少勾选一台音箱"}, status_code=400)
+    # did 必须是纯数字（xiaomusic 的 did 形如 865284534）。存进 UUID（deviceID）
+    # 会让 mi_did 失配——口令只对单台生效甚至全部走音箱自己的播放。
+    bad = [d for d in dids if not d.isdigit()]
+    if bad:
+        return JSONResponse(
+            {"ok": False,
+             "message": "设备标识异常（取到了 UUID 而非 did），请返回上一步重新获取设备列表"},
+            status_code=400)
     try:
         async with httpx.AsyncClient(base_url=SELF_URL, timeout=90) as cli:
             r = await cli.post("/xm/savesetting", json={"mi_did": ",".join(dids)})

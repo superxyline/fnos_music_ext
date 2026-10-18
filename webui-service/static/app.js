@@ -1374,9 +1374,19 @@ function xmDeviceListHtml(devices, selected) {
     return `<div class="muted">未获取到设备。请确认小米账号登录成功，或点「刷新设备」重试。</div>`;
   }
   return devices.map((d) => {
-    const did = escapeHtml(String(d.did || d.deviceID || ""));
-    const on = selected.includes(String(d.did || d.deviceID || "")) ? " selected" : "";
-    return `<div class="xm-device${on}" data-did="${did}">
+    // did 必须是纯数字；取不到 did 的设备不可勾选（mi_did 存 UUID 会失配）
+    const did = String(d.did || "");
+    if (!did) {
+      return `<div class="xm-device" style="opacity:.55;cursor:not-allowed">
+      <input type="checkbox" disabled>
+      <div class="min">
+        <div class="name">${escapeHtml(d.name || d.deviceID || "未知设备")}</div>
+        <div class="hw">标识获取失败，请点「刷新设备」重试</div>
+      </div>
+    </div>`;
+    }
+    const on = selected.includes(did) ? " selected" : "";
+    return `<div class="xm-device${on}" data-did="${escapeHtml(did)}">
       <input type="checkbox" ${on ? "checked" : ""}>
       <div class="min">
         <div class="name">${escapeHtml(d.name || d.deviceID || "未知设备")}</div>

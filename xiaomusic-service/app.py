@@ -686,6 +686,7 @@ async def wizard_state():
     return {
         "step": step,
         "nas_ip": CFG.get("nas_ip", NAS_IP),
+        "gateway": GATEWAY_IP,
         "public_port": PUBLIC_PORT,
         "mi_account": _mi_setting().get("account", ""),
         "mi_did": _mi_setting().get("mi_did", ""),
@@ -899,6 +900,7 @@ async def health():
     return {
         "ok": True,
         "token": STATE.token is not None,
+        "mi_logged": _mi_logged_in(),
         "favorites": len(STATE.favorites),
         "playlist": CFG["playlist_name"],
         "playlist_songs": STATE.playlist_songs,

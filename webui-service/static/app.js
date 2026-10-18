@@ -1268,7 +1268,14 @@ let xmState = null;
 let xmQrTimer = null;
 let xmHealthTimer = null;
 let xmLoadSeq = 0;
+let xmGateway = "";  // 容器网关（health.gateway）：音箱不可达，禁止填成它
 
+
+function xmNasPrefill() {
+  const v = xmState.nas_ip || "";
+  if (v && xmGateway && v === xmGateway) return "";
+  return v;
+}
 const XM_STEPS = ["小米账号", "选择音箱", "飞牛音乐", "完成"];
 
 function stopXmPolling() {
@@ -1311,6 +1318,7 @@ function xmStepsHtml(step) {
 
 function xmRender(st) {
   xmState = st.wizard || {};
+  xmGateway = st.gateway || "";
   const step = xmState.step || 1;
   let html = `<div class="card"><div class="card-title">配置向导</div>${xmStepsHtml(step)}</div>`;
   if (step === 1) html += xmStep1Html();
@@ -1388,7 +1396,8 @@ function xmStep3Html() {
     <label class="field"><span>飞牛音乐地址</span>
       <input class="input" id="xm-fn-url" placeholder="如 http://192.168.x.x:5666（扫描自动填写）" value="${escapeHtml(fn.fnmusic_base_url || "")}"></label>
     <label class="field"><span>音箱访问本机的地址（NAS 局域网 IP，不含端口）</span>
-      <input class="input" id="xm-nas-ip" placeholder="如 192.168.x.x" value="${escapeHtml(xmState.nas_ip || "")}"></label>
+      <input class="input" id="xm-nas-ip" placeholder="如 192.168.x.x" value="${escapeHtml(xmNasPrefill())}"></label>
+    <p class="hint">决定小爱音箱拉流地址：必须是 NAS 的局域网 IP（与音箱同一网段）${xmGateway ? `，不能是容器网关 ${escapeHtml(xmGateway)}` : ""}。</p>
     <label class="field"><span>飞牛音乐账号</span>
       <input class="input" id="xm-fn-username" placeholder="飞牛音乐登录账号" value="${escapeHtml(fn.fnmusic_username || "")}"></label>
     <label class="field"><span>密码</span>
@@ -1404,6 +1413,7 @@ function xmDoneHtml(st) {
   const xmUrl = `http://${escapeHtml(nasIp)}:${st.public_port || 8775}/xm/`;
   return `<div class="card">
     <div class="card-title">配置完成</div>
+    <p class="hint" id="xm-mi-state"></p>
     <p class="hint">现在可以对小爱音箱说「播放收藏」随机播放飞牛音乐收藏，或者说「播放晴天」直接点歌。收藏有增减时约 5 分钟自动同步。</p>
     <div class="xm-status-grid">
       <div class="xm-status-cell"><div class="v" id="xm-d-fav">-</div><div class="k">收藏歌曲</div></div>
@@ -1617,6 +1627,11 @@ async function xmSaveFnmusic() {
   const password = $("#xm-fn-password").value;
   const nas_ip = $("#xm-nas-ip").value.trim();
   if (!base_url || !username || !password) { xmMsg(msg, "err", "请填写完整的地址、账号和密码"); return; }
+  if (!nas_ip) { xmMsg(msg, "err", "请填写音箱访问本机的地址（NAS 局域网 IP）"); return; }
+  if (xmGateway && nas_ip === xmGateway) {
+    xmMsg(msg, "err", `不能填写容器网关 ${nas_ip}：小爱音箱无法访问该地址，请填 NAS 的局域网 IP（如 192.168.x.x）`);
+    return;
+  }
   const btn = $("#xm-fn-save");
   btn.disabled = true; btn.textContent = "验证并保存…";
   try {
@@ -1646,6 +1661,16 @@ function xmRefreshDone(st) {
   set("#xm-d-push", st.push_ok ? "正常" : "等待", st.push_ok ? "ok" : "err");
   const err = st.last_error || "";
   set("#xm-d-err", err ? (err.length > 12 ? err.slice(0, 12) + "…" : err) : "无", err ? "err" : "ok");
+  const mi = $("#xm-mi-state");
+  if (mi) {
+    if (st.mi_logged) {
+      mi.textContent = "小米账号登录态：正常（口令经小米云正常下发）";
+      mi.style.color = "var(--ok)";
+    } else {
+      mi.textContent = "⚠️ 小米账号登录已失效（口令无法下发）——请点下方「重新配置」重新登录小米账号";
+      mi.style.color = "var(--err)";
+    }
+  }
 }
 
 async function xmSyncNow() {

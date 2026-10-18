@@ -436,7 +436,7 @@ async function syncNow() {
 }
 
 async function resetWizard() {
-  if (!confirm('确定要重新配置吗？（小米账号登录态会保留）')) return;
+  if (!confirm('确定要完全重新配置吗？将退出小米账号登录，需要重新登录并重新勾选设备。')) return;
   await api('/api/wizard/reset', {method: 'POST'});
   load();
 }

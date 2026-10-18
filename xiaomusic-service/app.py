@@ -887,9 +887,25 @@ async def wizard_fnmusic(request: Request):
 
 @app.post("/api/wizard/reset")
 async def wizard_reset():
-    """重置向导（保留小米登录态，只重置飞牛配置）"""
+    """完全重置向导：清小米登录态（mi_did + 登录令牌）与飞牛配置。
+
+    调用方（WebUI）随后会重启本进程——内存里的登录会话也随之清零，
+    重启后 wizard_state 回到第一步，用户重新登录小米 → 勾选设备 → 填飞牛。
+    """
+    # mi_did/account 经 xiaomusic 自己的 API 清（内存与 setting.json 同步，
+    # 避免直接改文件被进程退出时的写回覆盖）
+    try:
+        async with httpx.AsyncClient(base_url=SELF_URL, timeout=15) as cli:
+            await cli.post("/xm/savesetting", json={"mi_did": "", "account": ""})
+    except Exception as e:
+        log.warning("reset: 清 mi_did/account 失败: %s", e)
+    # 登录令牌删除：进程重启后无令牌可登，_mi_logged_in() 为 False，向导回第一步
+    for f in (CONF_DIR / "auth.json", CONF_DIR / ".mi.token"):
+        with contextlib.suppress(Exception):
+            f.unlink(missing_ok=True)
     CFG.update({"fnmusic_username": "", "fnmusic_password": "", "wizard_done": False})
     save_json(BRIDGE_CONFIG_FILE, CFG)
+    log.info("向导已完全重置（小米登录态与飞牛配置已清）")
     return {"ok": True}
 
 

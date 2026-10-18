@@ -1686,10 +1686,13 @@ async function xmSyncNow() {
 }
 
 async function xmResetWizard() {
-  if (!confirm("确定要重新配置吗？（小米账号登录态会保留）")) return;
+  if (!confirm("确定要完全重新配置吗？将退出小米账号登录，需要重新登录并重新勾选设备。")) return;
   try {
-    await api("/api/xiaomusic/wizard/reset", { method: "POST" });
-    loadXmPage();
+    const r = await api("/api/xiaomusic/wizard/reset", { method: "POST" });
+    if (r.restarted) toast("已完全重置，桥接正在重启，稍后从第一步重新配置", "ok");
+    else toast("已重置" + (r.restart_error ? "（桥接重启失败：" + r.restart_error + "）" : ""), r.restart_error ? "fail" : "ok");
+    // 进程重启需要几秒：loadXmPage 自带重试，等它就绪后再拉状态
+    setTimeout(loadXmPage, 3000);
   } catch (exc) {
     toast("重置失败：" + (exc.message || exc), "fail");
   }

@@ -1373,8 +1373,18 @@ async def api_xiaomusic_fnmusic(request: Request):
 
 @app.post("/api/xiaomusic/wizard/reset")
 async def api_xiaomusic_reset(request: Request):
-    """重置向导（保留小米登录态，只重置飞牛配置）"""
-    return await _xm_proxy(request, "POST", "/api/wizard/reset", timeout=30.0)
+    """完全重置向导：清小米登录态与飞牛配置，并重启桥接进程。
+
+    重启是必须的——xiaomusic 的登录会话在内存里，只有进程重启才会清零，
+    重置后向导回到第一步（重新登录小米 → 勾选设备 → 填飞牛账号）。
+    """
+    result = await _xm_proxy(request, "POST", "/api/wizard/reset", timeout=30.0)
+    if not isinstance(result, JSONResponse):
+        code, out = supervisorctl("restart", "xiaomusic")
+        result["restarted"] = code == 0
+        if code != 0:
+            result["restart_error"] = out
+    return result
 
 
 # ------------------------------------------------------------------ 静态前端 --

@@ -143,6 +143,10 @@ def create_xiaomusic():
         delay_sec=0,
         continue_play=True,
         get_duration_type="mutagen",      # 用 mutagen 算时长，免装 ffprobe
+        # 强制走 mina（小米 IoT）通道拉取语音指令：老硬件（X4B/L05B 等）默认走的
+        # api.xiaomi.com「小爱对话记录」API 已被小米改版——静默失效（无报错但
+        # 永远拉不到口令，音箱的话全被自带音乐技能接走）。mina 通道稳定可靠。
+        get_ask_by_mina=True,
     )
     XM = XiaoMusic(cfg)
 
@@ -158,6 +162,8 @@ def create_xiaomusic():
         "hostname": f"http://{CFG.get('nas_ip', NAS_IP)}",
         "public_port": PUBLIC_PORT,
         "music_list_url": f"{SELF_URL}/playlist.json",
+        # setting.json 可能残留旧值，强制钉死 mina 指令通道（见构造参数注释）
+        "get_ask_by_mina": True,
     })
     XM.save_cur_config()
 

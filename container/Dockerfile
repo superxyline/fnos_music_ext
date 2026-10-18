@@ -91,7 +91,7 @@ RUN useradd -m -u 1000 appuser \
 
 # --chown+chmod：镜像权限不依赖构建上下文的 umask/属主
 COPY --chown=appuser:appuser musicdl-service/app.py musicdl-service/hardening.py musicdl-service/bili_source.py /srv/musicdl-service/
-COPY --chown=appuser:appuser musicbox-service/app.py musicbox-service/runner.py musicbox-service/netease_ext.py /srv/musicbox-service/
+COPY --chown=appuser:appuser musicbox-service/app.py musicbox-service/runner.py musicbox-service/netease_ext.py musicbox-service/playback.py /srv/musicbox-service/
 COPY --chown=appuser:appuser lxmusic-service/app.py lxmusic-service/source_runtime.py lxmusic-service/verify_source.py /srv/lxmusic-service/
 COPY --chown=appuser:appuser lxmusic-service/js/bridge.js /srv/lxmusic-service/js/bridge.js
 COPY --chown=appuser:appuser webui-service/app.py /srv/webui-service/

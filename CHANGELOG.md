@@ -18,6 +18,10 @@
   - 口令/播放能力与独立版完全一致：14+ 种「播放收藏」变体、点歌兜底（收藏 → 本地曲库收藏后可点播 → 在线源 ffmpeg 下载不进收藏）、播完自动接歌单、5 分钟定时同步、每次同步自愈式推送口令配置；
   - 测试：`webui-service/test_xiaomusic_page.py`（入口两处 / Schema / 保存起停进程 / 代理转发与 503 降级 / status 纳入）；`test_about_page.py` 的 id 引用断言扩展为识别 JS 运行期生成的模板 id。
 
+### 修复
+
+- **musicbox 崩溃循环 / 网易扫码登录不可达**：`musicbox-service/playback.py`（3.2.0 #56 共享取链引入）从未加入 Dockerfile 的 COPY 清单，全新安装构建的镜像里没有该文件，musicbox 进程 `ModuleNotFoundError: No module named 'playback'` 每秒级崩溃重启（CPU 打满、温度尖峰），WebUI 网易登录报「musicbox 服务不可达」。修复：Dockerfile COPY 行补上 playback.py；新增容器回归测试 `test_dockerfile_copies_all_service_modules`——逐个断言五个服务目录的非测试 `.py` 与 `static/`、`js/` 目录都已 COPY 进镜像（原 `test_dockerfile_copies_proxy_modules_imported_by_services` 只查 proxy.* 跨服务 import，漏掉了服务内部模块这一类）。
+
 ### 说明
 
 - 小爱音箱功能默认关闭（`FNMUSIC_XIAOMUSIC_ENABLED=false`），与音源三选一互斥无关，可任意叠加；开启后桥接进程常驻约 100MB 内存。

@@ -310,6 +310,26 @@ def test_dockerignore_whitelist_build_context():
         assert keep in code_lines
 
 
+def test_dockerfile_copies_all_service_modules():
+    """回归（2026-10-18）：musicbox playback.py 曾漏 COPY——app.py import 即
+    ModuleNotFoundError，musicbox 崩溃循环，网易扫码登录全挂。proxy.* import 检查
+    只覆盖跨服务依赖；服务目录内部模块同样必须进镜像，逐个文件断言。"""
+    text = (CONTAINER_DIR / "Dockerfile").read_text(encoding="utf-8")
+    copied = " ".join(ln for ln in text.splitlines() if ln.startswith("COPY"))
+    for service_dir in ("musicdl-service", "musicbox-service", "lxmusic-service",
+                        "webui-service", "xiaomusic-service"):
+        for f in sorted((REPO_ROOT / service_dir).glob("*.py")):
+            if f.name.startswith("test_") or f.name == "conftest.py":
+                continue  # 测试文件不进镜像
+            assert f"{service_dir}/{f.name}" in copied, \
+                f"{service_dir}/{f.name} 未 COPY 进镜像：运行期 import 会 ModuleNotFoundError"
+        # 静态/脚本资源目录：static/ 与 js/ 必须整目录或显式文件 COPY
+        for sub in ("static", "js"):
+            if (REPO_ROOT / service_dir / sub).is_dir():
+                assert f"{service_dir}/{sub}/" in copied, \
+                    f"{service_dir}/{sub}/ 未 COPY 进镜像"
+
+
 def test_dockerfile_copies_proxy_modules_imported_by_services():
     """镜像内服务允许 import proxy.*（webui 复用 .env 安全合并）。
 

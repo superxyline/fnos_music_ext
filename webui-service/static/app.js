@@ -1673,7 +1673,10 @@ function xmRefreshDone(st) {
   set("#xm-d-err", err ? (err.length > 12 ? err.slice(0, 12) + "…" : err) : "无", err ? "err" : "ok");
   const mi = $("#xm-mi-state");
   if (mi) {
-    if (st.mi_logged) {
+    if (st.pull_ask_on === false) {
+      mi.textContent = "⚠️ 口令轮询未开启（语音指令到不了桥接）——请到 xiaomusic 高级设置开启「监听新消息」";
+      mi.style.color = "var(--err)";
+    } else if (st.mi_logged) {
       mi.textContent = "小米账号登录态：正常（口令经小米云正常下发）";
       mi.style.color = "var(--ok)";
     } else {

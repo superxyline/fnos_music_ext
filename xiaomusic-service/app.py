@@ -143,10 +143,15 @@ def create_xiaomusic():
         delay_sec=0,
         continue_play=True,
         get_duration_type="mutagen",      # 用 mutagen 算时长，免装 ffprobe
-        # 强制走 mina（小米 IoT）通道拉取语音指令：老硬件（X4B/L05B 等）默认走的
-        # api.xiaomi.com「小爱对话记录」API 已被小米改版——静默失效（无报错但
-        # 永远拉不到口令，音箱的话全被自带音乐技能接走）。mina 通道稳定可靠。
-        get_ask_by_mina=True,
+        # 指令拉取通道：用「小爱对话记录」API（LATEST_ASK_API，实测可用）。
+        # 注意：不要开 get_ask_by_mina——实测 mina 的 ubus nlp_result_get 在
+        # 本机固件上走 ROM 代理模式，只返回 {code:0, data:{code:0}} 没有 info
+        # 字段，conversation.py 每次都抛 KeyError('info')，口令永远拿不到。
+        get_ask_by_mina=False,
+        # 必须显式开启指令轮询：XIAOMUSIC_ENABLE_PULL_ASK 默认 false，
+        # poll_latest_ask 主循环第一行 `if not enable_pull_ask: sleep(5); continue`
+        # 直接空转——口令永远到不了 xiaomusic（音箱自带的音乐技能接走全部语音）。
+        enable_pull_ask=True,
     )
     XM = XiaoMusic(cfg)
 
@@ -162,8 +167,10 @@ def create_xiaomusic():
         "hostname": f"http://{CFG.get('nas_ip', NAS_IP)}",
         "public_port": PUBLIC_PORT,
         "music_list_url": f"{SELF_URL}/playlist.json",
-        # setting.json 可能残留旧值，强制钉死 mina 指令通道（见构造参数注释）
-        "get_ask_by_mina": True,
+        # setting.json 可能残留旧值，钉死指令通道与轮询开关（见构造参数注释）
+        "get_ask_by_mina": False,
+        # 为 false 时 poller 空转，口令全不到达
+        "enable_pull_ask": True,
     })
     XM.save_cur_config()
 
@@ -953,6 +960,11 @@ async def health():
         "public_port": PUBLIC_PORT,
         "fnmusic_base_url": CFG.get("fnmusic_base_url", ""),
         "gateway": GATEWAY_IP,
+        # 指令轮询开关：false 时 poller 空转，口令全不到达（静默故障，必须暴露）
+        "pull_ask_on": bool(XM and getattr(XM.config, "enable_pull_ask", False)),
+        # 指令拉取通道：xiaoai=对话记录 API（可用）/ mina=ubus（部分固件返回空壳）
+        "ask_channel": ("mina" if (XM and getattr(XM.config, "get_ask_by_mina", False))
+                        else "xiaoai"),
     }
 
 

@@ -8,7 +8,7 @@
 
 `fnmusic-ext` 是专为 fnOS（飞牛私有云）自带音乐应用（`trim.music`）打造的**无侵入增强扩展**。它通过接管官方后端的 Unix Socket 通信入口，在完全不修改官方程序、nginx 配置与数据库的前提下，让原生飞牛音乐获得在线音乐能力；可随时一条命令还原官方直连。
 
-> 当前版本：**v3.2.0**（公共歌单、关于页/检查更新、首播预热与共享取链、流式禁缓冲；详见 [CHANGELOG.md](CHANGELOG.md)）
+> 当前版本：**v3.3.0**（小爱音箱接管：xiaomusic 桥接 + 管理台三步配置 + 收藏点歌；另含 musicbox `playback.py` 漏 COPY、网易扫码不可达等修复；详见 [CHANGELOG.md](CHANGELOG.md)）
 
 ![飞牛桌面里的 fnMusic 扩展管理](preview_image/preview.png)
 
@@ -19,7 +19,7 @@
   - [musicbox](https://github.com/darknessomi/musicbox)：网易云高品质解析，支持扫码登录 VIP/无损曲库与原生每日推荐；
   - [musicdl](https://github.com/CharlesPikachu/musicdl)：酷我/咪咕等 57 个平台聚合，可按平台粒度勾选（编号见 [musicdl-service/PLATFORMS.md](musicdl-service/PLATFORMS.md)）。部分音乐源歌曲少，或返回的音乐不可播放，请自行测试并使用可靠音乐源；
   - **lxmusic**：洛雪音乐自定义源运行时——搜索/歌词/榜单走内置平台接口，播放解析由你提供的洛雪自定义源脚本（Node 沙箱隔离运行）完成。源脚本支持三种配置方式：**粘贴 URL**、**上传电脑上的 `.js` 文件**、**从 NAS 选择 `.js`**（飞牛桌面内），搜索结果以及能否播放视源脚本而定，请自行测试并使用可靠来源；
-- **小爱音箱接管**（v3.3.0，可选，端口 8775）：内置 [fnmusic-xiaomusic](https://github.com/superxyline/fnmusic-xiaomusic) 桥接（xiaomusic 内嵌 + 收藏同步 + 口令播放），管理台「小爱音箱」页三步配置（小米账号登录 → 勾选音箱 → 飞牛账号），对小爱说「播放收藏」随机播放收藏、「播放晴天」直接点歌（在线源自动下载、不进收藏）。独立开关 `FNMUSIC_XIAOMUSIC_ENABLED`，与音源三选一互斥无关；
+- **小爱音箱接管**（v3.3.0，可选，端口 8775）：内置 [fnmusic-xiaomusic](https://github.com/superxyline/fnmusic-xiaomusic) 桥接（xiaomusic 内嵌 + 收藏同步 + 口令播放），管理台「小爱音箱」页三步配置（小米账号登录 → 勾选音箱 → 飞牛账号），对小爱说「播放收藏」随机播放收藏、「播放晴天」直接点歌（在线源自动下载、不进收藏）。完成页实时显示**小米登录态**与**口令轮询状态**，失效时红字引导重新登录；「重新配置」为完全重置（退出登录 + 清配置 + 回第一步）。独立开关 `FNMUSIC_XIAOMUSIC_ENABLED`，与音源三选一互斥无关；
 - **管理 WebUI**（可选，端口 8774）：浏览器里完成音源切换、musicdl 平台勾选与音源测试搜索（输入歌名逐平台验证是否出歌）、网易扫码、洛雪源配置（URL/上传/NAS 选择）与测试保存、音质偏好、边听边存、推荐开关与 LLM 配置，全部热生效；v3.2.0 起还有「关于」页（版本/部署形态/仓库链接）与**检查更新**（有新版时导航点红点，点开看更新说明）；
 - **音质偏好**：`高音质`（从高到低）/ `平衡`（取中间档）/ `流畅`（优先最低）三种模式，覆盖全部音源；
 - **智能边听边存**：在线听歌时后台自动缓存，再次播放本地秒开；可选完整试听后保存进本地曲库；
@@ -153,6 +153,7 @@ chmod +x install.sh extend.sh restore.sh proxy/run_proxy.sh
 curl -s --unix-socket /var/run/trim_music.socket http://localhost/_ext/healthz
 
 # WebUI（若安装）：浏览器打开 http://<NAS_IP>:8774
+# 小爱音箱桥接（若开启）：http://<NAS_IP>:8775/health
 ```
 
 打开飞牛音乐 Web 端或 App，搜索「晴天」等关键词即可试听在线歌曲。
@@ -186,6 +187,7 @@ curl -s --unix-socket /var/run/trim_music.socket http://localhost/_ext/healthz
 | `FNMUSIC_LIBRARY_NAME_PATTERN` | `{artist} - {title}` | 曲库文件命名模板，占位符 `{artist}` / `{title}` / `{source}`（对新落盘歌曲生效） |
 | `FNMUSIC_QQ_ENABLED` / `FNMUSIC_KUGOU_ENABLED` | `true` | 歌曲匹配页 QQ/酷狗音源开关（与三音源开关独立，热重载；QQ 用 QRC 逐字歌词、酷狗用 KRC，均无需登录态） |
 | `FNMUSIC_WEBUI_ENABLED` | `false` | 管理 WebUI 开关（端口 8774，无鉴权） |
+| `FNMUSIC_XIAOMUSIC_ENABLED` | `false` | 小爱音箱接管开关（v3.3.0；桥接进程随容器按需起停，保存即生效；与三音源开关互斥无关，可任意叠加） |
 | `LX_SOURCE_URL` | *(空)* | 洛雪自定义源脚本地址：`http(s)://` URL 或 `file:///data/lxmusic/uploads/<名字>.js`（管理页上传/NAS 选择生成）；建议在 WebUI 里「测试并保存」 |
 | `LX_SOURCES` | `kg,wy,mg,kw` | lxmusic 启用的平台（kg/wy/mg/kw/tx） |
 | `FNMUSIC_ONLINE_SOURCES` / `MUSICDL_SOURCES` | 酷我+咪咕 | musicdl 平台白名单（短名/全名均可） |
@@ -225,13 +227,21 @@ git pull
 - **切源后内存没有变化**：切换在容器内完成，`docker stats fnmusic-sources` 稍等片刻后查看；未启用音源进程会被停止而非休眠。
 - **改了 `.env` 不生效**：热重载仅覆盖白名单键（音源开关/音质/推荐/边听边存/LLM 等）；路径、端口、平台白名单类改动需执行 `./extend.sh` 重启容器。
 
+### 小爱音箱（v3.3.0）
+
+- **口令喊了没反应、音箱自己放歌**：先看管理台「小爱音箱」页完成区的状态行。①「口令轮询未开启」＝桥接的 `enable_pull_ask` 被关了（正常应是开启）；②「小米账号登录已失效」＝小米的 passToken 被吊销/顶号，点「重新配置」重新扫码登录即可（新凭证会写盘，重启后不会再连续失败）；③ 若某台音箱单独不灵，多半是设备标识没对上——点「重新配置」重新勾选，设备列表里灰色不可勾选的那台点「刷新设备」重试。
+- **「音箱访问本机的地址」必须填 NAS 局域网 IP**（如 `192.168.x.x`，与音箱同网段），不能填容器网关（`172.x.x.x`）——填错时口令收得到但拉不到音频流。向导已拦截此值并给出提示。
+- **点歌时小爱会先抢答一句**：口令必须经小爱云端路由，说「播放周杰伦的晴天」时小爱自带音乐技能可能先回「网易云暂无合适版本，播放 QQ 音乐试听版」，随后 1~2 秒内被接管、切换为飞牛曲库里的版本（播放器日志可见 `group_force_stop_xiaoai` → `【周杰伦 - 晴天】已经开始播放了`）。想减少抢答可用「播放**本地**晴天」这类句式，或在米家 App 关闭该音箱的音乐技能。
+- **想换小米账号 / 重选设备**：完成页点「重新配置」＝完全重置（退出小米登录、清飞牛配置、桥接重启回第一步），确认后需重新扫码并重新勾选设备。
+- **常用口令**：`播放收藏` / `播放本地收藏歌曲` / `放几首本地歌`（随机打乱播放收藏）、`播放晴天` / `播放周杰伦的晴天`（点歌：收藏优先，没有则在线源下载）、`下一首` / `上一首` / `暂停` / `停止播放`、`随机播放` / `全部循环` / `单曲循环`、`刷新列表`。
+
 ## 开发与测试
 
 ```bash
 python3 -m pytest        # 全量测试（无需 Docker/飞牛环境）
 ```
 
-仓库结构：`proxy/`（核心代理）、`musicdl-service/`、`musicbox-service/`、`lxmusic-service/`（容器内音源）、`webui-service/`（管理界面）、`container/`（单容器构建与编排）、`packaging/fpk/`（应用中心 fpk 打包）。
+仓库结构：`proxy/`（核心代理）、`musicdl-service/`、`musicbox-service/`、`lxmusic-service/`、`xiaomusic-service/`（小爱音箱桥接，v3.3.0）、`webui-service/`（管理界面）、`container/`（单容器构建与编排）、`packaging/fpk/`（应用中心 fpk 打包）。
 
 ### fpk 打包与发布
 

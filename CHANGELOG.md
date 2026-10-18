@@ -21,11 +21,18 @@
 ### 修复
 
 - **musicbox 崩溃循环 / 网易扫码登录不可达**：`musicbox-service/playback.py`（3.2.0 #56 共享取链引入）从未加入 Dockerfile 的 COPY 清单，全新安装构建的镜像里没有该文件，musicbox 进程 `ModuleNotFoundError: No module named 'playback'` 每秒级崩溃重启（CPU 打满、温度尖峰），WebUI 网易登录报「musicbox 服务不可达」。修复：Dockerfile COPY 行补上 playback.py；新增容器回归测试 `test_dockerfile_copies_all_service_modules`——逐个断言五个服务目录的非测试 `.py` 与 `static/`、`js/` 目录都已 COPY 进镜像（原 `test_dockerfile_copies_proxy_modules_imported_by_services` 只查 proxy.* 跨服务 import，漏掉了服务内部模块这一类）。
+- **口令全不到达（实测「播放本地收藏」被音箱自带音乐技能接走）**：根因是 xiaomusic 的 `enable_pull_ask`（`XIAOMUSIC_ENABLE_PULL_ASK`）默认 `false`，`conversation.py::poll_latest_ask` 主循环第一行 `if not enable_pull_ask: sleep(5); continue` 直接空转——轮询器从未真正拉取对话记录，所有口令都留在小爱自带技能手里（回复「网易云暂无合适版本，播放 QQ 音乐试听版」）。桥接此前未显式传该参数，故默认关闭。修复：构造参数与 `XM.config.update_config` 双处钉死 `enable_pull_ask=True`；`/health` 暴露 `pull_ask_on` / `ask_channel` 让这类「静默空转」可观测；管理台完成页在 `pull_ask_on=false` 时红字警示。同时纠正一处误判：实测本机固件的 mina `ubus nlp_result_get` 走 ROM 代理模式，只返回 `{code:0,data:{code:0}}` 没有 `info` 字段（每轮 KeyError），而对话记录 API `userprofile.mina.mi.com/device_profile/v2/conversation` 完全可用（records 含 `query`/`time`），故 `get_ask_by_mina` 固定 `false`。
+- **设备勾选存成 UUID 致口令只对单台音箱生效**：扫码登录后立即拉设备列表时，`device_manager.device_id_did` 映射尚未建立，`_fetch_devices` 取到的 did 为空，前端回退用 `deviceID`（UUID）充当标识，`mi_did` 存成一串 UUID——xiaomusic 只转换出其中一台，其余音箱喊话仍走自带播放。修复：映射为空时主动 `await update_device_info(auth_manager)` 刷新后再取；保存端点校验 did 必须为纯数字（含 UUID 直接 400）；前端对取不到 did 的设备渲染为禁用态并提示刷新。
+- **「重新配置」只重置飞牛配置、无法重选设备/换小米账号**：改为完全重置——经 `/xm/savesetting` 清 `mi_did`/`account`（内存+文件同步）并删除 `auth.json`/`.mi.token`，随后重启桥接进程让登录会话清零，向导回到第一步；确认文案同步改为「将退出小米账号登录，需要重新登录并重新勾选设备」。
+- **小米登录态失效无法感知**：`/health` 增加 `mi_logged`，管理台完成页实时显示——正常为绿色，失效时红字提示「口令无法下发，请重新配置」并引导重新登录（此前失效只能靠反复试口令才发现）。
+- **「音箱访问地址」被预填成容器网关致拉流失败**：容器网关（如 `172.x.x.1`）只有容器内可达，小爱音箱在局域网无法访问。修复：向导第三步不再回填网关值、改为必填并显式拒绝容器网关（报错提示填 NAS 局域网 IP）；桥接与旁路页同口径校验。
 
 ### 说明
 
 - 小爱音箱功能默认关闭（`FNMUSIC_XIAOMUSIC_ENABLED=false`），与音源三选一互斥无关，可任意叠加；开启后桥接进程常驻约 100MB 内存。
 - 首次使用需在管理台「小爱音箱」页完成三步配置（小米账号登录需要用户手机操作，无法远程代填）。
+- 首次配置时「音箱访问本机的地址」必须填 **NAS 的局域网 IP**（如 `192.168.x.x`，与音箱同一网段），不能填容器网关；填错会导致口令收得到但拉不到音频流。
+- 点歌类口令（如「播放周杰伦的晴天」）会先经小爱云端路由，小爱自带的音乐技能可能先抢答一句（如「网易云暂无合适版本，播放 QQ 音乐试听版」），随后 1~2 秒内被 xiaomusic 强制停止并切换为飞牛音源——这是口令必经云端的固有限制。想减少抢答可用「播放**本地**晴天」这类句式，或在米家 App 关闭该音箱的音乐技能。
 
 ## [3.2.0] - 2026-10-17
 

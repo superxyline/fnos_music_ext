@@ -1,10 +1,11 @@
-"""搜索结果在线来源标记：netease→[music box]、musicdl→[dl]、lx→激活源备注名或 [lx]。
+"""搜索结果在线来源标记：netease→[music box]、musicdl→具体平台短名（如 [kuwo]）、lx→激活源备注名或 [lx]。
 
 标记仅改下发显示的 title/name（搜索结果列表），本地条目与收藏/历史/元数据等
 其余出口保持干净标题；播放事件上报入库前剥离标记，业务逻辑不受影响。
 """
 import json
 import os
+from pathlib import Path
 
 import httpx
 import pytest
@@ -67,28 +68,64 @@ def test_source_display_prefix_mapping(monkeypatch):
         {"name": "星海源", "url": "http://s1/one.js"},
         {"name": "", "url": "http://s2/two.js"},
     ])
-    assert source_display_prefix("netease") == "[music box] "
-    assert source_display_prefix("lx") == "[星海源] "
-    assert source_display_prefix("kuwo") == "[dl] "
-    assert source_display_prefix("migu") == "[dl] "
+    assert source_display_prefix("netease") == "[music box]"
+    assert source_display_prefix("lx") == "[星海源]"
+    assert source_display_prefix("kuwo") == "[kuwo]"
+    assert source_display_prefix("migu") == "[migu]"
+    assert source_display_prefix("bilibili") == "[bilibili]"
     assert source_display_prefix("") == ""
     # 激活源在列表里但未备注 → [lx]
     monkeypatch.setitem(CONF, "lx_source_url", "http://s2/two.js")
-    assert source_display_prefix("lx") == "[lx] "
+    assert source_display_prefix("lx") == "[lx]"
     # 激活地址不在列表（.env 手工直配）→ [lx]
     monkeypatch.setitem(CONF, "lx_source_url", "http://elsewhere/x.js")
-    assert source_display_prefix("lx") == "[lx] "
+    assert source_display_prefix("lx") == "[lx]"
+
+
+def test_musicdl_source_names_cover_platform_table():
+    """_MUSICDL_SOURCE_NAMES 必须覆盖 install.sh 平台表的全部 musicdl 短名。
+
+    漏一个的后果：该平台的上线条目显示成 [dl] 而不是 [平台名]，
+    写回播放历史时也无法按平台名精确剥离。
+    """
+    root = Path(__file__).resolve().parents[2]
+    raw = (root / "install.sh").read_text(encoding="utf-8", errors="replace")
+    names = set()
+    for line in raw.splitlines():
+        parts = line.strip().split("|")
+        if len(parts) >= 6 and parts[1] == "musicdl":
+            names.add(parts[2].strip())
+    assert names, "未从 install.sh 解析到平台表"
+    missing = names - pa._MUSICDL_SOURCE_NAMES
+    assert not missing, f"平台表新增了未覆盖的短名: {sorted(missing)}"
+
+
+
+def test_source_display_prefix_unknown_source_falls_back():
+    """拿不到可用短名的来源退回 [dl]；带空白/方括号的脏值不得拼进标题。"""
+    assert source_display_prefix("  ") == ""
+    assert source_display_prefix("未知平台") == "[dl]"
+    assert source_display_prefix("a[b]c") == "[dl]"
+    # 平台名大小写归一（musicdl 侧 _source_short 输出小写）
+    assert source_display_prefix("KUWO") == "[kuwo]"
+
 
 
 def test_strip_source_tag_precise(monkeypatch):
     _set_lx_source(monkeypatch, "http://s1/one.js", [{"name": "星海源", "url": "http://s1/one.js"}])
-    assert strip_source_tag("[music box] 晴天") == "晴天"
-    assert strip_source_tag("[dl] 晴天") == "晴天"
-    assert strip_source_tag("[lx] 晴天") == "晴天"
+    assert strip_source_tag("[music box]晴天") == "晴天"
+    assert strip_source_tag("[music box] 晴天") == "晴天"   # 兼容 3.3.0 前的空格格式
+    assert strip_source_tag("[dl]晴天") == "晴天"
+    assert strip_source_tag("[dl] 晴天") == "晴天"           # 兼容历史统称标记
+    assert strip_source_tag("[lx]晴天") == "晴天"
+    assert strip_source_tag("[kuwo]晴天") == "晴天"
+    assert strip_source_tag("[bilibili]晴天") == "晴天"
     # 列表内全部备注名都可剥离（含未激活源，历史标记切换源后仍可还原）
+    assert strip_source_tag("[星海源]夜曲") == "夜曲"
     assert strip_source_tag("[星海源] 夜曲") == "夜曲"
     # 未知方括号开头的内容不是来源标记，不剥离
     assert strip_source_tag("[AI生成] 晴天") == "[AI生成] 晴天"
+    assert strip_source_tag("[Live] 晴天") == "[Live] 晴天"
     assert strip_source_tag("晴天") == "晴天"
     assert strip_source_tag("") == ""
 
@@ -108,17 +145,28 @@ def test_build_online_track_mark_source_only_title():
     assert clean["name"] == "晴天"
 
     marked = build_online_track(item, mark_source=True)
-    assert marked["title"] == "[music box] 晴天"
-    assert marked["name"] == "[music box] 晴天"
+    assert marked["title"] == "[music box]晴天"
+    assert marked["name"] == "[music box]晴天"
     # 标记只加在歌名前，歌手/专辑不动
     assert marked["artist"] == "周杰伦"
     assert marked["album"]["name"] == "叶惠美"
 
-    # 空标题不加标记
+    # 空标题 / 纯空白标题不加标记（不会出现只有前缀的空壳条目）
     empty = build_online_track(
         {"id": "migu:1", "source": "migu", "title": "", "artist": "x"}, mark_source=True
     )
     assert empty["title"] == ""
+    assert empty["name"] == ""
+    blank = build_online_track(
+        {"id": "migu:2", "source": "migu", "title": "   ", "artist": "x"}, mark_source=True
+    )
+    assert blank["title"] == ""
+    # 源站歌名已带同名标记时不重复叠加（幂等）
+    already = build_online_track(
+        {"id": "kuwo:3", "source": "kuwo", "title": "[kuwo]晴天", "artist": "周杰伦"},
+        mark_source=True,
+    )
+    assert already["title"] == "[kuwo]晴天"
 
 
 def test_search_merge_marks_online_not_local():
@@ -161,7 +209,7 @@ def test_search_merge_marks_online_not_local():
         lst = resp.json()["data"]["list"]
     titles = [it["title"] for it in lst]
     assert titles[0] == "夜曲"
-    assert "[dl] 晴天" in titles
+    assert "[migu]晴天" in titles
     # 同名本地条目存在时在线去重（按干净标题），不会出现带标记的重复
     assert titles.count("晴天") == 0
 
@@ -195,14 +243,14 @@ def test_search_merge_lx_remark_and_fallback(monkeypatch):
     with TestClient(app) as client:
         resp = client.get("/music/api/v1/search/track?keyword=晴天")
         titles = [it["title"] for it in resp.json()["data"]["list"]]
-        assert titles == ["[星海源] 晴天"]
+        assert titles == ["[星海源]晴天"]
 
         # 切换到无备注激活源：清缓存重搜 → [lx] 兜底
         monkeypatch.setitem(CONF, "lx_source_url", "")
         _SEARCH_CACHE.clear()
         resp = client.get("/music/api/v1/search/track?keyword=晴天")
         titles = [it["title"] for it in resp.json()["data"]["list"]]
-        assert titles == ["[lx] 晴天"]
+        assert titles == ["[lx]晴天"]
 
 
 def test_event_report_strips_source_tag(tmp_path, monkeypatch):
@@ -220,11 +268,14 @@ def test_event_report_strips_source_tag(tmp_path, monkeypatch):
     with TestClient(app) as client:
         resp = client.post("/music/api/v1/event/report", json={"events": [
             {"eventType": "track_play", "occurredAt": 1,
-             "payload": {"trackGUID": "online:migu:1", "title": "[dl] 晴天", "artist": "周杰伦"}},
+             "payload": {"trackGUID": "online:migu:1", "title": "[migu]晴天", "artist": "周杰伦"}},
             {"eventType": "track_play", "occurredAt": 2,
-             "payload": {"trackGUID": "online:lx:kg:9", "title": "[星海源] 夜曲", "artist": "周杰伦"}},
+             "payload": {"trackGUID": "online:lx:kg:9", "title": "[星海源]夜曲", "artist": "周杰伦"}},
             {"eventType": "track_play", "occurredAt": 3,
-             "payload": {"trackGUID": "online:netease:5", "title": "[music box] 七里香", "artist": "周杰伦"}},
+             "payload": {"trackGUID": "online:netease:5", "title": "[music box]七里香", "artist": "周杰伦"}},
+            # 历史数据里的旧格式（带空格 + [dl] 统称）也要能剥
+            {"eventType": "track_play", "occurredAt": 4,
+             "payload": {"trackGUID": "online:kuwo:6", "title": "[dl] 退后", "artist": "周杰伦"}},
         ]})
         assert resp.json()["code"] == 0
 
@@ -235,6 +286,7 @@ def test_event_report_strips_source_tag(tmp_path, monkeypatch):
     assert by_guid["online:migu:1"]["track"]["title"] == "晴天"
     assert by_guid["online:lx:kg:9"]["track"]["title"] == "夜曲"
     assert by_guid["online:netease:5"]["track"]["title"] == "七里香"
+    assert by_guid["online:kuwo:6"]["track"]["title"] == "退后"
 
 
 def test_env_hot_reload_lx_source(tmp_path, monkeypatch):
@@ -251,7 +303,8 @@ def test_env_hot_reload_lx_source(tmp_path, monkeypatch):
     apply_env_hot_reload(str(env_file))
     assert pa.CONF["lx_source_url"] == "http://s1/one.js"
     assert json.loads(pa.CONF["lx_source_list"])[0]["name"] == "星海源"
-    assert source_display_prefix("lx") == "[星海源] "
+    assert source_display_prefix("lx") == "[星海源]"
+    assert strip_source_tag("[星海源]晴天") == "晴天"
     assert strip_source_tag("[星海源] 晴天") == "晴天"
 
 

@@ -953,10 +953,31 @@ def source_from_online_guid(guid: str) -> str:
 
 
 # 搜索结果在线条目的来源标记（仅显示，不入库不影响业务逻辑）：
-# 网易盒子→[music box]，musicdl→[dl]，洛雪→激活源备注名（无备注则 [lx]）
-_SOURCE_TAG_NETEASE = "[music box] "
-_SOURCE_TAG_MUSICDL = "[dl] "
-_SOURCE_TAG_LX_FALLBACK = "[lx] "
+# 网易盒子→[music box]，musicdl 各平台→[kuwo]/[migu]/[bilibili] 等具体短名，
+# 洛雪→激活源备注名（无备注则 [lx]）。统一格式：方括号直接拼在歌名前、不带空格
+# （如 [kuwo]晴天），保证同一条列表里所有在线条目的前缀形态一致。
+_SOURCE_TAG_NETEASE = "[music box]"
+_SOURCE_TAG_MUSICDL_LEGACY = "[dl]"   # 3.3.0 之前的统称标记，仅用于剥离历史数据
+_SOURCE_TAG_LX_FALLBACK = "[lx]"
+
+# musicdl 平台短名（与 install.sh 的 SOURCE_PLATFORM_TABLE 第 3 列同源）：
+# 用于把「来源标记前缀」渲染成具体平台名，并在写回播放历史时精确剥离。
+# 新增平台只需在这里补一项；未收录的平台会退回更保守的源名/legacy 标记。
+_MUSICDL_SOURCE_NAMES = frozenset({
+    "apple", "audius", "bilibili", "bodian", "buguyy", "ccmixter", "deezer",
+    "fangpi", "fivesing", "fivesong", "fma", "gdstudio", "gequbao", "gequhai",
+    "gequke", "heishan", "htqyy", "itunes", "jamendo", "jbsou", "jiosaavn",
+    "joox", "kkws", "kugou", "kuwo", "leedodo", "lizhi", "lrts", "mgmp3",
+    "migu", "mitu", "moov", "mp3juice", "myfreemp3", "netease", "opengameart",
+    "qianqian", "qingting", "qobuz", "qq", "sgogo", "soda", "soundcloud",
+    "spotify", "streetvoice", "suno", "tidal", "tunehub", "twot58",
+    "wikimediacommons", "xiageba", "xiaobai", "ximalaya", "xmfwav",
+    "yinyuedao", "yinyueku", "youtube",
+})
+
+# 可作为来源标记的短名形态：纯 ASCII、小写、长度受限。用于拒绝把任意方括号
+# 开头的内容（如 [AI生成]、[Live]）误判成来源标记。
+_SOURCE_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{1,23}")
 
 
 def _lx_source_entries() -> list[dict]:
@@ -978,31 +999,69 @@ def _lx_source_remark() -> str:
     return ""
 
 
+def _tag_for_source_name(name: str) -> str:
+    """把来源短名/备注名渲染成方括号标记；不适合当标记的返回空串。"""
+    s = str(name or "").strip()
+    if not s:
+        return ""
+    # 中文备注名（洛雪源）照用；ASCII 名必须像平台短名，避免把整句歌名当前缀
+    if _SOURCE_NAME_RE.fullmatch(s.lower()):
+        return f"[{s.lower()}]"
+    if any(ch in s for ch in "[]\n\r\t") or len(s) > 32:
+        return ""
+    return f"[{s}]"
+
+
 def source_display_prefix(src: str) -> str:
-    """在线条目来源标记前缀：netease→[music box]，lx→备注名或 [lx]，其余(musicdl 平台)→[dl]。"""
+    """在线条目前缀：netease→[music box]，lx→[备注名]或[lx]，musicdl→[具体平台短名]。"""
     s = str(src or "").strip()
+    if not s:
+        return ""
     if s == "netease":
         return _SOURCE_TAG_NETEASE
     if s == "lx":
         remark = _lx_source_remark()
-        return f"[{remark}] " if remark else _SOURCE_TAG_LX_FALLBACK
-    if s:
-        return _SOURCE_TAG_MUSICDL
-    return ""
+        return _tag_for_source_name(remark) or _SOURCE_TAG_LX_FALLBACK
+    # musicdl 平台名只接受 ASCII 短名：中文/含方括号的脏值不进标题，
+    # 否则会把整句文案当成前缀（洛雪备注名走上面的 lx 分支，允许中文）
+    low = s.lower()
+    if _SOURCE_NAME_RE.fullmatch(low):
+        return f"[{low}]"
+    return _SOURCE_TAG_MUSICDL_LEGACY
 
 
-def strip_source_tag(title: str) -> str:
-    """剥离来源标记前缀。仅精确匹配已知标记（含列表里全部洛雪备注名），
-    不用泛化正则，避免误伤本身以方括号开头的歌名。"""
+def strip_source_tag(title: str, guid: str | None = None) -> str:
+    """剥离来源标记前缀（如 [kuwo]晴天 → 晴天）。
+
+    匹配顺序：guid 精确推导 → 已知标记白名单（netease/legacy/全部 musicdl 平台
+    短名/洛雪备注名）。不做泛化方括号匹配，[AI生成] 这类原生歌名不会被误伤。
+    兼容 3.3.0 之前「带空格」的旧标记（[dl] 晴天）。
+    """
     t = str(title or "")
-    candidates = [_SOURCE_TAG_NETEASE, _SOURCE_TAG_MUSICDL, _SOURCE_TAG_LX_FALLBACK]
-    for entry in _lx_source_entries():
-        name = str(entry.get("name") or "").strip()
-        if name:
-            candidates.append(f"[{name}] ")
+    if not t.startswith("["):
+        return t
+
+    candidates: list[str] = []
+    g = str(guid or "").strip()
+    if g.startswith("online:"):
+        head = g[len("online:"):].split(":", 1)[0].strip()
+        if head == "netease":
+            candidates.append(_SOURCE_TAG_NETEASE)
+        elif head == "lx":
+            candidates.extend(f"[{str(e.get('name') or '').strip()}]"
+                              for e in _lx_source_entries() if str(e.get("name") or "").strip())
+            candidates.append(_SOURCE_TAG_LX_FALLBACK)
+        elif head:
+            candidates.append(f"[{head}]")
+
+    candidates.extend((_SOURCE_TAG_NETEASE, _SOURCE_TAG_MUSICDL_LEGACY, _SOURCE_TAG_LX_FALLBACK))
+    candidates.extend(f"[{n}]" for n in sorted(_MUSICDL_SOURCE_NAMES))
+    candidates.extend(f"[{str(e.get('name') or '').strip()}]"
+                      for e in _lx_source_entries() if str(e.get("name") or "").strip())
+
     for tag in candidates:
-        if t.startswith(tag):
-            return t[len(tag):]
+        if tag and tag != "[]" and t.startswith(tag):
+            return t[len(tag):].lstrip()
     return t
 
 
@@ -1015,10 +1074,14 @@ def build_online_track(item: dict, mark_source: bool = False) -> dict:
     guid = online_guid_from_item(item)
     src = str(item.get("source") or source_from_online_guid(guid) or "")
     title = str(item.get("title") or item.get("name") or "")
-    if mark_source and title:
-        prefix = source_display_prefix(src)
-        if prefix:
-            title = prefix + title
+    if mark_source:
+        # 只裁两端空白：空标题/纯空白标题不加前缀，避免出现「[kuwo]」这种空壳条目
+        title = title.strip()
+        if title:
+            prefix = source_display_prefix(src)
+            # 源站歌名本身已带同名标记时不重复叠加（幂等，避免 [kuwo][kuwo]晴天）
+            if prefix and not title.startswith(prefix):
+                title = prefix + title
     artist = str(item.get("artist") or "")
     album = str(item.get("album") or "")
     duration_s = item.get("duration_s") or 0
@@ -8281,7 +8344,8 @@ async def event_report(request: Request):
                             "albumName": payload.get("albumName"),
                         })
                         # 客户端上报的是搜索列表里带来源标记的显示名，入库前剥离
-                        p_title = strip_source_tag(p_title)
+                        # （传 guid 走精确匹配：online:kuwo:x → [kuwo]）
+                        p_title = strip_source_tag(p_title, payload.get("trackGUID") or guid)
                         title = p_title or title
                         artist = p_artist or artist
                         album = p_album or album

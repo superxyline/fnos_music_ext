@@ -100,7 +100,7 @@ async def test_health_one_source_suffices_but_reports_degradation(monkeypatch):
     assert result["details"]["musicbox"]["dependency"]["reason"] == "offline"
 
 
-@pytest.mark.parametrize("initial, second_prefix", [(1, "[music box] "), (3, "[dl] ")])
+@pytest.mark.parametrize("initial, second_prefix", [(1, "[music box]"), (3, "[kuwo]")])
 def test_online_window_local_first_layout_and_local_duplicates(initial, second_prefix, monkeypatch):
     """本地优先全局布局：在线条目在 items 上连续分页、不重不漏；本地重复由 merge 过滤。"""
     monkeypatch.setitem(p.CONF, "online_limit", 3)

@@ -9,7 +9,7 @@ const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
 const PROVIDER_LABEL = { musicdl: "musicdl 聚合音源", musicbox: "网易云音乐盒子", lxmusic: "洛雪自定义源", none: "未配置" };
-const PROC_LABEL = { musicdl: "musicdl", musicbox: "musicbox", lxmusic: "lxmusic", webui: "WebUI" };
+const PROC_LABEL = { musicdl: "musicdl", musicbox: "musicbox", lxmusic: "lxmusic", webui: "WebUI", xiaomusic: "小爱音箱" };
 
 let configValues = {};   // GET /api/config 的 values
 let platforms = { enabled: [], registered: [] };
@@ -55,6 +55,8 @@ function switchPage(page) {
   $$(".page").forEach((el) => el.classList.toggle("active", el.id === "page-" + page));
   $$("[data-page]").forEach((el) => el.classList.toggle("active", el.dataset.page === page));
   if (page === "about") loadAbout();
+  if (page === "xiaomusic") loadXmPage();
+  else stopXmPolling();
 }
 $$("[data-page]").forEach((btn) => btn.addEventListener("click", () => switchPage(btn.dataset.page)));
 
@@ -118,6 +120,7 @@ function applyConfigToForm() {
   $("#recommend-daily").checked = v.FNMUSIC_RECOMMEND_DAILY === "true";
   // 公共歌单：选择串只存 {provider,source,kind,id}，_name/_cover_url 为展示用临时字段
   $("#public-playlists-enabled").checked = v.FNMUSIC_PUBLIC_PLAYLISTS_ENABLED === "true";
+  $("#xm-enabled").checked = v.FNMUSIC_XIAOMUSIC_ENABLED === "true";
   try {
     const rows = JSON.parse(v.FNMUSIC_PUBLIC_PLAYLISTS_SELECTION || "[]");
     publicSelection = Array.isArray(rows)
@@ -190,6 +193,7 @@ function collectConfig() {
     FNMUSIC_NETEASE_MY_PLAYLISTS: $("#netease-my-playlists").checked,
     FNMUSIC_NETEASE_SUBSCRIBED: $("#netease-subscribed").checked,
     FNMUSIC_PUBLIC_PLAYLISTS_ENABLED: $("#public-playlists-enabled").checked,
+    FNMUSIC_XIAOMUSIC_ENABLED: $("#xm-enabled").checked,
     // 常驻三态：未配置且勾选状态未变时不写键，避免把老配置钉成显式值
     ...(function residentValue() {
       const raw = (configValues.FNMUSIC_NETEASE_PLAYLIST_RESIDENT || "").trim();
@@ -1257,6 +1261,414 @@ $("#about-new").addEventListener("click", openUpdateModal);
 $("#update-modal").addEventListener("click", (ev) => {
   if (ev.target === $("#update-modal")) closeUpdateModal();
 });
+
+/* -------------------------------------------------------------- 小爱音箱（xiaomusic 桥接） */
+/* 三步向导 + 状态页：全部经 WebUI 的 /api/xiaomusic/* 代理到同容器桥接（:8005）。 */
+let xmState = null;
+let xmQrTimer = null;
+let xmHealthTimer = null;
+let xmLoadSeq = 0;
+
+const XM_STEPS = ["小米账号", "选择音箱", "飞牛音乐", "完成"];
+
+function stopXmPolling() {
+  if (xmQrTimer) { clearInterval(xmQrTimer); xmQrTimer = null; }
+  if (xmHealthTimer) { clearInterval(xmHealthTimer); xmHealthTimer = null; }
+}
+
+async function loadXmPage() {
+  stopXmPolling();
+  const body = $("#xm-body");
+  if (configValues.FNMUSIC_XIAOMUSIC_ENABLED !== "true") {
+    body.innerHTML = `<div class="card"><div class="muted">尚未开启。请勾选上方「接管小爱音箱音乐播放」并保存，桥接进程会自动拉起。</div></div>`;
+    return;
+  }
+  body.innerHTML = `<div class="card"><div class="muted">正在连接桥接服务…</div></div>`;
+  const seq = ++xmLoadSeq;
+  // 进程刚拉起时 xiaomusic 初始化要点时间：最多重试约 15s
+  for (let i = 0; i < 10; i++) {
+    let st = null;
+    try { st = await api("/api/xiaomusic/status"); } catch (_) { st = null; }
+    if (seq !== xmLoadSeq) return;  // 已切走页面
+    if (st && st.ok) { xmRender(st); return; }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  body.innerHTML = `<div class="card">
+      <div class="muted">桥接服务暂时不可达（可能仍在启动或已停止）。可重试，或到「概览 → 进程状态」查看 xiaomusic 进程。</div>
+      <div class="btn-row"><button class="btn" id="xm-retry">重新加载</button></div>
+    </div>`;
+  $("#xm-retry").addEventListener("click", loadXmPage);
+}
+
+function xmStepsHtml(step) {
+  return `<div class="xm-steps">` + XM_STEPS.map((lb, i) => {
+    const n = i + 1;
+    const cls = n < step ? "done" : (n === step ? "active" : "");
+    return `<div class="step ${cls}"><span class="num">${n < step ? "✓" : n}</span>${lb}</div>`
+      + (i < XM_STEPS.length - 1 ? `<div class="bar"></div>` : "");
+  }).join("") + `</div>`;
+}
+
+function xmRender(st) {
+  xmState = st.wizard || {};
+  const step = xmState.step || 1;
+  let html = `<div class="card"><div class="card-title">配置向导</div>${xmStepsHtml(step)}</div>`;
+  if (step === 1) html += xmStep1Html();
+  else if (step === 2) html += xmStep2Html();
+  else if (step === 3) html += xmStep3Html();
+  else html += xmDoneHtml(st);
+  $("#xm-body").innerHTML = html;
+  xmBind(step, st);
+}
+
+/* ---------- Step1 小米登录 ---------- */
+function xmStep1Html() {
+  return `<div class="card">
+    <div class="card-title">登录小米账号</div>
+    <p class="hint">桥接通过小米账号接管小爱音箱（口令轮询与播放控制都经小米云）。支持账号密码或米家 App 扫码。</p>
+    <div class="xm-tabs">
+      <div class="tab active" id="xm-tab-pwd">账号密码</div>
+      <div class="tab" id="xm-tab-qr">扫码登录</div>
+    </div>
+    <div id="xm-pane-pwd">
+      <label class="field"><span>小米账号（手机号/邮箱）</span>
+        <input class="input" id="xm-mi-account" placeholder="请输入小米账号" autocomplete="username"></label>
+      <label class="field"><span>密码</span>
+        <input class="input" id="xm-mi-password" type="password" placeholder="请输入密码" autocomplete="current-password"></label>
+      <div class="btn-row"><button class="btn primary" id="xm-mi-login">登录</button></div>
+    </div>
+    <div id="xm-pane-qr" hidden>
+      <div class="qr-area">
+        <img id="xm-qr-img" alt="登录二维码" hidden>
+        <div id="xm-qr-status" class="muted">正在获取二维码…</div>
+      </div>
+    </div>
+    <div class="xm-msg" id="xm-step1-msg" hidden></div>
+  </div>`;
+}
+
+/* ---------- Step2 设备勾选 ---------- */
+function xmStep2Html() {
+  return `<div class="card">
+    <div class="card-title">选择小爱音箱</div>
+    <p class="hint">勾选要接管的小爱音箱（可多选），口令对勾选的音箱生效。</p>
+    <div id="xm-device-list"><div class="muted">正在加载设备列表…</div></div>
+    <div class="btn-row">
+      <button class="btn" id="xm-device-refresh">刷新设备</button>
+      <button class="btn primary" id="xm-device-save">下一步</button>
+    </div>
+    <div class="xm-msg" id="xm-step2-msg" hidden></div>
+  </div>`;
+}
+
+function xmDeviceListHtml(devices, selected) {
+  if (!devices || !devices.length) {
+    return `<div class="muted">未获取到设备。请确认小米账号登录成功，或点「刷新设备」重试。</div>`;
+  }
+  return devices.map((d) => {
+    const did = escapeHtml(String(d.did || d.deviceID || ""));
+    const on = selected.includes(String(d.did || d.deviceID || "")) ? " selected" : "";
+    return `<div class="xm-device${on}" data-did="${did}">
+      <input type="checkbox" ${on ? "checked" : ""}>
+      <div class="min">
+        <div class="name">${escapeHtml(d.name || d.deviceID || "未知设备")}</div>
+        <div class="hw">型号 ${escapeHtml(d.hardware || "未知")}</div>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+/* ---------- Step3 飞牛音乐 ---------- */
+function xmStep3Html() {
+  const fn = (xmState.fnmusic) || {};
+  return `<div class="card">
+    <div class="card-title">连接飞牛音乐</div>
+    <p class="hint">自动扫描 NAS 上的飞牛音乐服务，然后填写登录账号（与飞牛音乐 App 同一账号）。</p>
+    <div id="xm-scan-result"><div class="muted">正在扫描…</div></div>
+    <label class="field"><span>飞牛音乐地址</span>
+      <input class="input" id="xm-fn-url" placeholder="如 http://192.168.x.x:5666（扫描自动填写）" value="${escapeHtml(fn.fnmusic_base_url || "")}"></label>
+    <label class="field"><span>音箱访问本机的地址（NAS 局域网 IP，不含端口）</span>
+      <input class="input" id="xm-nas-ip" placeholder="如 192.168.x.x" value="${escapeHtml(xmState.nas_ip || "")}"></label>
+    <label class="field"><span>飞牛音乐账号</span>
+      <input class="input" id="xm-fn-username" placeholder="飞牛音乐登录账号" value="${escapeHtml(fn.fnmusic_username || "")}"></label>
+    <label class="field"><span>密码</span>
+      <input class="input" id="xm-fn-password" type="password" placeholder="飞牛音乐密码"></label>
+    <div class="btn-row"><button class="btn primary" id="xm-fn-save">完成，开始使用</button></div>
+    <div class="xm-msg" id="xm-step3-msg" hidden></div>
+  </div>`;
+}
+
+/* ---------- 完成页 ---------- */
+function xmDoneHtml(st) {
+  const nasIp = st.nas_ip || (xmState && xmState.nas_ip) || "";
+  const xmUrl = `http://${escapeHtml(nasIp)}:${st.public_port || 8775}/xm/`;
+  return `<div class="card">
+    <div class="card-title">配置完成</div>
+    <p class="hint">现在可以对小爱音箱说「播放收藏」随机播放飞牛音乐收藏，或者说「播放晴天」直接点歌。收藏有增减时约 5 分钟自动同步。</p>
+    <div class="xm-status-grid">
+      <div class="xm-status-cell"><div class="v" id="xm-d-fav">-</div><div class="k">收藏歌曲</div></div>
+      <div class="xm-status-cell"><div class="v" id="xm-d-pl">-</div><div class="k">歌单歌曲（乱序）</div></div>
+      <div class="xm-status-cell"><div class="v" id="xm-d-push">-</div><div class="k">歌单推送</div></div>
+      <div class="xm-status-cell"><div class="v" id="xm-d-err">-</div><div class="k">最近错误</div></div>
+    </div>
+    <table class="xm-cmd-table">
+      <tr><td>播放收藏 / 播放本地</td><td>随机播放收藏（每次重新打乱）</td></tr>
+      <tr><td>播放本地收藏歌曲 / 播放本地歌曲 / 播放本地音乐</td><td>同上</td></tr>
+      <tr><td>放几首本地歌 / 放首本地歌 / 随便放几首歌 / 来几首本地歌</td><td>同上（口语说法都支持）</td></tr>
+      <tr><td>播放晴天 / 播放周杰伦的晴天</td><td><b>点歌</b>：收藏里有直接播；没有则在线搜索并自动<b>下载</b>到本地音乐库（<b>不进收藏</b>）后播放</td></tr>
+      <tr><td>下一首 / 上一首 / 暂停 / 停止播放</td><td>播放控制</td></tr>
+      <tr><td>随机播放 / 全部循环 / 单曲循环 / 顺序播放</td><td>切换播放模式</td></tr>
+      <tr><td>刷新列表</td><td>重新加载歌单</td></tr>
+    </table>
+    <p class="hint">💡 点播的歌自然播完且没有后续指令时，会自动接播收藏随机歌单；期间说了任何新指令（下一首 / 停止 / 新点歌）则不会接管。</p>
+    <div class="btn-row">
+      <button class="btn" id="xm-sync">立即同步</button>
+      <button class="btn" id="xm-reset">重新配置</button>
+      <a class="btn" href="${xmUrl}" target="_blank" rel="noopener noreferrer">xiaomusic 高级设置</a>
+    </div>
+    <div class="xm-msg" id="xm-done-msg" hidden></div>
+  </div>`;
+}
+
+/* ---------- 绑定与动作 ---------- */
+function xmMsg(id, kind, text) {
+  const el = $(id);
+  if (!el) return;
+  el.hidden = false;
+  el.className = "xm-msg " + kind;
+  el.textContent = text;
+}
+
+function xmBind(step, st) {
+  if (step === 1) {
+    $("#xm-tab-pwd").addEventListener("click", () => xmSwitchTab("pwd"));
+    $("#xm-tab-qr").addEventListener("click", () => xmSwitchTab("qr"));
+    $("#xm-mi-login").addEventListener("click", xmMiLogin);
+  } else if (step === 2) {
+    $("#xm-device-refresh").addEventListener("click", () => xmLoadDevices());
+    $("#xm-device-save").addEventListener("click", xmSaveDevices);
+    $$("#xm-device-list .xm-device").forEach((el) =>
+      el.addEventListener("click", () => el.classList.toggle("selected")));
+    xmLoadDevices();
+  } else if (step === 3) {
+    $("#xm-fn-save").addEventListener("click", xmSaveFnmusic);
+    xmScan();
+  } else {
+    $("#xm-sync").addEventListener("click", xmSyncNow);
+    $("#xm-reset").addEventListener("click", xmResetWizard);
+    xmRefreshDone(st);
+    xmHealthTimer = setInterval(async () => {
+      try {
+        const fresh = await api("/api/xiaomusic/status");
+        if (fresh && fresh.ok) xmRefreshDone(fresh);
+      } catch (_) { /* 忽略单次失败 */ }
+    }, 5000);
+  }
+}
+
+function xmSwitchTab(t) {
+  $("#xm-tab-pwd").classList.toggle("active", t === "pwd");
+  $("#xm-tab-qr").classList.toggle("active", t === "qr");
+  $("#xm-pane-pwd").hidden = t !== "pwd";
+  $("#xm-pane-qr").hidden = t !== "qr";
+  if (t === "qr") xmStartQr();
+  else stopXmQr();
+}
+
+function stopXmQr() {
+  if (xmQrTimer) { clearInterval(xmQrTimer); xmQrTimer = null; }
+}
+
+async function xmMiLogin() {
+  const msg = "#xm-step1-msg";
+  const account = $("#xm-mi-account").value.trim();
+  const password = $("#xm-mi-password").value;
+  if (!account || !password) { xmMsg(msg, "err", "账号和密码不能为空"); return; }
+  const btn = $("#xm-mi-login");
+  btn.disabled = true; btn.textContent = "登录中…";
+  try {
+    const r = await api("/api/xiaomusic/wizard/mi_login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ account, password }),
+    });
+    xmMsg(msg, "ok", "登录成功，正在加载设备列表…");
+    setTimeout(() => xmGotoStep2(r.devices || []), 600);
+  } catch (exc) {
+    xmMsg(msg, "err", "登录失败：" + (exc.message || exc));
+    btn.disabled = false; btn.textContent = "登录";
+  }
+}
+
+async function xmStartQr() {
+  stopXmQr();
+  $("#xm-qr-img").hidden = true;
+  $("#xm-qr-status").textContent = "正在获取二维码…";
+  try {
+    const r = await api("/api/xiaomusic/wizard/qrcode");
+    if (r.already_logged_in) {
+      $("#xm-qr-status").textContent = "已登录，正在加载设备…";
+      setTimeout(() => xmGotoStep2(r.devices || []), 400);
+      return;
+    }
+    if (r.ok && r.qrcode_url) {
+      $("#xm-qr-img").src = r.qrcode_url;
+      $("#xm-qr-img").hidden = false;
+      $("#xm-qr-status").textContent = "请使用「米家 App」扫码登录";
+      xmPollQr(r.expire_seconds || 120);
+    } else {
+      $("#xm-qr-status").textContent = "二维码获取失败：" + (r.message || "未知错误");
+    }
+  } catch (exc) {
+    $("#xm-qr-status").textContent = "二维码获取失败：" + (exc.message || exc);
+  }
+}
+
+function xmPollQr(expire) {
+  stopXmQr();
+  let elapsed = 0;
+  xmQrTimer = setInterval(async () => {
+    elapsed += 2;
+    if (elapsed > expire + 10) { xmStartQr(); return; }
+    try {
+      const r = await api("/api/xiaomusic/wizard/qrcode_status");
+      if (r.status === "success") {
+        stopXmQr();
+        $("#xm-qr-status").textContent = "扫码成功！正在加载设备列表…";
+        setTimeout(() => xmGotoStep2(r.devices || []), 600);
+      }
+    } catch (_) { /* 继续轮询 */ }
+  }, 2000);
+}
+
+async function xmGotoStep2(devices) {
+  // 直接渲染第二步（不等整页状态刷新，扫码/登录响应里已带设备）
+  xmState = Object.assign({}, xmState, { step: 2 });
+  const html = `<div class="card"><div class="card-title">配置向导</div>${xmStepsHtml(2)}</div>` + xmStep2Html();
+  $("#xm-body").innerHTML = html;
+  const box = $("#xm-device-list");
+  box.innerHTML = xmDeviceListHtml(devices, []);
+  $("#xm-device-refresh").addEventListener("click", () => xmLoadDevices());
+  $("#xm-device-save").addEventListener("click", xmSaveDevices);
+  $$("#xm-device-list .xm-device").forEach((el) =>
+    el.addEventListener("click", () => el.classList.toggle("selected")));
+}
+
+async function xmLoadDevices() {
+  const box = $("#xm-device-list");
+  if (!box) return;
+  box.innerHTML = `<div class="muted">正在加载设备列表…</div>`;
+  try {
+    const r = await api("/api/xiaomusic/wizard/devices");
+    const selected = $$("#xm-device-list .xm-device.selected").map((el) => el.dataset.did);
+    box.innerHTML = xmDeviceListHtml(r.devices || [], selected);
+    $$("#xm-device-list .xm-device").forEach((el) =>
+      el.addEventListener("click", () => el.classList.toggle("selected")));
+  } catch (exc) {
+    box.innerHTML = `<div class="muted">设备列表加载失败：${escapeHtml(exc.message || exc)}</div>`;
+  }
+}
+
+async function xmSaveDevices() {
+  const msg = "#xm-step2-msg";
+  const dids = $$("#xm-device-list .xm-device.selected").map((el) => el.dataset.did);
+  if (!dids.length) { xmMsg(msg, "err", "请至少勾选一台音箱"); return; }
+  const btn = $("#xm-device-save");
+  btn.disabled = true; btn.textContent = "保存中…";
+  try {
+    await api("/api/xiaomusic/wizard/devices", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dids }),
+    });
+    loadXmPage();  // 回到 step3
+  } catch (exc) {
+    xmMsg(msg, "err", "保存失败：" + (exc.message || exc));
+    btn.disabled = false; btn.textContent = "下一步";
+  }
+}
+
+async function xmScan() {
+  const box = $("#xm-scan-result");
+  try {
+    const r = await api("/api/xiaomusic/wizard/scan_fnmusic");
+    const found = r.found || [];
+    if (found.length) {
+      box.innerHTML = found.map((u, i) =>
+        `<div class="xm-scan${i === 0 ? " selected" : ""}" data-url="${escapeHtml(u)}">
+           <span class="dot ok"></span>${escapeHtml(u)}</div>`).join("");
+      $$("#xm-scan-result .xm-scan").forEach((el) =>
+        el.addEventListener("click", () => {
+          $$("#xm-scan-result .xm-scan").forEach((x) => x.classList.remove("selected"));
+          el.classList.add("selected");
+          $("#xm-fn-url").value = el.dataset.url;
+        }));
+      $("#xm-fn-url").value = found[0];
+    } else {
+      box.innerHTML = `<div class="muted">未自动发现飞牛音乐（ scanned: ${escapeHtml((r.scanned || []).join("、"))} ）。请确认飞牛音乐正在运行，或手动填写地址。</div>`;
+    }
+  } catch (exc) {
+    box.innerHTML = `<div class="muted">扫描失败：${escapeHtml(exc.message || exc)}，请手动填写。</div>`;
+  }
+}
+
+async function xmSaveFnmusic() {
+  const msg = "#xm-step3-msg";
+  const base_url = $("#xm-fn-url").value.trim().replace(/\/+$/, "");
+  const username = $("#xm-fn-username").value.trim();
+  const password = $("#xm-fn-password").value;
+  const nas_ip = $("#xm-nas-ip").value.trim();
+  if (!base_url || !username || !password) { xmMsg(msg, "err", "请填写完整的地址、账号和密码"); return; }
+  const btn = $("#xm-fn-save");
+  btn.disabled = true; btn.textContent = "验证并保存…";
+  try {
+    const r = await api("/api/xiaomusic/wizard/fnmusic", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base_url, username, password, nas_ip }),
+    });
+    let note = `配置成功！已获取 ${r.favorites} 首收藏，歌单生成中…`;
+    if (r.restarted) note += "（音箱访问地址已变更，桥接已自动重启）";
+    xmMsg(msg, "ok", note);
+    setTimeout(loadXmPage, 1200);
+  } catch (exc) {
+    xmMsg(msg, "err", "配置失败：" + (exc.message || exc));
+    btn.disabled = false; btn.textContent = "完成，开始使用";
+  }
+}
+
+function xmRefreshDone(st) {
+  const set = (id, v, cls) => {
+    const el = $(id);
+    if (!el) return;
+    el.textContent = v;
+    if (cls) el.className = "v " + cls;
+  };
+  set("#xm-d-fav", st.favorites != null ? st.favorites : "-");
+  set("#xm-d-pl", st.playlist_songs != null ? st.playlist_songs : "-");
+  set("#xm-d-push", st.push_ok ? "正常" : "等待", st.push_ok ? "ok" : "err");
+  const err = st.last_error || "";
+  set("#xm-d-err", err ? (err.length > 12 ? err.slice(0, 12) + "…" : err) : "无", err ? "err" : "ok");
+}
+
+async function xmSyncNow() {
+  const msg = "#xm-done-msg";
+  try {
+    await api("/api/xiaomusic/sync", { method: "POST" });
+    xmMsg(msg, "ok", "已触发同步");
+    const fresh = await api("/api/xiaomusic/status");
+    if (fresh && fresh.ok) xmRefreshDone(fresh);
+  } catch (exc) {
+    xmMsg(msg, "err", exc.message || exc);
+  }
+}
+
+async function xmResetWizard() {
+  if (!confirm("确定要重新配置吗？（小米账号登录态会保留）")) return;
+  try {
+    await api("/api/xiaomusic/wizard/reset", { method: "POST" });
+    loadXmPage();
+  } catch (exc) {
+    toast("重置失败：" + (exc.message || exc), "fail");
+  }
+}
 
 /* -------------------------------------------------------------- 启动 */
 (async function boot() {

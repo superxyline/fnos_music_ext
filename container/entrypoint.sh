@@ -98,6 +98,11 @@ if [ "$(env_flag FNMUSIC_WEBUI_ENABLED)" = "true" ]; then
     start_prog webui
 fi
 
+# 小爱音箱接管（fnmusic-xiaomusic 桥接）：独立开关，与音源三选一无关
+if [ "$(env_flag FNMUSIC_XIAOMUSIC_ENABLED)" = "true" ]; then
+    start_prog xiaomusic
+fi
+
 # 信号转发：docker stop → supervisorctl shutdown → 各程序优雅退出
 trap 'supervisorctl -c "$SUP_CONF" shutdown >/dev/null 2>&1' TERM INT
 log "fnmusic-sources ready (pid=$SUP_PID)"

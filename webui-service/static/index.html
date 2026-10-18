@@ -24,6 +24,7 @@
         <button class="nav-item" data-page="search">搜索</button>
         <button class="nav-item" data-page="tee">边听边存</button>
         <button class="nav-item" data-page="match">歌曲匹配</button>
+        <button class="nav-item" data-page="xiaomusic">小爱音箱</button>
         <button class="nav-item" data-page="llm">高级 · 大模型</button>
         <button class="nav-item" data-page="about">关于<span class="nav-dot" id="about-dot" hidden></span></button>
       </nav>
@@ -280,6 +281,18 @@
         </div>
       </section>
 
+      <!-- 小爱音箱 -->
+      <section class="page" id="page-xiaomusic">
+        <h2>小爱音箱</h2>
+        <div class="card">
+          <label class="switch-row"><span>接管小爱音箱音乐播放<div class="sub">桥接服务随容器按需启动（约几秒）。对小爱说「播放收藏」随机播放飞牛音乐收藏，说「播放晴天」直接点歌（收藏没有就搜在线源自动下载，不进收藏）。与音源三选一无关，可随时开关。</div></span><input type="checkbox" id="xm-enabled"></label>
+          <p class="hint">勾选/取消后需点底部「保存并生效」——保存时自动拉起或停止桥接进程。首次使用请完成下方三步配置（约 2 分钟）。</p>
+        </div>
+        <div id="xm-body">
+          <div class="card"><div class="muted">加载中…</div></div>
+        </div>
+      </section>
+
       <!-- LLM -->
       <section class="page" id="page-llm">
         <h2>高级 · 大模型</h2>
@@ -325,6 +338,7 @@
     <button class="nav-item" data-page="search">搜索</button>
     <button class="nav-item" data-page="tee">缓存</button>
     <button class="nav-item" data-page="match">匹配</button>
+    <button class="nav-item" data-page="xiaomusic">音箱</button>
     <button class="nav-item" data-page="llm">高级</button>
     <button class="nav-item" data-page="about">关于<span class="nav-dot" id="about-dot-m" hidden></span></button>
   </nav>

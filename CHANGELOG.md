@@ -5,6 +5,24 @@
 
 > 以下 v2.3.1 起为本仓库（superxyline 二次开发版）的增量变更；v2.3.0 及之前为上游 javycoder/fnos_music_ext 的变更。
 
+## [3.3.0] - 2026-10-18
+
+### 新增
+
+- **小爱音箱接管（fnmusic-xiaomusic 移植）**：独立应用 [fnmusic-xiaomusic](https://github.com/superxyline/fnmusic-xiaomusic)（v0.2.1）的桥接服务移植进本扩展，成为 fnmusic-sources 容器内第 5 个 supervisor 进程：
+  - `xiaomusic-service/`（新目录）：`app.py` 桥接主程序 + `fnmusic_client.py` 飞牛 API 客户端（authx 签名/Cookie）+ 自带向导静态页。改造点：数据目录独立为 `/data/xiaomusic/{conf,music,bridge}`（sources-data 卷内，升级不丢）；内外端口分离——容器内监听 8005（WebUI/xiaomusic 内环调用），推送给音箱的外部地址为 `http://<NAS_IP>:8775`（hostname/public_port/music_list_url）；飞牛音乐地址默认取容器默认网关（宿主 docker0），网关探测失败时回退 `NAS_IP` 环境变量；ffmpeg 路径改为镜像 apt 版 `/usr/bin`；
+  - 容器集成：`supervisord.conf` 新增 `[program:xiaomusic]`（8005，autostart=false）；`entrypoint.sh` / `healthcheck.sh` 按 `FNMUSIC_XIAOMUSIC_ENABLED` 起停与纳管；`Dockerfile` 并入 `xiaomusic-service` 代码与依赖（xiaomusic + mutagen，fastapi/uvicorn/httpx 复用）；`docker-compose.yml` 增加 `0.0.0.0:8775:8005` 映射；
+  - 管理台左侧菜单（桌面侧栏 + 移动底栏）新增「小爱音箱」页：三步向导（① 小米账号登录：账号密码 / 米家 App 扫码；② 勾选小爱音箱（多选）；③ 飞牛音乐地址自动扫描 + 账号密码验证）+ 完成页（收藏数/歌单数/推送状态/最近错误实时刷新、口令表、立即同步、重新配置、xiaomusic 高级设置跳转）；
+  - WebUI 后端：SCHEMA 新增 `FNMUSIC_XIAOMUSIC_ENABLED`（保存时经 supervisorctl 起/停桥接进程）；新增 `/api/xiaomusic/*` 一组代理端点（status/sync/wizard 全链路）；`/api/status` 纳入 xiaomusic 进程与服务健康；概览页进程芯片增加「小爱音箱」；
+  - `install.sh` 写 `FNMUSIC_XIAOMUSIC_ENABLED='false'` 默认值（刻意不进 ENV_EXPLICIT——升级时保留用户已保存的开关）；`.env.example`、README 同步；
+  - 口令/播放能力与独立版完全一致：14+ 种「播放收藏」变体、点歌兜底（收藏 → 本地曲库收藏后可点播 → 在线源 ffmpeg 下载不进收藏）、播完自动接歌单、5 分钟定时同步、每次同步自愈式推送口令配置；
+  - 测试：`webui-service/test_xiaomusic_page.py`（入口两处 / Schema / 保存起停进程 / 代理转发与 503 降级 / status 纳入）；`test_about_page.py` 的 id 引用断言扩展为识别 JS 运行期生成的模板 id。
+
+### 说明
+
+- 小爱音箱功能默认关闭（`FNMUSIC_XIAOMUSIC_ENABLED=false`），与音源三选一互斥无关，可任意叠加；开启后桥接进程常驻约 100MB 内存。
+- 首次使用需在管理台「小爱音箱」页完成三步配置（小米账号登录需要用户手机操作，无法远程代填）。
+
 ## [3.2.0] - 2026-10-17
 
 ### 新增

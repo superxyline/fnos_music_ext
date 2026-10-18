@@ -53,6 +53,7 @@ if [ "$(env_flag FNMUSIC_NETEASE_ENABLED)" != "true" ] \
 fi
 check lxmusic FNMUSIC_LX_ENABLED
 check webui FNMUSIC_WEBUI_ENABLED
+check xiaomusic FNMUSIC_XIAOMUSIC_ENABLED
 
 if [ "$checked" -eq 0 ]; then
     echo "[healthcheck] 未配置任何音源" >&2

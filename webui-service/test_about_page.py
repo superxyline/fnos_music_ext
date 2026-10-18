@@ -35,9 +35,12 @@ def test_hidden_elements_have_css_fallback():
 
 def test_js_references_existing_ids():
     ids = set(re.findall(r'id="([^"]+)"', HTML))
+    # 运行期生成的模板同样算“已定义”（如小爱音箱向导各步骤的 DOM 由 JS 渲染），
+    # 否则动态页面会被误报；静态 HTML 与 JS 模板都没定义才是真笔误。
+    js_ids = set(re.findall(r'id="([^"]+)"', JS))
     referenced = set(re.findall(r'\$\("#([a-zA-Z0-9_-]+)"\)', JS))
-    missing = sorted(referenced - ids)
-    assert not missing, f"app.js 引用了 HTML 中不存在的元素: {missing}"
+    missing = sorted(referenced - ids - js_ids)
+    assert not missing, f"app.js 引用了不存在的元素: {missing}"
 
 
 def test_update_check_not_polled():

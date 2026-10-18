@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>小爱音箱·飞牛音乐</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+         background: #f5f6f8; color: #1f2329; min-height: 100vh; }
+  .container { max-width: 640px; margin: 0 auto; padding: 24px 16px 60px; }
+  .header { text-align: center; padding: 28px 0 8px; }
+  .header .logo { width: 64px; height: 64px; border-radius: 16px; }
+  .header h1 { font-size: 22px; margin-top: 12px; }
+  .header p { color: #8a8f99; font-size: 13px; margin-top: 6px; }
+  /* 步骤条 */
+  .steps { display: flex; justify-content: center; align-items: center; gap: 0; margin: 24px 0 28px; }
+  .step { display: flex; align-items: center; color: #8a8f99; font-size: 13px; }
+  .step .num { width: 26px; height: 26px; border-radius: 50%; background: #e5e6eb;
+               display: flex; align-items: center; justify-content: center;
+               font-size: 13px; margin-right: 6px; flex-shrink: 0; }
+  .step.active { color: #3370ff; font-weight: 600; }
+  .step.active .num { background: #3370ff; color: #fff; }
+  .step.done { color: #34a853; }
+  .step.done .num { background: #34a853; color: #fff; }
+  .step .bar { width: 36px; height: 2px; background: #e5e6eb; margin: 0 10px; }
+  .step.done .bar { background: #34a853; }
+  /* 卡片 */
+  .card { background: #fff; border-radius: 14px; padding: 24px; margin-bottom: 16px;
+          box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+  .card h2 { font-size: 17px; margin-bottom: 4px; }
+  .card .desc { color: #8a8f99; font-size: 13px; margin-bottom: 18px; line-height: 1.6; }
+  /* 表单 */
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 13px; color: #4e5566; margin-bottom: 6px; }
+  .field input { width: 100%; padding: 10px 12px; border: 1px solid #dee0e3; border-radius: 8px;
+                 font-size: 14px; outline: none; transition: border-color .15s; }
+  .field input:focus { border-color: #3370ff; }
+  .btn { display: inline-block; width: 100%; padding: 11px; background: #3370ff; color: #fff;
+         border: none; border-radius: 8px; font-size: 15px; cursor: pointer; transition: background .15s; }
+  .btn:hover { background: #295fe0; }
+  .btn:disabled { background: #a8c1ff; cursor: not-allowed; }
+  .btn.secondary { background: #fff; color: #3370ff; border: 1px solid #3370ff; }
+  .btn.secondary:hover { background: #f0f5ff; }
+  .btn-row { display: flex; gap: 10px; margin-top: 6px; }
+  /* tab */
+  .tabs { display: flex; border-bottom: 1px solid #ebeef2; margin-bottom: 18px; }
+  .tab { flex: 1; text-align: center; padding: 10px; font-size: 14px; color: #8a8f99;
+         cursor: pointer; border-bottom: 2px solid transparent; }
+  .tab.active { color: #3370ff; border-bottom-color: #3370ff; font-weight: 600; }
+  /* 二维码 */
+  .qr-box { text-align: center; padding: 10px 0 4px; }
+  .qr-box img { width: 220px; height: 220px; border: 1px solid #ebeef2; border-radius: 10px; }
+  .qr-tip { color: #8a8f99; font-size: 13px; margin-top: 12px; line-height: 1.7; }
+  /* 设备列表 */
+  .device { display: flex; align-items: center; padding: 13px 14px; border: 1px solid #ebeef2;
+            border-radius: 10px; margin-bottom: 10px; cursor: pointer; transition: all .15s; }
+  .device:hover { border-color: #b3c6ff; }
+  .device.selected { border-color: #3370ff; background: #f0f5ff; }
+  .device input { width: 18px; height: 18px; margin-right: 12px; accent-color: #3370ff; }
+  .device .info { flex: 1; }
+  .device .name { font-size: 14px; font-weight: 500; }
+  .device .hw { font-size: 12px; color: #8a8f99; margin-top: 2px; }
+  /* 扫描结果 */
+  .scan-item { display: flex; align-items: center; padding: 11px 13px; border: 1px solid #ebeef2;
+               border-radius: 8px; margin-bottom: 8px; cursor: pointer; font-size: 13px; }
+  .scan-item.selected { border-color: #3370ff; background: #f0f5ff; }
+  .scan-item .dot { width: 8px; height: 8px; border-radius: 50%; background: #34a853; margin-right: 10px; }
+  /* 消息 */
+  .msg { padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-top: 14px; display: none; }
+  .msg.error { background: #fef0f0; color: #d54941; display: block; }
+  .msg.success { background: #edf7ee; color: #2e7d32; display: block; }
+  /* 完成页 */
+  .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
+  .status-cell { background: #f7f8fa; border-radius: 10px; padding: 14px; }
+  .status-cell .v { font-size: 20px; font-weight: 700; color: #1f2329; }
+  .status-cell .k { font-size: 12px; color: #8a8f99; margin-top: 3px; }
+  .status-cell .v.ok { color: #34a853; }
+  .status-cell .v.err { color: #d54941; }
+  .cmd-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+  .cmd-table td { padding: 8px 4px; border-bottom: 1px solid #f0f1f3; }
+  .cmd-table td:first-child { color: #3370ff; font-weight: 500; width: 44%; }
+  .cmd-table td:last-child { color: #4e5566; }
+  .link-row { margin-top: 18px; text-align: center; font-size: 13px; }
+  .link-row a { color: #3370ff; text-decoration: none; }
+  .loading { text-align: center; color: #8a8f99; font-size: 14px; padding: 40px 0; }
+  .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid #d0d3d9;
+             border-top-color: #3370ff; border-radius: 50%; animation: spin .8s linear infinite;
+             vertical-align: -3px; margin-right: 8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <img class="logo" src="data:image/png;base64,__LOGO_B64__" alt="logo">
+    <h1>小爱音箱·飞牛音乐</h1>
+    <p>对小爱说「播放收藏」随机播放收藏，或「播放晴天」直接点歌</p>
+  </div>
+  <div class="steps" id="steps"></div>
+  <div id="app"><div class="loading"><span class="spinner"></span>加载中…</div></div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let state = null;
+let qrTimer = null;
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok && data.message) throw new Error(data.message);
+  return data;
+}
+
+function renderSteps(step) {
+  const labels = ['小米账号', '选择音箱', '飞牛音乐', '完成'];
+  let html = '';
+  labels.forEach((lb, i) => {
+    const n = i + 1;
+    const cls = n < step ? 'done' : (n === step ? 'active' : '');
+    html += `<div class="step ${cls}"><span class="num">${n < step ? '✓' : n}</span>${lb}</div>`;
+    if (i < labels.length - 1) html += `<div class="bar"></div>`;
+  });
+  $('#steps').innerHTML = html;
+}
+
+async function load() {
+  state = await api('/api/wizard/state');
+  renderSteps(state.step);
+  if (state.step === 1) renderStep1();
+  else if (state.step === 2) renderStep2();
+  else if (state.step === 3) renderStep3();
+  else renderDone();
+}
+
+/* ---------- Step1 小米登录 ---------- */
+function renderStep1() {
+  $('#app').innerHTML = `
+    <div class="card">
+      <h2>登录小米账号</h2>
+      <div class="desc">xiaomusic 通过小米账号接管小爱音箱。支持账号密码或米家 App 扫码。</div>
+      <div class="tabs">
+        <div class="tab active" id="tab-pwd" onclick="switchTab('pwd')">账号密码</div>
+        <div class="tab" id="tab-qr" onclick="switchTab('qr')">扫码登录</div>
+      </div>
+      <div id="pane-pwd">
+        <div class="field"><label>小米账号（手机号/邮箱）</label>
+          <input id="mi-account" placeholder="请输入小米账号" autocomplete="username"></div>
+        <div class="field"><label>密码</label>
+          <input id="mi-password" type="password" placeholder="请输入密码" autocomplete="current-password"></div>
+        <div class="btn-row"><button class="btn" onclick="miLogin()">登录</button></div>
+      </div>
+      <div id="pane-qr" style="display:none">
+        <div class="qr-box">
+          <img id="qr-img" style="display:none" alt="登录二维码">
+          <div id="qr-loading" class="loading"><span class="spinner"></span>正在获取二维码…</div>
+          <div class="qr-tip" id="qr-tip">请使用「米家 App」扫码登录</div>
+        </div>
+      </div>
+      <div class="msg" id="step1-msg"></div>
+    </div>`;
+}
+
+function switchTab(t) {
+  $('#tab-pwd').classList.toggle('active', t === 'pwd');
+  $('#tab-qr').classList.toggle('active', t === 'qr');
+  $('#pane-pwd').style.display = t === 'pwd' ? '' : 'none';
+  $('#pane-qr').style.display = t === 'qr' ? '' : 'none';
+  if (t === 'qr') startQR();
+  else stopQR();
+}
+
+async function miLogin() {
+  const msg = $('#step1-msg');
+  msg.className = 'msg'; msg.textContent = '';
+  const account = $('#mi-account').value.trim();
+  const password = $('#mi-password').value;
+  if (!account || !password) { showMsg(msg, 'error', '账号和密码不能为空'); return; }
+  const btn = $('#pane-pwd .btn');
+  btn.disabled = true; btn.textContent = '登录中…';
+  try {
+    const r = await api('/api/wizard/mi_login', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({account, password})
+    });
+    showMsg(msg, 'success', '登录成功！正在加载设备列表…');
+    setTimeout(() => { renderStep2(r.devices); renderSteps(2); }, 600);
+  } catch (e) {
+    showMsg(msg, 'error', '登录失败：' + e.message);
+    btn.disabled = false; btn.textContent = '登录';
+  }
+}
+
+function startQR() {
+  stopQR();
+  $('#qr-img').style.display = 'none';
+  $('#qr-loading').style.display = '';
+  $('#qr-tip').textContent = '请使用「米家 App」扫码登录';
+  api('/api/wizard/qrcode').then(r => {
+    if (r.already_logged_in) {
+      $('#qr-tip').textContent = '已登录，正在加载设备…';
+      return loadDevicesAndNext(r.devices);
+    }
+    if (r.ok && r.qrcode_url) {
+      $('#qr-img').src = r.qrcode_url;
+      $('#qr-img').style.display = '';
+      $('#qr-loading').style.display = 'none';
+      pollQR(r.expire_seconds || 120);
+    } else {
+      $('#qr-tip').textContent = '二维码获取失败：' + (r.message || '未知错误');
+      $('#qr-loading').style.display = 'none';
+    }
+  }).catch(e => {
+    $('#qr-tip').textContent = '二维码获取失败：' + e.message;
+    $('#qr-loading').style.display = 'none';
+  });
+}
+
+function pollQR(expire) {
+  let elapsed = 0;
+  qrTimer = setInterval(async () => {
+    elapsed += 2;
+    if (elapsed > expire + 10) { stopQR(); startQR(); return; }
+    try {
+      const r = await api('/api/wizard/qrcode_status');
+      if (r.status === 'success') {
+        stopQR();
+        $('#qr-tip').textContent = '扫码成功！正在加载设备列表…';
+        setTimeout(() => { renderStep2(r.devices); renderSteps(2); }, 600);
+      }
+    } catch (e) { /* 继续轮询 */ }
+  }, 2000);
+}
+
+function stopQR() { if (qrTimer) { clearInterval(qrTimer); qrTimer = null; } }
+
+async function loadDevicesAndNext(devices) {
+  if (!devices) devices = (await api('/api/wizard/qrcode_status')).devices || [];
+  renderStep2(devices); renderSteps(2);
+}
+
+/* ---------- Step2 设备勾选 ---------- */
+function renderStep2(devices) {
+  devices = devices || [];
+  $('#app').innerHTML = `
+    <div class="card">
+      <h2>选择小爱音箱</h2>
+      <div class="desc">勾选要接管的小爱音箱（可多选）。口令对勾选的音箱生效。</div>
+      <div id="device-list">
+        ${devices.map(d => `
+          <div class="device" onclick="toggleDevice(this)">
+            <input type="checkbox" value="${esc(d.did || d.deviceID)}">
+            <div class="info">
+              <div class="name">${esc(d.name || d.deviceID)}</div>
+              <div class="hw">型号 ${esc(d.hardware || '未知')}</div>
+            </div>
+          </div>`).join('') || '<div class="desc">未获取到设备，请返回上一步确认登录。</div>'}
+      </div>
+      <div class="btn-row" style="margin-top:16px">
+        <button class="btn secondary" style="flex:1" onclick="load()">上一步</button>
+        <button class="btn" style="flex:2" onclick="saveDevices()">下一步</button>
+      </div>
+      <div class="msg" id="step2-msg"></div>
+    </div>`;
+}
+
+function toggleDevice(el) {
+  const cb = el.querySelector('input');
+  cb.checked = !cb.checked;
+  el.classList.toggle('selected', cb.checked);
+}
+
+async function saveDevices() {
+  const msg = $('#step2-msg');
+  msg.className = 'msg'; msg.textContent = '';
+  const dids = [...document.querySelectorAll('#device-list input:checked')].map(i => i.value);
+  if (!dids.length) { showMsg(msg, 'error', '请至少勾选一台音箱'); return; }
+  const btn = $('#app .btn:last-child');
+  btn.disabled = true; btn.textContent = '保存中…';
+  try {
+    await api('/api/wizard/devices', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({dids})
+    });
+    renderStep3(); renderSteps(3);
+  } catch (e) {
+    showMsg(msg, 'error', '保存失败：' + e.message);
+    btn.disabled = false; btn.textContent = '下一步';
+  }
+}
+
+/* ---------- Step3 飞牛音乐 ---------- */
+function renderStep3() {
+  $('#app').innerHTML = `
+    <div class="card">
+      <h2>连接飞牛音乐</h2>
+      <div class="desc">自动扫描 NAS 上的飞牛音乐服务，然后填写登录账号。</div>
+      <div id="scan-result"><div class="loading"><span class="spinner"></span>正在扫描本地飞牛音乐…</div></div>
+      <div id="fn-form" style="display:none; margin-top:16px">
+        <div class="field"><label>飞牛音乐地址</label>
+          <input id="fn-url" value="" placeholder="如 http://192.168.x.x:5666（扫描自动填写）"></div>
+        <div class="field"><label>小爱访问本机的地址（NAS 局域网 IP）</label>
+          <input id="nas-ip" value="${esc(state.nas_ip || '')}" placeholder="如 192.168.x.x"></div>
+        <div class="field"><label>飞牛音乐账号</label>
+          <input id="fn-username" placeholder="飞牛音乐登录账号"></div>
+        <div class="field"><label>密码</label>
+          <input id="fn-password" type="password" placeholder="飞牛音乐密码"></div>
+        <div class="btn-row">
+          <button class="btn secondary" style="flex:1" onclick="load()">上一步</button>
+          <button class="btn" style="flex:2" onclick="saveFnmusic()">完成，开始使用</button>
+        </div>
+      </div>
+      <div class="msg" id="step3-msg"></div>
+    </div>`;
+  scanFnmusic();
+}
+
+async function scanFnmusic() {
+  const box = $('#scan-result');
+  try {
+    const r = await api('/api/wizard/scan_fnmusic');
+    if (r.found && r.found.length) {
+      box.innerHTML = r.found.map((u, i) => `
+        <div class="scan-item ${i === 0 ? 'selected' : ''}" onclick="selectScan(this)">
+          <span class="dot"></span>${esc(u)}<span style="margin-left:auto;color:#34a853;font-size:12px">已发现</span>
+        </div>`).join('');
+      $('#fn-url').value = r.found[0];
+      $('#fn-form').style.display = '';
+    } else {
+      box.innerHTML = `<div class="msg error" style="display:block">未自动发现飞牛音乐。请确认飞牛音乐正在运行，或手动填写地址。</div>`;
+      $('#fn-form').style.display = '';
+    }
+  } catch (e) {
+    box.innerHTML = `<div class="msg error" style="display:block">扫描失败：${esc(e.message)}，请手动填写。</div>`;
+    $('#fn-form').style.display = '';
+  }
+}
+
+function selectScan(el) {
+  document.querySelectorAll('.scan-item').forEach(x => x.classList.remove('selected'));
+  el.classList.add('selected');
+  $('#fn-url').value = el.textContent.replace('已发现', '').trim();
+}
+
+async function saveFnmusic() {
+  const msg = $('#step3-msg');
+  msg.className = 'msg'; msg.textContent = '';
+  const base_url = $('#fn-url').value.trim().replace(/\/+$/, '');
+  const username = $('#fn-username').value.trim();
+  const password = $('#fn-password').value;
+  const nas_ip = $('#nas-ip').value.trim();
+  if (!base_url || !username || !password) { showMsg(msg, 'error', '请填写完整的地址、账号和密码'); return; }
+  const btn = $('#app .btn:last-child');
+  btn.disabled = true; btn.textContent = '验证并保存…';
+  try {
+    const r = await api('/api/wizard/fnmusic', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({base_url, username, password, nas_ip})
+    });
+    showMsg(msg, 'success', `配置成功！已获取 ${r.favorites} 首收藏，歌单生成中…`);
+    setTimeout(() => load(), 1200);
+  } catch (e) {
+    showMsg(msg, 'error', '配置失败：' + e.message);
+    btn.disabled = false; btn.textContent = '完成，开始使用';
+  }
+}
+
+/* ---------- 完成页 ---------- */
+function renderDone() {
+  $('#app').innerHTML = `
+    <div class="card">
+      <h2>🎉 配置完成</h2>
+      <div class="desc">现在可以对小爱音箱说「播放收藏」随机播放你的飞牛音乐收藏，或者说「播放晴天」直接点歌。收藏有增减时约 5 分钟自动同步。</div>
+      <div class="status-grid">
+        <div class="status-cell"><div class="v" id="d-fav">-</div><div class="k">收藏歌曲</div></div>
+        <div class="status-cell"><div class="v" id="d-pl">-</div><div class="k">歌单歌曲（乱序）</div></div>
+        <div class="status-cell"><div class="v" id="d-push">-</div><div class="k">歌单推送</div></div>
+        <div class="status-cell"><div class="v" id="d-err">-</div><div class="k">最近错误</div></div>
+      </div>
+      <table class="cmd-table">
+        <tr><td>播放收藏 / 播放本地</td><td>随机播放收藏（每次重新打乱）</td></tr>
+        <tr><td>播放本地收藏歌曲 / 播放本地歌曲<br>播放本地音乐</td><td>同上</td></tr>
+        <tr><td>放几首本地歌 / 放首本地歌<br>随便放几首歌 / 来几首本地歌</td><td>同上（口语说法都支持）</td></tr>
+        <tr><td>播放晴天<br>播放周杰伦的晴天</td><td><b>点歌</b>：收藏里有直接播；没有则在线搜索并自动<b>下载</b>到本地音乐库（<b>不进收藏</b>）后播放</td></tr>
+        <tr><td>下一首 / 上一首 / 暂停 / 停止播放</td><td>播放控制</td></tr>
+        <tr><td>随机播放 / 全部循环 / 单曲循环 / 顺序播放</td><td>切换播放模式</td></tr>
+        <tr><td>刷新列表</td><td>重新加载歌单</td></tr>
+      </table>
+      <div class="desc" style="margin-top:12px">💡 点播的歌自然放完且没有后续指令时，会自动接播收藏随机歌单；期间你说了任何新指令（下一首 / 停止 / 新点歌）则不会接管。</div>
+      <div class="btn-row" style="margin-top:18px">
+        <button class="btn secondary" style="flex:1" onclick="syncNow()">立即同步</button>
+        <button class="btn secondary" style="flex:1" onclick="resetWizard()">重新配置</button>
+      </div>
+      <div class="msg" id="done-msg"></div>
+      <div class="link-row">
+        <a href="/xm/" target="_blank">xiaomusic 高级设置 →</a>
+      </div>
+    </div>`;
+  refreshHealth();
+  if (!window._healthTimer) window._healthTimer = setInterval(refreshHealth, 5000);
+}
+
+async function refreshHealth() {
+  try {
+    const h = await api('/health');
+    $('#d-fav').textContent = h.favorites;
+    $('#d-pl').textContent = h.playlist_songs;
+    $('#d-push').textContent = h.push_ok ? '正常' : '等待';
+    $('#d-push').className = 'v ' + (h.push_ok ? 'ok' : 'err');
+    const err = $('#d-err');
+    err.textContent = h.last_error ? (h.last_error.length > 12 ? h.last_error.slice(0, 12) + '…' : h.last_error) : '无';
+    err.className = 'v ' + (h.last_error ? 'err' : 'ok');
+  } catch (e) { /* 忽略 */ }
+}
+
+async function syncNow() {
+  const msg = $('#done-msg');
+  msg.className = 'msg'; msg.textContent = '';
+  try {
+    await api('/sync', {method: 'POST'});
+    showMsg(msg, 'success', '已触发同步');
+    refreshHealth();
+  } catch (e) { showMsg(msg, 'error', e.message); }
+}
+
+async function resetWizard() {
+  if (!confirm('确定要重新配置吗？（小米账号登录态会保留）')) return;
+  await api('/api/wizard/reset', {method: 'POST'});
+  load();
+}
+
+/* ---------- 工具 ---------- */
+function showMsg(el, type, text) { el.className = 'msg ' + type; el.textContent = text; }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+load();
+</script>
+</body>
+</html>

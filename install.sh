@@ -94,6 +94,7 @@ usage() {
   --lx-skip-verify       跳过洛雪源可用性校验（下载→init→搜索→解析→探活）直接激活；
                          源是否可用装好后在管理页 WebUI 查看，适合不想因源故障中断安装的场景
   --webui                安装管理 Web UI（仅本机 8774；由已登录的飞牛管理员打开）
+                        （小爱音箱接管开关在管理台「小爱音箱」页，安装后随用随开）
   --no-webui             不安装管理 Web UI（非交互默认）
   --non-interactive      无交互，缺省值：音源=musicdl，不装 WebUI，不开启每日推荐
   --enable-recommend     开启大模型兜底推荐（需同时给 base-url 与 api-key；
@@ -994,6 +995,9 @@ ENV_DESIRED="$(mktemp)"
         echo "LX_SOURCES='$(dotenv_escape "${LX_PLATFORMS}")'"
     fi
     echo "FNMUSIC_WEBUI_ENABLED='${WEBUI_FLAG}'"
+    # 小爱音箱接管（fnmusic-xiaomusic 桥接）：默认关，管理台「小爱音箱」页开启；
+    # 刻意不进 ENV_EXPLICIT——升级时保留用户已保存的开关状态
+    echo "FNMUSIC_XIAOMUSIC_ENABLED='false'"
     echo "FNMUSIC_DEPLOY_MODE='docker'"
     echo "FNMUSIC_PIP_INDEX='$(dotenv_escape "${PIP_INDEX}")'"
     if [ "${ENABLE_RECOMMEND}" = "yes" ]; then

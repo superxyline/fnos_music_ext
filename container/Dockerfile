@@ -1,4 +1,5 @@
-# fnmusic-sources 统一镜像：musicdl + musicbox + lxmusic + webui 四进程（supervisor 管理，按需启动）
+# fnmusic-sources 统一镜像：musicdl + musicbox + lxmusic + webui + xiaomusic 五进程
+# （supervisor 管理，按需启动；xiaomusic = 小爱音箱接管桥接，独立开关）
 # 基础镜像引用可由 build args 覆盖（默认官方源；国内网络自动回退见根目录 ensure_base_image.sh）
 ARG BASE_IMAGE=python:3.13-slim
 FROM ${BASE_IMAGE}
@@ -68,6 +69,7 @@ COPY musicdl-service/requirements.txt /srv/req.musicdl
 COPY musicbox-service/requirements.txt /srv/req.musicbox
 COPY lxmusic-service/requirements.txt /srv/req.lxmusic
 COPY webui-service/requirements.txt /srv/req.webui
+COPY xiaomusic-service/requirements.txt /srv/req.xiaomusic
 RUN set -eu; \
     fix_dns() { \
         { \
@@ -77,10 +79,10 @@ RUN set -eu; \
         cat /tmp/resolv.fnmusic > /etc/resolv.conf 2>/dev/null || true; \
     }; \
     fix_dns; \
-    pip install --no-cache-dir -r /srv/req.musicdl -r /srv/req.musicbox -r /srv/req.lxmusic -r /srv/req.webui \
+    pip install --no-cache-dir -r /srv/req.musicdl -r /srv/req.musicbox -r /srv/req.lxmusic -r /srv/req.webui -r /srv/req.xiaomusic \
     || { echo "[WARN] pip 镜像源（${PIP_INDEX_URL}）安装失败，回退官方 PyPI 重试..." >&2; \
          pip install --no-cache-dir -i https://pypi.org/simple \
-            -r /srv/req.musicdl -r /srv/req.musicbox -r /srv/req.lxmusic -r /srv/req.webui; } \
+            -r /srv/req.musicdl -r /srv/req.musicbox -r /srv/req.lxmusic -r /srv/req.webui -r /srv/req.xiaomusic; } \
     && rm -f /srv/req.*
 
 RUN useradd -m -u 1000 appuser \
@@ -94,6 +96,8 @@ COPY --chown=appuser:appuser lxmusic-service/app.py lxmusic-service/source_runti
 COPY --chown=appuser:appuser lxmusic-service/js/bridge.js /srv/lxmusic-service/js/bridge.js
 COPY --chown=appuser:appuser webui-service/app.py /srv/webui-service/
 COPY --chown=appuser:appuser webui-service/static/ /srv/webui-service/static/
+COPY --chown=appuser:appuser xiaomusic-service/app.py xiaomusic-service/fnmusic_client.py /srv/xiaomusic-service/
+COPY --chown=appuser:appuser xiaomusic-service/static/ /srv/xiaomusic-service/static/
 # webui 复用 .env 安全合并（sys.path 上加 /srv 后 import proxy.env_merge），必须随镜像分发
 COPY --chown=appuser:appuser proxy/__init__.py proxy/env_merge.py /srv/proxy/
 RUN find /srv -name "*.py" -exec chmod 0644 {} + \
@@ -109,7 +113,7 @@ RUN chmod 0755 /usr/local/bin/env_flag.sh /usr/local/bin/entrypoint.sh /usr/loca
     && chmod 0644 /etc/supervisor/supervisord.conf
 
 USER appuser
-EXPOSE 8001 8002 8003 8004
+EXPOSE 8001 8002 8003 8004 8005
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     CMD ["/usr/local/bin/healthcheck.sh"]

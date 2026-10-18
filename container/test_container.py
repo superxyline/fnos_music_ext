@@ -23,10 +23,11 @@ def supervisord_conf():
     return cp
 
 
-def test_supervisord_four_programs_all_autostart_false(supervisord_conf):
+def test_supervisord_five_programs_all_autostart_false(supervisord_conf):
     programs = sorted(s for s in supervisord_conf.sections() if s.startswith("program:"))
     assert programs == [
         "program:lxmusic", "program:musicbox", "program:musicdl", "program:webui",
+        "program:xiaomusic",
     ]
     for section in programs:
         assert supervisord_conf.get(section, "autostart") == "false"
@@ -45,6 +46,7 @@ def test_supervisord_ports_and_directories(supervisord_conf):
         "musicbox": ("8002", "/srv/musicbox-service"),
         "lxmusic": ("8003", "/srv/lxmusic-service"),
         "webui": ("8004", "/srv/webui-service"),
+        "xiaomusic": ("8005", "/srv/xiaomusic-service"),
     }
     for prog, (port, directory) in expected.items():
         section = f"program:{prog}"
@@ -202,6 +204,10 @@ def entrypoint_env(tmp_path):
     # 旧多源并存：只取第一个命中（musicdl 优先），不重复拉起
     ("FNMUSIC_MUSICDL_ENABLED=true\nFNMUSIC_NETEASE_ENABLED=true\nFNMUSIC_LX_ENABLED=true\n",
      ["start musicdl"]),
+    # 小爱音箱接管：独立开关，可与音源叠加
+    ("FNMUSIC_XIAOMUSIC_ENABLED=true\n", ["start xiaomusic"]),
+    ("FNMUSIC_LX_ENABLED=true\nFNMUSIC_XIAOMUSIC_ENABLED=true\n",
+     ["start lxmusic", "start xiaomusic"]),
     # 全关：什么源都不启动
     ("FNMUSIC_MUSICDL_ENABLED=false\n", []),
 ])
@@ -217,16 +223,16 @@ def test_compose_single_service_layout():
     svc = compose["services"]["fnmusic-sources"]
     assert svc["build"]["dockerfile"] == "container/Dockerfile"
     assert svc["image"] == "fnmusic-sources:latest"
-    # 音源和管理页都只发布在 127.0.0.1；浏览器走飞牛网关
+    # 代理侧音源只发 127.0.0.1；musicbox 扫码/管理页/小爱音箱桥接需内网可达，发 0.0.0.0
     assert sorted(svc["ports"]) == sorted([
         "127.0.0.1:8768:8001",
-        "127.0.0.1:8770:8002",
+        "0.0.0.0:8770:8002",
         "127.0.0.1:8772:8003",
-        "127.0.0.1:8774:8004",
+        "0.0.0.0:8774:8004",
+        "0.0.0.0:8775:8005",
     ])
     raw = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    assert "0.0.0.0:8770" not in raw
-    assert "0.0.0.0:8774" not in raw
+    assert "0.0.0.0:8775" in raw
     assert "./sources-data:/data" in svc["volumes"]
     assert any(v.startswith(".:/repo") for v in svc["volumes"])
     assert svc["restart"] == "unless-stopped"
@@ -248,7 +254,8 @@ def test_dockerfile_assembly():
     for pkg in ("nodejs", "ffmpeg", "supervisor"):
         assert pkg in text
     for req in ("musicdl-service/requirements.txt", "musicbox-service/requirements.txt",
-                "lxmusic-service/requirements.txt", "webui-service/requirements.txt"):
+                "lxmusic-service/requirements.txt", "webui-service/requirements.txt",
+                "xiaomusic-service/requirements.txt"):
         assert req in text
     assert "lxmusic-service/js/bridge.js" in text
     assert text.count("HEALTHCHECK") >= 1
@@ -298,7 +305,8 @@ def test_dockerignore_whitelist_build_context():
     code_lines = [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
     # 白名单模式：先忽略一切，再放行四个服务目录与 container/
     assert code_lines[0] == "*"
-    for keep in ("!musicdl-service/", "!musicbox-service/", "!lxmusic-service/", "!webui-service/", "!container/"):
+    for keep in ("!musicdl-service/", "!musicbox-service/", "!lxmusic-service/", "!webui-service/",
+                "!xiaomusic-service/", "!container/"):
         assert keep in code_lines
 
 
@@ -311,7 +319,8 @@ def test_dockerfile_copies_proxy_modules_imported_by_services():
     text = (CONTAINER_DIR / "Dockerfile").read_text(encoding="utf-8")
     copied = " ".join(ln for ln in text.splitlines() if ln.startswith("COPY"))
     ignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
-    for service_dir in ("musicdl-service", "musicbox-service", "lxmusic-service", "webui-service"):
+    for service_dir in ("musicdl-service", "musicbox-service", "lxmusic-service", "webui-service",
+                       "xiaomusic-service"):
         for py in sorted((REPO_ROOT / service_dir).glob("*.py")):
             for m in re.finditer(r"^\s*from proxy\.([A-Za-z_][\w]*)", py.read_text(encoding="utf-8"), re.M):
                 mod = f"proxy/{m.group(1)}.py"

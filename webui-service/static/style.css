@@ -321,3 +321,62 @@ input[type="radio"] { accent-color: var(--accent); margin-top: 4px; }
 .public-selected { justify-content: space-between; }
 .public-selected .btn-row { margin: 0; flex: none; }
 .public-selected .btn { padding: 3px 8px; font-size: 12px; }
+
+/* -------------------------------------------------- 小爱音箱（xiaomusic 向导） */
+.xm-steps { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 0; }
+.xm-steps .step { display: flex; align-items: center; color: var(--muted); font-size: 13px; }
+.xm-steps .num {
+  width: 24px; height: 24px; border-radius: 50%; background: var(--line);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; margin-right: 6px; flex: none;
+}
+.xm-steps .step.active { color: var(--accent); font-weight: 600; }
+.xm-steps .step.active .num { background: var(--accent); color: #fff; }
+.xm-steps .step.done { color: var(--ok); }
+.xm-steps .step.done .num { background: var(--ok); color: #fff; }
+.xm-steps .bar { width: 28px; height: 2px; background: var(--line); margin: 0 8px; flex: none; }
+.xm-steps .step.done .bar { background: var(--ok); }
+
+.xm-tabs { display: flex; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+.xm-tabs .tab {
+  flex: 1; text-align: center; padding: 9px 6px; font-size: 14px; color: var(--muted);
+  cursor: pointer; border-bottom: 2px solid transparent; user-select: none;
+}
+.xm-tabs .tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+.xm-device {
+  display: flex; align-items: center; gap: 10px; min-width: 0;
+  border: 1px solid var(--line); border-radius: 8px; padding: 11px 12px;
+  margin-bottom: 8px; cursor: pointer; background: var(--card, #fff);
+}
+.xm-device:hover { border-color: var(--accent); }
+.xm-device.selected { border-color: var(--accent); background: var(--accent-soft); }
+.xm-device input { width: 17px; height: 17px; accent-color: var(--accent); flex: none; }
+.xm-device .name { font-size: 14px; font-weight: 500; }
+.xm-device .hw { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+.xm-scan {
+  display: flex; align-items: center; gap: 8px; border: 1px solid var(--line);
+  border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; cursor: pointer; font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.xm-scan:hover { border-color: var(--accent); }
+.xm-scan.selected { border-color: var(--accent); background: var(--accent-soft); }
+.xm-scan .dot { flex: none; }
+
+.xm-status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 4px 0 12px; }
+.xm-status-cell { background: var(--bg); border-radius: 8px; padding: 12px 14px; }
+.xm-status-cell .v { font-size: 20px; font-weight: 700; }
+.xm-status-cell .v.ok { color: var(--ok); }
+.xm-status-cell .v.err { color: var(--err); }
+.xm-status-cell .k { font-size: 12px; color: var(--muted); margin-top: 3px; }
+
+.xm-cmd-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 4px; }
+.xm-cmd-table td { padding: 7px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.xm-cmd-table td:first-child { color: var(--accent); font-weight: 500; width: 42%; }
+.xm-cmd-table td:last-child { color: var(--text); }
+.xm-cmd-table tr:last-child td { border-bottom: 0; }
+
+.xm-msg { padding: 9px 12px; border-radius: 8px; font-size: 13px; margin-top: 10px; }
+.xm-msg.ok { background: var(--accent-soft); color: var(--accent); }
+.xm-msg.err { background: #fdeeee; color: var(--err); }

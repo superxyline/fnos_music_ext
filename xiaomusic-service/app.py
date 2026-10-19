@@ -555,7 +555,8 @@ def _match_favorite(name: str):
 
 async def _resolve_song(name: str):
     """解析点歌请求，返回 (mode, arg)：
-    - ("ready", 精确歌名)：收藏/本地曲库命中（必要时以收藏为播放手段）
+    - ("ready", 精确歌名)：收藏/本地曲库命中（本地曲库只注入内存播放列表，
+      绝不写入飞牛收藏——点歌≠收藏）
     - ("downloaded", 歌名)：在线歌已下载到本地音乐目录（不进收藏）
     - (None, None)：找不到
     """
@@ -602,26 +603,18 @@ async def _resolve_song(name: str):
             ).ratio(),
             reverse=True,
         )
-        # 优先本地曲库结果（guid 非 online: 前缀）：收藏它使其可被点播
+        # 优先本地曲库结果（guid 非 online: 前缀）：注入内存播放列表直接播，
+        # 绝不写入飞牛收藏（点歌≠收藏；旧实现 add_favorite 会污染用户收藏）
         for t in tracks:
             if not _is_online(t):
                 guid = t.get("guid") or ""
                 if not guid:
                     continue
-                try:
-                    await fn.add_favorite(guid)
-                    log.info("[play] 本地曲库命中「%s」，已收藏以便点播", _full_name(t))
-                except Exception as e:
-                    log.warning("[play] 收藏返回异常（可能已收藏）: %s", e)
-                try:
-                    await do_sync(force=True)
-                except Exception as e:
-                    log.warning("[play] 同步失败: %s", e)
-                exact = _match_favorite(name)
-                if exact:
-                    return "ready", exact
-                # 收藏后仍匹配不到（罕见），用完整名硬试
-                return "ready", _full_name(t)
+                full = _inject_to_playlist(_full_name(t), guid)
+                if not full:
+                    continue
+                log.info("[play] 本地曲库命中「%s」，已注入播放列表（不入收藏）", full)
+                return "ready", full
         # 本地没有，记住相似度最高的在线结果，继续下一变体（也可能变体有本地结果）
         if online_track is None:
             for t in tracks:
@@ -636,6 +629,34 @@ async def _resolve_song(name: str):
             return "downloaded", _full_name(online_track)
     log.info("[play] 搜索「%s」无可用结果", name)
     return None, None
+
+
+def _inject_to_playlist(name: str, guid: str) -> str:
+    """把点歌曲目注入内存播放列表（不写 setting.json、不改飞牛收藏）。
+
+    xiaomusic 的播放要求歌名在 music_library.all_music / music_list 里。
+    历史做法是 add_favorite 后强制同步——会污染用户收藏（用户反馈：点歌
+    ≠收藏）。这里直接改内存结构：当下可点播、下一首可接续（update_playlist
+    从 music_list 取歌）；下次歌单重建（收藏变化/刷新列表/点歌下载）自动
+    清掉，不落盘、不进收藏。返回规范化歌名（失败返回空串）。
+
+    注入后 is_web_music(name) 为真（all_music[name] 是 http URL），
+    播放/时长/取流走与收藏条目完全相同的代码路径。
+    """
+    lib = getattr(XM, "music_library", None)
+    name = (name or "").strip()
+    if lib is None or not name:
+        return ""
+    url = f"{_play_entry_base()}/play?guid={guid}"
+    lib.all_music[name] = url
+    index = getattr(lib, "_extra_index_search", None)
+    if isinstance(index, dict):
+        index[url] = name
+    list_name = CFG.get("playlist_name", "本地收藏")
+    bucket = lib.music_list.setdefault(list_name, [])
+    if name not in bucket:
+        bucket.append(name)
+    return name
 
 
 def _safe_filename(name: str) -> str:
@@ -736,11 +757,14 @@ def _spawn_auto_playlist_guard(did: str, cmd_snapshot: str):
 
 
 def patch_play_search():
-    """点歌口令：先搜收藏，没有则调飞牛搜索并自动收藏，再播放。
+    """点歌口令：先搜收藏，没有则调飞牛搜索（本地曲库注入播放列表 / 在线歌下载），
+    再播放——点歌绝不写入飞牛收藏。
 
     「播放晴天」经 user_key_word_dict 匹配到 play 动作（arg1=晴天）。
     这里包装 XM.play：先在收藏里宽松匹配（命中则用完整歌名精确播放），
-    未命中调 fnmusicext 搜索 → 加入收藏 → 强制同步进歌单 → 播放。
+    未命中调 fnmusicext 搜索：
+      - 本地曲库命中 → 注入内存播放列表直接播（v3.3.5 起，旧版会 add_favorite）
+      - 在线歌命中 → ffmpeg 下载到本地音乐目录后播（不入收藏）
     """
     if XM is None:
         return

@@ -36,3 +36,7 @@ dist/
 packaging/fpk/.build/
 
 .cursor/
+
+# 本地交接文档（含部署细节/凭据，绝不入库；误加过一次，见 2026-10-19 事故）
+HANDOFF_*.md
+AGENTS.md

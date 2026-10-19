@@ -79,6 +79,8 @@ if command -v rsync >/dev/null 2>&1; then
         --exclude='packaging/' --exclude='dist/' \
         --exclude='tests/' --exclude='docs/' --exclude='pytest.ini' \
         --exclude='CONTRIBUTING.md' \
+        --exclude='HANDOFF_*.md' --exclude='AGENTS.md' \
+        --exclude='album_registry.json' --exclude='bind_registry.json' \
         --exclude='.venv*/' --exclude='__pycache__/' --exclude='.pytest_cache/' \
         --exclude='*.pyc' --exclude='*.log' --exclude='*.part' --exclude='.DS_Store' \
         --exclude='cache/' --exclude='sources-data/' --exclude='backup/' \
@@ -98,6 +100,8 @@ else
         --exclude='./packaging' --exclude='./dist' \
         --exclude='./tests' --exclude='./docs' --exclude='./pytest.ini' \
         --exclude='./CONTRIBUTING.md' \
+        --exclude='./HANDOFF_*.md' --exclude='./AGENTS.md' \
+        --exclude='./album_registry.json' --exclude='./bind_registry.json' \
         --exclude='./.venv*' --exclude='__pycache__' --exclude='./.pytest_cache' \
         --exclude='*.pyc' --exclude='*.log' --exclude='*.part' --exclude='.DS_Store' \
         --exclude='./cache' --exclude='./sources-data' --exclude='./backup' \
@@ -191,5 +195,16 @@ mkdir -p "${OUT_DIR}"
 FINAL="${OUT_DIR}/fnmusic-ext-${VERSION}.fpk"
 mv "${BUILT}" "${FINAL}"
 ( cd "$(dirname "${FINAL}")" && sha256sum "$(basename "${FINAL}")" > "$(basename "${FINAL}").sha256" )
+
+# 打包后自检：本地交接文档 / 运行时注册表绝不许进包。
+# 2026-10-19 事故：HANDOFF_*.md（含 NAS 凭据明文）曾随 3.2.0~3.3.5 发布。
+LEAK_CHECK="$(tar xOf "${FINAL}" app.tgz 2>/dev/null | tar tz 2>/dev/null \
+    | grep -E 'HANDOFF_|AGENTS\.md|bind_registry\.json|album_registry\.json' || true)"
+if [ -n "${LEAK_CHECK}" ]; then
+    echo "ERROR: FPK 内发现不应打包的文件（含本地凭据/运行时数据），已中止：" >&2
+    echo "${LEAK_CHECK}" >&2
+    rm -f "${FINAL}" "$(dirname "${FINAL}")/$(basename "${FINAL}").sha256"
+    exit 1
+fi
 
 echo "[fpk] 打包完成: ${FINAL}"

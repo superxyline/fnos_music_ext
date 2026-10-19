@@ -1078,25 +1078,36 @@ async def wizard_devices(request: Request):
 @app.get("/api/wizard/scan_fnmusic")
 async def scan_fnmusic():
     """Step3a：自动扫描飞牛音乐服务（容器内经默认网关访问宿主）"""
-    candidates = [
-        f"http://{GATEWAY_IP}:5666" if GATEWAY_IP else "",
-        f"http://{CFG.get('nas_ip', NAS_IP)}:5666",
-        "http://localhost:5666",
-    ]
+    hosts = [GATEWAY_IP, CFG.get("nas_ip", NAS_IP)]
+    candidates = [f"http://{h}:5666" for h in hosts if h]
+    candidates.append("http://localhost:5666")
     found = []
-    async with httpx.AsyncClient(timeout=5, follow_redirects=False) as cli:
+    seen = set()
+    # follow_redirects=True + verify=False：fnOS 默认强制 HTTPS
+    # （http://:5666 → 302 → https://:5667 自签证书）。不跟随重定向 +
+    # 严格 TLS 校验时，强制 HTTPS 的 fnOS 永远扫不到（issue #5 复现）；
+    # 本探测只读 initialization/state，不携带任何凭据，跟随重定向无泄漏风险。
+    # trust_env=False：不继承容器里的 HTTP_PROXY（在线源代理），内网直连。
+    async with httpx.AsyncClient(timeout=5, follow_redirects=True,
+                                 verify=False, trust_env=False) as cli:
         for url in candidates:
-            if not url or url in found:
+            if not url or url in seen:
                 continue
+            seen.add(url)
             try:
                 r = await cli.get(f"{url}/music/api/v1/initialization/state")
                 if r.status_code == 200:
                     body = r.json()
                     if body.get("code") == 0 or "initialized" in body:
-                        found.append(url)
+                        # 跟随重定向后的最终源站（强制 HTTPS 时即 https://:5667），
+                        # 存这个地址 Wizard 第 3 步直接用，不必再吃一次 302
+                        final = urllib.parse.urlparse(str(r.url))
+                        resolved = f"{final.scheme}://{final.netloc}"
+                        if resolved not in found:
+                            found.append(resolved)
             except Exception:
                 pass
-    return {"ok": True, "found": found, "scanned": [c for c in candidates if c],
+    return {"ok": True, "found": found, "scanned": candidates,
             "gateway": GATEWAY_IP}
 
 
@@ -1117,9 +1128,12 @@ async def wizard_fnmusic(request: Request):
         await client.aclose()
     except Exception as e:
         return JSONResponse({"ok": False, "message": f"登录失败: {e}"})
-    # 保存配置，标记向导完成
+    # 保存配置，标记向导完成。
+    # base_url 取登录后的实际值：强制 HTTPS 环境下 FnMusicClient 会在首次
+    # 登录时把 http://:5666 自动升级为 https://:5667（issue #5），落盘真实
+    # 地址，重启后不再探测、管理台显示的也是实际在用的地址
     CFG.update({
-        "fnmusic_base_url": base_url,
+        "fnmusic_base_url": client.base_url,
         "fnmusic_username": username,
         "fnmusic_password": password,
         "nas_ip": data.get("nas_ip") or CFG.get("nas_ip", NAS_IP),
@@ -1128,7 +1142,7 @@ async def wizard_fnmusic(request: Request):
     save_json(BRIDGE_CONFIG_FILE, CFG)
     # 立即同步一次
     asyncio.create_task(do_sync(force=True))
-    return {"ok": True, "favorites": len(favorites)}
+    return {"ok": True, "favorites": len(favorites), "base_url": client.base_url}
 
 
 @app.post("/api/wizard/reset")

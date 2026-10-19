@@ -121,9 +121,20 @@ class FnMusicClient:
         self.use_authx = use_authx
         self.token: str | None = None
         self.token_obtained_at: float = 0
+        self._base_normalized = False
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout, read=300.0),
+            # 不全局跟随重定向：保留 open_stream 跨源跳转剥离凭据的安全设计
+            # （同源保留认证、跨源只留通用头），302 由调用方按需手动跟随
             follow_redirects=False,
+            # 不继承环境代理变量：飞牛音乐与本桥接同机（FNPK 装在同一台 NAS），
+            # 直连即可。容器里常为 musicdl 在线源设置 HTTP_PROXY，若被继承会让
+            # 内网请求绕去代理——慢且可能被代理拦截（实测测试环境因此超时）
+            trust_env=False,
+            # fnOS 网页入口默认强制 HTTPS：http://<ip>:5666/* 一律 302 到
+            # https://<ip>:5667/*（自签证书）。桥接→飞牛是内网跳板，关闭
+            # TLS 校验，否则自签场景下 https 直连也过不去（issue #5）
+            verify=False,
             headers={"Accept": "application/json", "User-Agent": "fnmusic-bridge/1.0"},
         )
 
@@ -178,10 +189,38 @@ class FnMusicClient:
         return payload.get("data")
 
     # ---------- 登录 ----------
+    async def _normalize_base_url_once(self):
+        """首次登录前探测一次重定向，把 base_url 升级到最终源站（只做一次）。
+
+        fnOS 默认强制 HTTPS：http://<ip>:5666/* 一律 302 到
+        https://<ip>:5667/*（自签证书）。客户端全局 follow_redirects=False
+        （stream 安全设计），因此这里用一次性探测（允许跟随 + verify=False）
+        把 base_url 改写为最终源站，之后的登录/API/取流全部直连，不再吃 302。
+        探测失败不影响主流程（沿用原值，由登录本身报错）。
+        """
+        if self._base_normalized:
+            return
+        self._base_normalized = True
+        try:
+            probe = await self._client.get(
+                self.base_url + API_BASE + "/initialization/state",
+                headers={"Accept": "application/json"},
+                follow_redirects=True,
+            )
+            final = urllib.parse.urlparse(str(probe.url))
+            origin = f"{final.scheme}://{final.netloc}"
+            if origin and origin != self.base_url:
+                log.warning("飞牛音乐 %s 重定向到 %s，自动升级 base_url",
+                            self.base_url, origin)
+                self.base_url = origin
+        except Exception as exc:
+            log.warning("base_url 探测失败（沿用原值 %s）: %s", self.base_url, exc)
+
     async def login(self, force: bool = False) -> str:
         """登录获取 token。自动适配 authx / 无 authx 两种模式。"""
         if self.token and not force:
             return self.token
+        await self._normalize_base_url_once()
         path = "/user/password-login"
         url = self.base_url + API_BASE + path
         body_dict = {

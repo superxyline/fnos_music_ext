@@ -123,6 +123,19 @@ def test_native_dispatch_handles_pending_selection():
     assert '"select_index", query' in DISPATCH
 
 
+def test_bridge_serves_music_files_for_tts():
+    """/music/* 静态路由必须挂载（TTS 确认音与本地歌曲播放都靠它）。
+
+    xiaomusic 的 _get_file_url 拼 http://{nas_ip}:{public_port}/music/... 发给
+    音箱；桥接不提供该路由时音箱 404，小爱提示"播放服务遇到问题"
+    （2026-10-18~19 日志 26 次请求全 404，v3.3.0 起潜伏，两引擎同病）。
+    """
+    assert "from fastapi.staticfiles import StaticFiles" in APP_PY
+    start = APP_PY.index("async def lifespan(")
+    end = APP_PY.index("app.router.lifespan_context", start)
+    assert '_app.mount("/music", StaticFiles(directory=str(MUSIC_DIR))' in APP_PY[start:end]
+
+
 def test_native_dispatch_matches_like_upstream():
     """匹配逻辑必须与上游 command_handler 同构（完全匹配+模糊+激活过滤+停小爱）。"""
     assert "def check_full_match_cmd(" in DISPATCH

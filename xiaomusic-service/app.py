@@ -35,6 +35,7 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from fnmusic_client import FnMusicClient, sign_authx
 from native.keywords import (
@@ -401,6 +402,14 @@ async def lifespan(_app):
     patch_poll_watchdog()
     # 3.7 轮询间隔守卫：登录态变化时把 pull_ask_sec 在 1s / 60s 之间切换
     asyncio.create_task(poll_guard_loop())
+    # 3.8 本地音乐文件服务（/music/*）：
+    #     xiaomusic 的 _get_file_url 会拼 http://{nas_ip}:{public_port}/music/...
+    #     发给音箱——edge-tts 确认音在 music/tmp/ 下、点歌下载的本地歌曲在
+    #     music/ 根下，都走这个 URL。桥接必须提供该路由，否则音箱拉不到音频，
+    #     小爱会提示"播放服务遇到问题"。
+    #     （v3.3.0 起潜伏的 bug：2026-10-18~19 日志里 26 次请求全部 404，
+    #      xiaomusic/native 两引擎同病——引擎只负责拼 URL，路由在桥接侧）
+    _app.mount("/music", StaticFiles(directory=str(MUSIC_DIR)), name="music")
     # 4. 启动桥接同步循环
     asyncio.create_task(sync_loop())
     log.info("fnmusic-xiaomusic v2 启动完成，端口 %s", BRIDGE_PORT)

@@ -9,6 +9,11 @@
 
 ### 修复
 
+- **fnOS 强制 HTTPS 场景下向导第 3 步登录/扫描必失败（issue #5）**：fnOS 网页入口默认 `http://<ip>:5666/*` 一律 302 到 `https://<ip>:5667/*`（自签证书）。`FnMusicClient` 原本 `follow_redirects=False` 且未关 TLS 校验——填 http 地址登录直接吃 302（非 JSON）报“登录失败”，填 https 地址自签证书校验失败；`scan_fnmusic()` 同样不跟随重定向且要求 200，`found` 永远为空。修复：
+  - 客户端 `verify=False`（桥接→飞牛是内网跳板）+ `trust_env=False`（不继承容器 `HTTP_PROXY`——在线源代理会把内网请求绕走，实测导致超时）；
+  - 新增 `_normalize_base_url_once()`：登录前一次性探测重定向并把 `base_url` 升级到最终源站（全局仍 `follow_redirects=False`，不破坏 `open_stream` 跨源跳转剥离凭据的安全设计）；
+  - `scan_fnmusic()` 跟随重定向并返回最终源站地址；`wizard_fnmusic()` 落盘登录后的实际 `base_url` 并回显。
+  - 测试：`test_fnmusic_client.py`（5 项静态断言 + 1 项真实重定向集成测试：本地双 HTTP 服务器复现「A 站 302 → B 站」）。
 - **native 引擎口令播放无声（两项，真机实测）**：
   - `device_player.py:612` 播放前一刻会 `await analytics.send_play_event(...)`，native 的 analytics 桩是同步方法，直接 `TypeError` 崩在发音前——口令匹配、歌单加载、找歌全部正常但音箱无声。桩改协程。
   - 歌单条目 URL 未按引擎分流：native（`web_music_proxy=False`）把条目 URL 原样发给音箱，而条目是 `http://127.0.0.1:8005/play?...`（容器内环地址），音箱拿到只会连它自己。改为 native 用对外可达地址 `http://<NAS_IP>:8775/play?...`，xiaomusic 引擎保持原样（其代理在容器内服务端拉取）。

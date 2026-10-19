@@ -1,5 +1,10 @@
+# 桥接自身运行时
 fastapi
 uvicorn
 httpx
-xiaomusic
+# 小爱协议核心：必须锁死 0.6.1——上游已停止更新（v0.6.0 明示，0.6.1 为终版），
+# 口令轮询/mina 通道/设备 did 等所有行为结论都基于 0.6.1 实测，不锁版本会让
+# 重建镜像时静默引入上游改动导致退化。
+xiaomusic==0.6.1
+# mutagen：get_duration_type=mutagen 算时长（免 ffprobe）；miservice 亦依赖它
 mutagen

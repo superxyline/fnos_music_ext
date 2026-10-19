@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **native 口令引擎（双引擎架构，灰度切换）**：不再整体嵌入 xiaomusic 主类，新增 `xiaomusic-service/native/` 包——**复用上游登录/设备/轮询/播放组件**（`AuthManager` 登录、`DeviceManager` 设备与 did 映射、`ConversationPoller` 口令轮询、`MusicLibrary` 歌单机制、`XiaoMusicDevice` 单设备播放控制、`MiJiaAPI` 扫码），**自建编排与命令分发**（约 500 行）。与 xiaomusic 引擎的差异：
+  - 不挂载 xiaomusic 的 `/xm/*` HTTP api：向导、歌单、取流全部走桥接自身端点（原本经 HTTP 内循环调自家 api 的 `modifiysetting`/`refreshlist`/`getsetting` 等改为直接方法调用，少一层故障模式）；
+  - `web_music_proxy=False`：音箱直连桥接 `/play` 取流，不经 xiaomusic 代理（少一跳）；
+  - 不启用 online_music / js_plugin / analytics / 文件监控 / 定时任务（对应模块与依赖 yt-dlp 等不再进入运行面，为后续依赖裁剪铺路）；
+  - 与 xiaomusic 引擎**共用 conf 目录**（`auth.json`/`setting.json`），切换引擎不丢登录态与设备选择。
+- **引擎开关**：桥接配置新增 `engine` 字段（默认 `xiaomusic`，灰度安全）；`POST /api/engine` 切换（持久化，重启进程生效：`supervisorctl restart xiaomusic`）；`/health` 新增 `engine` 字段。向导（账号密码/扫码/设备勾选/重置）、歌单与口令推送、点歌下载后刷新等路径均按引擎分支实现。
+- **锁定 xiaomusic 依赖版本**：`xiaomusic-service/requirements.txt` 钉死 `xiaomusic==0.6.1`（上游已停止更新，0.6.1 为终版；口令轮询/mina 通道/设备 did 等所有行为结论均基于 0.6.1 实测，不锁版本会让重建镜像静默退化）。
+- 测试：`xiaomusic-service/test_native_engine.py`（8 项静态结构断言 + 2 项需 xiaomusic 环境的集成用例：NativeCore 装配与口令匹配、引擎切换端点持久化与校验）。
+
 ### 修复
 
 - **小米登录失效后疯狂撞接口（实测 10 分钟 6396 次 400）**：登录失败时 `device_manager` 仍在、`hardware` 取不到，`poll_latest_ask` 按 1s 间隔遍历每台设备请求对话记录，每次都 400；形成「失效 → 狂撞接口 → 风控加重 → 更难恢复」的恶性循环，同时刷满日志、浪费 NAS 资源。修复分两层：

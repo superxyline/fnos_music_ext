@@ -97,6 +97,7 @@ COPY --chown=appuser:appuser lxmusic-service/js/bridge.js /srv/lxmusic-service/j
 COPY --chown=appuser:appuser webui-service/app.py /srv/webui-service/
 COPY --chown=appuser:appuser webui-service/static/ /srv/webui-service/static/
 COPY --chown=appuser:appuser xiaomusic-service/app.py xiaomusic-service/fnmusic_client.py /srv/xiaomusic-service/
+COPY --chown=appuser:appuser xiaomusic-service/native/ /srv/xiaomusic-service/native/
 COPY --chown=appuser:appuser xiaomusic-service/static/ /srv/xiaomusic-service/static/
 # webui 复用 .env 安全合并（sys.path 上加 /srv 后 import proxy.env_merge），必须随镜像分发
 COPY --chown=appuser:appuser proxy/__init__.py proxy/env_merge.py /srv/proxy/

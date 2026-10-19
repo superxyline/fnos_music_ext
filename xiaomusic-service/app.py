@@ -37,6 +37,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from fnmusic_client import FnMusicClient, sign_authx
+from native.keywords import (
+    KEYWORDS_PLAYLIST_DEFAULT,
+    KEYWORDS_PLAYLOCAL_DEFAULT,
+    USER_KEY_WORD_DICT_DEFAULT,
+)
 
 # ---------------- 配置 ----------------
 # 数据目录独立子目录：避免与 musicbox/lxmusic 等服务的数据混居（同卷 /data）
@@ -87,6 +92,10 @@ DEFAULT_CONFIG = {
     "sync_interval": 300,
     "transcode_mode": "auto",
     "wizard_done": False,
+    # 口令引擎：xiaomusic = 上游 XiaoMusic 主类 + api 子应用（默认，稳妥）
+    #           native   = 复用上游登录/设备/轮询/播放组件，自建编排与分发
+    #           （双引擎共用 conf 目录，切换不丢登录态；改后需重启进程生效）
+    "engine": "xiaomusic",
 }
 
 
@@ -184,6 +193,35 @@ def create_xiaomusic():
     XM_APP = xm_app
 
 
+def create_native():
+    """创建 native 引擎（复用 xiaomusic 登录/设备/轮询/播放组件，自建编排与分发）。
+
+    与 create_xiaomusic 的差异：
+    - 不挂载 xiaomusic 的 api 子应用（/xm/*），向导/歌单/取流全走桥接自身端点
+    - 配置从 conf/setting.json 读取（与 xiaomusic 引擎共用，切换不丢登录态）
+    - web_music_proxy=False：音箱直连桥接 /play 取流，不经 xiaomusic 代理
+    必须在有事件循环的异步上下文调用（AuthManager 内部建 aiohttp.ClientSession）。
+    """
+    global XM, XM_APP
+    for d in (CONF_DIR, MUSIC_DIR, MUSIC_DIR / "tmp", MUSIC_DIR / "download",
+              MUSIC_DIR / "cache", BRIDGE_DIR):
+        d.mkdir(parents=True, exist_ok=True)
+
+    from native.config import build_config
+    from native.core import NativeCore
+
+    settings = load_json(CONF_DIR / "setting.json", {})
+    cfg = build_config(
+        conf_dir=CONF_DIR,
+        music_dir=MUSIC_DIR,
+        nas_ip=CFG.get("nas_ip", NAS_IP),
+        public_port=PUBLIC_PORT,
+        settings=settings,
+    )
+    XM = NativeCore(cfg, log)
+    XM_APP = None   # native 引擎无 xiaomusic api 子应用
+
+
 app = FastAPI(title="小爱音箱·飞牛音乐")
 
 
@@ -271,31 +309,39 @@ async def do_sync(force: bool = False) -> dict:
 
 
 async def push_playlist(playlist: list):
-    """把歌单和口令配置推进 xiaomusic（HTTP 内循环）"""
-    async with httpx.AsyncClient(base_url=SELF_URL, timeout=15) as cli:
-        r = await cli.post("/xm/api/system/modifiysetting", json={
-            "music_list_json": json.dumps(playlist, ensure_ascii=False),
-            # 口令变体全量推送（每次同步自愈，防止被默认值/旧值覆盖）
-            "keywords_playlist": ",".join([
-                "播放列表", "播放歌单", "播放收藏", "播放本地",
-                "播放本地收藏歌曲", "播放本地收藏", "播放本地歌曲", "播放本地音乐",
-                "放几首本地歌", "放几首本地歌曲", "放首本地歌", "放首本地歌曲",
-                "随便放几首歌", "随便放首歌", "来几首本地歌", "来几首本地音乐",
-            ]),
-            # playlocal 是"播放本地下载歌曲"，本方案无下载目录——
-            # 改为不常用词，避免其默认值「播放本地歌曲,播放本地音乐」抢占口令
-            "keywords_playlocal": "播放下载歌曲",
-            # 「播放」放 user_key_word_dict（匹配顺序最后）：
-            # 「播放晴天」这类 歌名口令 落到 play 动作，arg1=歌名；
-            # 且不会抢占「播放本地歌曲」等更长词（它们在顺序里更靠前）
-            "user_key_word_dict": {"播放": "play"},
-            "music_list_url": f"{SELF_URL}/playlist.json",
-        })
-        r.raise_for_status()
-        await cli.post("/xm/api/music/refreshlist")
+    """把歌单和口令配置推进引擎（xiaomusic 走 HTTP 内循环，native 走直接调用）"""
+    # 口令变体全量推送（每次同步自愈，防止被默认值/旧值覆盖）；
+    # 默认值单一来源：native/keywords.py（两个引擎共用）
+    keywords_playlist = KEYWORDS_PLAYLIST_DEFAULT
+    keywords_playlocal = KEYWORDS_PLAYLOCAL_DEFAULT
+    user_key_word_dict = dict(USER_KEY_WORD_DICT_DEFAULT)
+    music_list_url = f"{SELF_URL}/playlist.json"
+
+    if CFG.get("engine") == "native":
+        # native：直接更新 Config（内部重建关键词表）+ 重载歌单
+        XM.update_keywords(
+            keywords_playlist=keywords_playlist,
+            keywords_playlocal=keywords_playlocal,
+            user_key_word_dict=user_key_word_dict,
+            music_list_url=music_list_url,
+        )
+        await XM.refresh_music_list()
+    else:
+        # xiaomusic：HTTP 内循环调自家 api
+        async with httpx.AsyncClient(base_url=SELF_URL, timeout=15) as cli:
+            r = await cli.post("/xm/api/system/modifiysetting", json={
+                "music_list_json": json.dumps(playlist, ensure_ascii=False),
+                # 口令变体全量推送（每次同步自愈，防止被默认值/旧值覆盖）
+                "keywords_playlist": keywords_playlist,
+                "keywords_playlocal": keywords_playlocal,
+                "user_key_word_dict": user_key_word_dict,
+                "music_list_url": music_list_url,
+            })
+            r.raise_for_status()
+            await cli.post("/xm/api/music/refreshlist")
     STATE.last_push_at = time.time()
     STATE.push_ok = True
-    log.info("已推送歌单与口令变体并通知 xiaomusic 刷新")
+    log.info("已推送歌单与口令变体并通知引擎刷新")
 
 
 async def sync_loop():
@@ -319,11 +365,16 @@ async def lifespan(_app):
     _h.setFormatter(logging.Formatter("%(asctime)s [bridge] %(message)s"))
     log.addHandler(_h)
     log.setLevel(logging.INFO)
-    # 1. 创建 xiaomusic 实例（需要事件循环）并动态 mount 到 /xm/
-    #    （uvicorn 保证 lifespan 先于任何请求执行，动态 mount 安全）
-    create_xiaomusic()
-    _app.mount("/xm", XM_APP)
-    # 2. 手动驱动 xiaomusic 的登录+口令轮询（等效其自身 lifespan 的行为）
+    # 1. 按引擎配置创建实例（都需要事件循环，lifespan 保证先于请求执行）
+    if CFG.get("engine") == "native":
+        create_native()
+        log.info("引擎: native（复用 xiaomusic 登录/设备/轮询/播放组件，自建编排）")
+    else:
+        create_xiaomusic()
+        # 动态 mount 到 /xm/（uvicorn 保证 lifespan 先于任何请求执行，安全）
+        _app.mount("/xm", XM_APP)
+        log.info("引擎: xiaomusic（XiaoMusic 主类 + api 子应用）")
+    # 2. 手动驱动登录+口令轮询（等效 xiaomusic 自身 lifespan 的行为）
     asyncio.create_task(XM.run_forever())
     # 3. 播放行为修正：口令重发时重新打乱歌单（见 patch_playlist_behavior）
     patch_playlist_behavior()
@@ -611,10 +662,13 @@ async def _download_online_track(track: dict) -> bool:
         log.warning("[play] 下载「%s」异常: %s", title, e)
         out_path.unlink(missing_ok=True)
         return False
-    # 通知 xiaomusic 重新扫描本地音乐目录
+    # 通知引擎重新扫描本地音乐目录
     try:
-        async with httpx.AsyncClient(base_url=SELF_URL, timeout=30) as cli:
-            await cli.post("/xm/api/music/refreshlist")
+        if CFG.get("engine") == "native":
+            await XM.refresh_music_list()
+        else:
+            async with httpx.AsyncClient(base_url=SELF_URL, timeout=30) as cli:
+                await cli.post("/xm/api/music/refreshlist")
     except Exception as e:
         log.warning("[play] refreshlist 失败: %s", e)
     return True
@@ -622,6 +676,14 @@ async def _download_online_track(track: dict) -> bool:
 
 def _spawn_auto_playlist_guard(did: str, cmd_snapshot: str):
     """点播的歌自然播完且无新指令时，自动接播收藏随机歌单"""
+
+    def _last_cmd() -> str:
+        # xiaomusic 引擎在 command_handler 上，native 引擎在核心对象上
+        ch = getattr(XM, "command_handler", None)
+        if ch is not None:
+            return getattr(ch, "last_cmd", "")
+        return getattr(XM, "last_cmd", "")
+
     async def guard():
         try:
             dev = XM.device_manager.devices.get(did)
@@ -630,7 +692,7 @@ def _spawn_auto_playlist_guard(did: str, cmd_snapshot: str):
             started = False
             for _ in range(240):  # 最多监控 20 分钟
                 await asyncio.sleep(5)
-                if XM.command_handler.last_cmd != cmd_snapshot:
+                if _last_cmd() != cmd_snapshot:
                     return  # 用户发出了新指令，不干预
                 if dev.is_playing:
                     started = True
@@ -638,7 +700,7 @@ def _spawn_auto_playlist_guard(did: str, cmd_snapshot: str):
                     break  # 自然播完
             else:
                 return
-            if XM.command_handler.last_cmd != cmd_snapshot:
+            if _last_cmd() != cmd_snapshot:
                 return
             log.info("[play] 点播结束且无新指令，接播收藏随机歌单")
             await XM.play_music_list(did=did, arg1=CFG.get("playlist_name", "本地收藏"))
@@ -661,7 +723,9 @@ def patch_play_search():
     async def patched_play(did="", arg1="", **kwargs):
         name = (arg1 or "").strip()
         if name:
-            cmd_snapshot = XM.command_handler.last_cmd
+            _ch = getattr(XM, "command_handler", None)
+            cmd_snapshot = (_ch.last_cmd if _ch is not None
+                            else getattr(XM, "last_cmd", ""))
             exact = _match_favorite(name)
             if exact is None:
                 log.info("[play] 收藏中没有「%s」，解析本地曲库/在线下载", name)
@@ -821,6 +885,20 @@ def _mi_logged_in() -> bool:
         return False
 
 
+def _native_save_setting(data: dict):
+    """native 引擎：写 conf/setting.json 并同步内存 Config。
+
+    与 xiaomusic 引擎的 POST /xm/savesetting 等价——两个引擎共用同一份
+    setting.json，保证切换引擎不丢账号/设备/口令配置。
+    """
+    settings = load_json(CONF_DIR / "setting.json", {})
+    settings.update(data)
+    save_json(CONF_DIR / "setting.json", settings)
+    if XM is not None:
+        with contextlib.suppress(Exception):
+            XM.config.update_config(data)
+
+
 @app.post("/api/wizard/mi_login")
 async def mi_login(request: Request):
     """Step1a：小米账号密码登录"""
@@ -829,12 +907,17 @@ async def mi_login(request: Request):
     if not account or not password:
         return JSONResponse({"ok": False, "message": "账号和密码不能为空"}, status_code=400)
     try:
-        async with httpx.AsyncClient(base_url=SELF_URL, timeout=90) as cli:
-            r = await cli.post("/xm/savesetting", json={"account": account, "password": password})
-            if r.status_code != 200:
-                return JSONResponse({"ok": False, "message": f"xiaomusic 返回 {r.status_code}: {r.text[:100]}"})
-        # 登录后拉一次设备列表验证
-        devices = await _fetch_devices()
+        if CFG.get("engine") == "native":
+            _native_save_setting({"account": account, "password": password})
+            # fetch_devices(trigger_login=True) 内部会 init_all_data(force_login=True)
+            devices = await XM.fetch_devices(trigger_login=True)
+        else:
+            async with httpx.AsyncClient(base_url=SELF_URL, timeout=90) as cli:
+                r = await cli.post("/xm/savesetting", json={"account": account, "password": password})
+                if r.status_code != 200:
+                    return JSONResponse({"ok": False, "message": f"xiaomusic 返回 {r.status_code}: {r.text[:100]}"})
+            # 登录后拉一次设备列表验证
+            devices = await _fetch_devices()
         if not devices:
             return JSONResponse({"ok": False, "message": "登录失败或设备列表为空，请检查账号密码"})
         return {"ok": True, "devices": devices}
@@ -847,6 +930,20 @@ async def mi_login(request: Request):
 async def wizard_qrcode():
     """Step1b：获取扫码登录二维码（复用 xiaomusic 官方实现）"""
     try:
+        if CFG.get("engine") == "native":
+            # native：直调 MiJiaAPI；拿到 lp 后后台轮询扫码状态，
+            # 成功后 auth.json 落盘（与 xiaomusic api 的 get_qrcode 行为一致）
+            qr = XM.qrlogin.get_qrcode()
+            if qr is False:
+                devices = await XM.fetch_devices()
+                return {"ok": True, "already_logged_in": True, "devices": devices}
+            lp = (qr or {}).get("lp", "")
+            if lp:
+                XM.qrlogin.start_status_poll(lp)
+            image_url = XM.qrlogin.image_url(qr or {})
+            if not image_url:
+                return JSONResponse({"ok": False, "message": "二维码生成失败"})
+            return {"ok": True, "qrcode_url": image_url, "expire_seconds": 120}
         async with httpx.AsyncClient(base_url=SELF_URL, timeout=60) as cli:
             r = await cli.get("/xm/api/get_qrcode")
             data = r.json()
@@ -863,11 +960,11 @@ async def wizard_qrcode():
 
 @app.get("/api/wizard/qrcode_status")
 async def wizard_qrcode_status():
-    """轮询扫码结果：auth.json 出现有效 token 且 xiaomusic 登录成功即为完成"""
+    """轮询扫码结果：auth.json 出现有效 token 且引擎登录成功即为完成"""
     auth = load_json(CONF_DIR / "auth.json", {})
     if not (auth.get("passToken") and auth.get("userId")):
         return {"ok": True, "status": "waiting"}
-    # token 已写入，触发 xiaomusic 用 token 登录
+    # token 已写入，触发引擎用 token 登录
     devices = await _fetch_devices(trigger_login=True)
     if devices:
         return {"ok": True, "status": "success", "devices": devices}
@@ -876,6 +973,9 @@ async def wizard_qrcode_status():
 
 async def _fetch_devices(trigger_login: bool = False):
     """从小爱侧拉设备列表；trigger_login=True 时先触发一次重新登录"""
+    if CFG.get("engine") == "native":
+        # native：直接走 AuthManager/DeviceManager（内部含 did 映射刷新）
+        return await XM.fetch_devices(trigger_login=trigger_login)
     try:
         async with httpx.AsyncClient(base_url=SELF_URL, timeout=60) as cli:
             if trigger_login:
@@ -935,10 +1035,15 @@ async def wizard_devices(request: Request):
              "message": "设备标识异常（取到了 UUID 而非 did），请返回上一步重新获取设备列表"},
             status_code=400)
     try:
-        async with httpx.AsyncClient(base_url=SELF_URL, timeout=90) as cli:
-            r = await cli.post("/xm/savesetting", json={"mi_did": ",".join(dids)})
-            if r.status_code != 200:
-                return JSONResponse({"ok": False, "message": f"保存失败: {r.text[:100]}"})
+        if CFG.get("engine") == "native":
+            _native_save_setting({"mi_did": ",".join(dids)})
+            # 设备列表由 DeviceManager 按 mi_did 过滤，立即刷新一次
+            await XM.device_manager.update_device_info(XM.auth_manager)
+        else:
+            async with httpx.AsyncClient(base_url=SELF_URL, timeout=90) as cli:
+                r = await cli.post("/xm/savesetting", json={"mi_did": ",".join(dids)})
+                if r.status_code != 200:
+                    return JSONResponse({"ok": False, "message": f"保存失败: {r.text[:100]}"})
         return {"ok": True}
     except Exception as e:
         return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
@@ -1007,11 +1112,14 @@ async def wizard_reset():
     调用方（WebUI）随后会重启本进程——内存里的登录会话也随之清零，
     重启后 wizard_state 回到第一步，用户重新登录小米 → 勾选设备 → 填飞牛。
     """
-    # mi_did/account 经 xiaomusic 自己的 API 清（内存与 setting.json 同步，
+    # mi_did/account 经引擎自己的配置通道清（内存与 setting.json 同步，
     # 避免直接改文件被进程退出时的写回覆盖）
     try:
-        async with httpx.AsyncClient(base_url=SELF_URL, timeout=15) as cli:
-            await cli.post("/xm/savesetting", json={"mi_did": "", "account": ""})
+        if CFG.get("engine") == "native":
+            _native_save_setting({"mi_did": "", "account": ""})
+        else:
+            async with httpx.AsyncClient(base_url=SELF_URL, timeout=15) as cli:
+                await cli.post("/xm/savesetting", json={"mi_did": "", "account": ""})
     except Exception as e:
         log.warning("reset: 清 mi_did/account 失败: %s", e)
     # 登录令牌删除：进程重启后无令牌可登，_mi_logged_in() 为 False，向导回第一步
@@ -1030,6 +1138,7 @@ async def wizard_reset():
 async def health():
     return {
         "ok": True,
+        "engine": CFG.get("engine", "xiaomusic"),
         "token": STATE.token is not None,
         "mi_logged": _mi_logged_in(),
         "favorites": len(STATE.favorites),
@@ -1054,6 +1163,29 @@ async def health():
         # 当前实际轮询间隔（秒）：正常 1，登录失效降频 60
         "pull_ask_sec": (getattr(XM.config, "pull_ask_sec", None) if XM else None),
     }
+
+
+@app.post("/api/engine")
+async def set_engine(request: Request):
+    """切换口令引擎（xiaomusic | native）。改后需重启进程生效。
+
+    两个引擎共用 conf 目录（auth.json/setting.json），切换不丢登录态与设备选择。
+    重启方式：容器内 `supervisorctl restart xiaomusic`（约 10 秒）。
+    """
+    data = await request.json()
+    engine = (data.get("engine") or "").strip()
+    if engine not in ("xiaomusic", "native"):
+        return JSONResponse(
+            {"ok": False, "message": "engine 必须是 xiaomusic 或 native"},
+            status_code=400)
+    if engine == CFG.get("engine"):
+        return {"ok": True, "engine": engine, "restarted": False,
+                "message": "引擎未变化，无需重启"}
+    CFG["engine"] = engine
+    save_json(BRIDGE_CONFIG_FILE, CFG)
+    log.info("引擎已切换为 %s（重启进程后生效）", engine)
+    return {"ok": True, "engine": engine, "restarted": False,
+            "message": "已保存，重启进程后生效（supervisorctl restart xiaomusic）"}
 
 
 @app.get("/", response_class=HTMLResponse)

@@ -77,6 +77,9 @@ async function loadStatus() {
       if (!s.reachable && s.note) return `<span class="state-line"><span class="dot"></span>${PROC_LABEL[name]}：${s.note}</span>`;
       return `<span class="state-line"><span class="dot ${s.reachable ? "ok" : "err"}"></span>${PROC_LABEL[name]}：${s.reachable ? "正常" : "不可达"}</span>`;
     }).join("");
+    // 小爱音箱：登录失效 / 轮询降频 → 导航红点提示
+    const xmSvc = (st.services || {}).xiaomusic || {};
+    xmUpdateNavDot(xmSvc.reachable ? xmSvc.detail : null);
     const lxCard = $("#ov-lx-card");
     if (st.current_provider === "lxmusic" && st.lx_source) {
       lxCard.hidden = false;
@@ -1487,7 +1490,7 @@ function xmBind(step, st) {
     xmHealthTimer = setInterval(async () => {
       try {
         const fresh = await api("/api/xiaomusic/status");
-        if (fresh && fresh.ok) xmRefreshDone(fresh);
+        if (fresh && fresh.ok) { xmRefreshDone(fresh); xmUpdateNavDot(fresh); }
       } catch (_) { /* 忽略单次失败 */ }
     }, 5000);
   }
@@ -1674,6 +1677,16 @@ function xmSetHealth(id, ok, text) {
   if (t) t.textContent = text;
 }
 
+/* 导航红点：登录失效或轮询降频时常亮，用户不必进页面才发现 */
+function xmUpdateNavDot(detail) {
+  const d = detail || {};
+  const bad = d.mi_logged === false || d.poll_degraded === true;
+  ["#xm-dot", "#xm-dot-m"].forEach((sel) => {
+    const el = $(sel);
+    if (el) el.hidden = !bad;
+  });
+}
+
 function xmRefreshDone(st) {
   const set = (id, v, cls) => {
     const el = $(id);
@@ -1690,7 +1703,10 @@ function xmRefreshDone(st) {
   // ① 口令轮询（桥接 enable_pull_ask）：false 时 poller 空转，语音指令永远到不了桥接
   const pollOn = st.pull_ask_on;
   const chan = st.ask_channel === "mina" ? "mina 通道" : "小爱对话记录通道";
-  if (pollOn === true) {
+  if (st.poll_degraded === true) {
+    xmSetHealth("#xm-h-poll", false,
+      "口令轮询：已暂停（小米登录失效）— 为免频繁请求被风控，暂不拉取对话记录；重新登录后自动恢复");
+  } else if (pollOn === true) {
     xmSetHealth("#xm-h-poll", true, `口令轮询：正常（${chan}）`);
   } else if (pollOn === false) {
     xmSetHealth("#xm-h-poll", false,

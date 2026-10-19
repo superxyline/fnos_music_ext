@@ -329,6 +329,10 @@ async def lifespan(_app):
     patch_playlist_behavior()
     # 3.5 点歌兜底：搜收藏 → 无则飞牛搜索并收藏 → 播放
     patch_play_search()
+    # 3.6 轮询看门狗：登录失效时停止撞击小米接口（避免风控恶性循环）
+    patch_poll_watchdog()
+    # 3.7 轮询间隔守卫：登录态变化时把 pull_ask_sec 在 1s / 60s 之间切换
+    asyncio.create_task(poll_guard_loop())
     # 4. 启动桥接同步循环
     asyncio.create_task(sync_loop())
     log.info("fnmusic-xiaomusic v2 启动完成，端口 %s", BRIDGE_PORT)
@@ -339,6 +343,86 @@ async def lifespan(_app):
 
 
 app.router.lifespan_context = lifespan
+
+
+# ---------------- 口令轮询看门狗：登录失效时停止撞击小米接口 ----------------
+def patch_poll_watchdog():
+    """小米登录不可用时跳过对话记录拉取，并降频等待重新登录。
+
+    背景（2026-10-19 实测）：登录失效后 poll_latest_ask 仍按 pull_ask_sec（1s）
+    遍历每台设备请求对话记录。此时设备列表为空、hardware 取不到，每次必然 400
+    （实测 10 分钟 6396 次请求），形成「失效 → 狂撞接口 → 风控加重 → 更难恢复」
+    的恶性循环，同时刷满日志、浪费 NAS 资源。
+
+    做法：包装 ConversationPoller.get_latest_ask_from_xiaoai——
+      - auth_manager.mina_service 为空（登录未成功）→ 直接返回，一个请求都不发，
+        并把 pull_ask_sec 抬到 60，让外层循环低频空转；
+      - 登录可用 → pull_ask_sec 恢复 1s，正常拉取口令。
+    重新扫码后 mina_service 会被赋值，最多 60 秒内自动恢复，无需重启进程。
+    """
+    if XM is None:
+        return
+    poller = getattr(XM, "conversation_poller", None)
+    if poller is None:
+        return
+    original = poller.get_latest_ask_from_xiaoai
+    state = {"degraded": None}   # None=未初始化，True=降频中，False=正常
+
+    async def patched_get_latest_ask_from_xiaoai(session, device_id):
+        healthy = bool(XM.auth_manager and XM.auth_manager.mina_service)
+        if state["degraded"] != (not healthy):
+            state["degraded"] = not healthy
+            if healthy:
+                XM.config.pull_ask_sec = 1
+                log.info("[poll] 小米登录恢复，指令轮询回到 1s")
+            else:
+                XM.config.pull_ask_sec = 60
+                log.warning(
+                    "[poll] 小米登录不可用，暂停拉取对话记录"
+                    "（不再请求小米接口，避免风控；每 60s 检查一次登录态）"
+                )
+        if not healthy:
+            return None
+        return await original(session, device_id)
+
+    poller.get_latest_ask_from_xiaoai = patched_get_latest_ask_from_xiaoai
+    log.info("[poll] 轮询看门狗已生效")
+
+
+def poll_degraded() -> bool:
+    """指令轮询是否因登录不可用而降频（health 与前端据此提示）"""
+    if XM is None:
+        return False
+    am = getattr(XM, "auth_manager", None)
+    return bool(am is not None and am.mina_service is None)
+
+
+async def poll_guard_loop():
+    """周期性核对轮询间隔，与登录态保持一致。
+
+    为什么需要它：登录失败后 device_manager.device_id_did 会变空，
+    poll_latest_ask 没有设备可遍历，get_latest_ask_from_xiaoai（看门狗包装的那层）
+    根本不会被调用——此时 pull_ask_sec 会一直停在 1，health 观测不准。
+    本任务每 10 秒核对一次：登录可用→1s，不可用→60s，变化时才打日志。
+    与 patch_poll_watchdog 分工：它拦请求，这里维护间隔与可观测性。
+    """
+    while True:
+        await asyncio.sleep(10)
+        try:
+            if XM is None:
+                continue
+            healthy = bool(XM.auth_manager and XM.auth_manager.mina_service)
+            want = 1 if healthy else 60
+            if getattr(XM.config, "pull_ask_sec", None) != want:
+                XM.config.pull_ask_sec = want
+                if healthy:
+                    log.info("[poll] 小米登录恢复，轮询间隔回到 %ss", want)
+                else:
+                    log.warning("[poll] 小米登录不可用，轮询间隔降为 %ss（不请求小米接口）", want)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            log.debug("[poll] 轮询守护检查失败: %s", e)
 
 
 # ---------------- 播放行为修正 ----------------
@@ -965,6 +1049,10 @@ async def health():
         # 指令拉取通道：xiaoai=对话记录 API（可用）/ mina=ubus（部分固件返回空壳）
         "ask_channel": ("mina" if (XM and getattr(XM.config, "get_ask_by_mina", False))
                         else "xiaoai"),
+        # 登录不可用导致轮询降频：此时不再请求小米接口（避免 400 风暴加重风控）
+        "poll_degraded": poll_degraded(),
+        # 当前实际轮询间隔（秒）：正常 1，登录失效降频 60
+        "pull_ask_sec": (getattr(XM.config, "pull_ask_sec", None) if XM else None),
     }
 
 

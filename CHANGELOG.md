@@ -5,6 +5,17 @@
 
 > 以下 v2.3.1 起为本仓库（superxyline 二次开发版）的增量变更；v2.3.0 及之前为上游 javycoder/fnos_music_ext 的变更。
 
+## [Unreleased]
+
+### 修复
+
+- **小米登录失效后疯狂撞接口（实测 10 分钟 6396 次 400）**：登录失败时 `device_manager` 仍在、`hardware` 取不到，`poll_latest_ask` 按 1s 间隔遍历每台设备请求对话记录，每次都 400；形成「失效 → 狂撞接口 → 风控加重 → 更难恢复」的恶性循环，同时刷满日志、浪费 NAS 资源。修复分两层：
+  - **轮询看门狗** `patch_poll_watchdog()`：包装 `ConversationPoller.get_latest_ask_from_xiaoai`，`auth_manager.mina_service` 为空（登录未成功）时**直接返回、一个请求都不发**，并把 `pull_ask_sec` 抬到 60；登录可用时恢复 1s。重新扫码后最多 60 秒内自动恢复，无需重启进程。
+  - **轮询间隔守卫** `poll_guard_loop()`：登录失败后设备列表为空、看门狗包装层根本不会被调用（`pull_ask_sec` 会一直停在 1），因此每 10 秒核对一次登录态并把间隔在 1s / 60s 之间切换，同时在状态变化时打日志，保证 health 观测准确。
+  - `/health` 新增 `poll_degraded`（是否因登录不可用而降频）与 `pull_ask_sec`（当前实际间隔）。
+  - 管理台「小爱音箱」导航（桌面 + 移动）新增红点：`mi_logged=false` 或 `poll_degraded=true` 时常亮；完成页状态条在 `poll_degraded` 时显示「口令轮询：已暂停（小米登录失效）— 为免频繁请求被风控…重新登录后自动恢复」，优先于普通文案。
+  - 测试：`xiaomusic-service/test_bridge_structure.py`（6 项）覆盖看门狗注册、失效时不调用原函数、降频/恢复逻辑、health 字段、导航红点与文案优先级。
+
 ## [3.3.2] - 2026-10-18
 
 ### 修复

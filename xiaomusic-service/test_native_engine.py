@@ -95,6 +95,33 @@ def test_native_playlist_channel_is_music_list_json():
     assert '"music_list_json"' in APP_PY
 
 
+def test_native_analytics_stub_is_async():
+    """device_player.py:612 会 `await self.xiaomusic.analytics.send_play_event(...)`。
+
+    同步桩会在播放前一刻崩掉（TypeError: object NoneType can't be used in
+    'await'），口令有反应、音箱无声——2026-10-19 实测踩坑。
+    """
+    assert "async def send_play_event" in CORE
+
+
+def test_native_playlist_entries_use_public_url():
+    """native 引擎 web_music_proxy=False，条目 URL 原样发给音箱，必须对外可达。
+
+    127.0.0.1:8005 是容器内环地址，音箱拿到只会连它自己（播放无声）。
+    xiaomusic 引擎保持 SELF_URL（代理服务端拉取，既有行为）。
+    """
+    assert "def _play_entry_base()" in APP_PY
+    base = APP_PY[APP_PY.index("def _play_entry_base()"):]
+    base = base[:base.index("\ndef ")]
+    assert 'CFG.get("engine") == "native"' in base
+    assert "PUBLIC_PORT" in base
+    # build_playlist 必须用 _play_entry_base 而不是硬编码 SELF_URL
+    body = APP_PY[APP_PY.index("def build_playlist("):]
+    body = body[:body.index("\n\n")]
+    assert "_play_entry_base()" in body
+    assert 'f"{SELF_URL}/play?guid=' not in body
+
+
 def test_app_native_branches_present():
     """所有原本走 /xm/* HTTP 的路径都必须有 native 直调分支。"""
     for marker in (
@@ -173,15 +200,72 @@ def test_native_engine_smoke(tmp_path):
     assert core.config.music_list_url.endswith("/playlist.json")
 
 
+def _fresh_bridge(tmp_path, monkeypatch):
+    """按当前 tmp_path 重新加载 app 模块（模块级路径在 import 时绑定 env，
+    单例缓存会导致测试间串味；pytest-randomly 下必须显式 reload）。"""
+    monkeypatch.setenv("XIAOMUSIC_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("NAS_IP", "192.168.x.x")
+    import importlib
+
+    import app as bridge
+    importlib.reload(bridge)
+    return bridge
+
+
+def test_native_shim_awaits_like_device_player(tmp_path):
+    """按 device_player 的真实调用方式 await 桩方法（复刻 612 行崩溃点）。"""
+    pytest.importorskip("xiaomusic", reason="需要 xiaomusic 环境（容器内/开发 venv）")
+    import asyncio
+    import inspect
+    import logging
+
+    from native.config import build_config
+    from native.core import NativeCore
+
+    conf = tmp_path / "conf"
+    music = tmp_path / "music"
+    conf.mkdir(parents=True)
+    music.mkdir(parents=True)
+    cfg = build_config(conf_dir=conf, music_dir=music,
+                       nas_ip="192.168.x.x", public_port=8775)
+
+    async def _build():
+        return NativeCore(cfg, logging.getLogger("test"))
+
+    core = asyncio.run(_build())
+    # device_player.py:612 —— 这一行崩过，必须可 await
+    assert inspect.iscoroutinefunction(core.analytics.send_play_event)
+    asyncio.run(core.analytics.send_play_event("晴天", 239.0, "LX06"))
+    # 其余桩方法同样必须可 await
+    for m in (core.do_tts, core.handle_fatal_error, core.add_singer_song):
+        assert inspect.iscoroutinefunction(m), m
+
+
+def test_native_playlist_entry_urls_are_speaker_reachable(tmp_path, monkeypatch):
+    """native 引擎下 build_playlist 生成的条目 URL 必须是音箱可达地址。"""
+    pytest.importorskip("xiaomusic", reason="需要 xiaomusic 环境（容器内/开发 venv）")
+    bridge = _fresh_bridge(tmp_path, monkeypatch)
+
+    bridge.CFG["engine"] = "native"
+    bridge.CFG["nas_ip"] = "192.168.x.x"
+    playlist = bridge.build_playlist([
+        {"guid": "abc123", "title": "晴天",
+         "artists": [{"name": "周杰伦"}], "album": {"name": "叶惠美"}},
+    ])
+    url = playlist[0]["musics"][0]["url"]
+    assert url == "http://192.168.x.x:8775/play?guid=abc123"
+    # xiaomusic 引擎保持内环地址（代理服务端拉取）
+    bridge.CFG["engine"] = "xiaomusic"
+    url2 = bridge.build_playlist([
+        {"guid": "abc123", "title": "晴天", "artists": [], "album": {}},
+    ])[0]["musics"][0]["url"]
+    assert url2.startswith("http://127.0.0.1:")
+
+
 def test_app_engine_switch_endpoint(tmp_path, monkeypatch):
     """引擎切换端点：持久化 + 校验 + health 反映当前引擎（不起服务）。"""
     pytest.importorskip("xiaomusic", reason="需要 xiaomusic 环境（容器内/开发 venv）")
-    import json
-
-    monkeypatch.setenv("XIAOMUSIC_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("NAS_IP", "192.168.x.x")
-
-    import app as bridge
+    bridge = _fresh_bridge(tmp_path, monkeypatch)
 
     class _Req:
         def __init__(self, data):
@@ -191,6 +275,7 @@ def test_app_engine_switch_endpoint(tmp_path, monkeypatch):
             return self._data
 
     import asyncio
+    import json
 
     # 默认 xiaomusic
     assert bridge.CFG.get("engine") == "xiaomusic"

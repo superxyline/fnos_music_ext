@@ -35,9 +35,11 @@ from .qrlogin import QRLogin
 
 
 class _AnalyticsStub:
-    """XiaoMusicDevice._play_internal 会调 analytics.send_play_event。"""
+    """XiaoMusicDevice._playmusic 会 `await analytics.send_play_event(...)`
+    （device_player.py:612）——必须是协程，同步桩会在播放前一刻崩掉
+    （2026-10-19 实测：TypeError: object NoneType can't be used in 'await'）。"""
 
-    def send_play_event(self, *args, **kwargs):
+    async def send_play_event(self, *args, **kwargs):
         pass
 
 

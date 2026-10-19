@@ -249,6 +249,19 @@ def new_fn_client() -> FnMusicClient:
 
 
 # ---------------- 播放列表生成（乱序 + 同名去重） ----------------
+def _play_entry_base() -> str:
+    """歌单条目基地址（音箱拉流用）：
+    - native：web_music_proxy=False，条目 URL 原样发给音箱，必须用**对外可达**
+      地址 http://{nas_ip}:{public_port}（127.0.0.1:8005 是容器内环地址，
+      音箱拿到只会连它自己——2026-10-19 实测播放无声）；
+    - xiaomusic：条目经 xiaomusic 代理包装成 /proxy/music?token=，由代理在
+      容器内服务端拉取 origin，127.0.0.1 内环地址即可（3.3.x 既有行为）。
+    """
+    if CFG.get("engine") == "native":
+        return f"http://{CFG.get('nas_ip', NAS_IP)}:{PUBLIC_PORT}"
+    return SELF_URL
+
+
 def build_playlist(favorites: list) -> list:
     musics = []
     seen = set()
@@ -265,7 +278,7 @@ def build_playlist(favorites: list) -> list:
         seen.add(name)
         musics.append({
             "name": name,
-            "url": f"{SELF_URL}/play?guid={t.get('guid', '')}",
+            "url": f"{_play_entry_base()}/play?guid={t.get('guid', '')}",
         })
     random.shuffle(musics)
     return [{"name": CFG["playlist_name"], "musics": musics}]

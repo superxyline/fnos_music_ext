@@ -5,6 +5,17 @@
 
 > 以下 v2.3.1 起为本仓库（superxyline 二次开发版）的增量变更；v2.3.0 及之前为上游 javycoder/fnos_music_ext 的变更。
 
+## [3.3.4] - 2026-10-19
+
+### 修复
+
+- **native 引擎口令播放无声（两项，真机实测）**：
+  - `device_player.py:612` 播放前一刻会 `await analytics.send_play_event(...)`，native 的 analytics 桩是同步方法，直接 `TypeError` 崩在发音前——口令匹配、歌单加载、找歌全部正常但音箱无声。桩改协程。
+  - 歌单条目 URL 未按引擎分流：native（`web_music_proxy=False`）把条目 URL 原样发给音箱，而条目是 `http://127.0.0.1:8005/play?...`（容器内环地址），音箱拿到只会连它自己。改为 native 用对外可达地址 `http://<NAS_IP>:8775/play?...`，xiaomusic 引擎保持原样（其代理在容器内服务端拉取）。
+- **native 引擎「停止播放」后约一分钟自动续播（真机实测）**：NativeCore 漏实现 `stop` 口令动作——分发器执行口令前的 `group_force_stop_xiaoai` 暂停了音箱（用户以为停了），但 `is_playing` 仍为 `True`、「下一曲定时器」未取消，轮询器的 `reset_timer_when_answer` 随小爱应答把定时器重新 armed，到点自动播下一首。补齐口令表全部 15 个动作（`stop`/`play_next`/`play_prev`/`playlocal`/`set_play_type_one|all|rnd|sin|seq`/`stop_after_minute`/`play_music_list_index`/`select_index`/`gen_music_list`），分发器补多匹配待选态「第几个」分支；新增命令面覆盖率回归测试。
+- **TTS 确认音 404 导致小爱提示「播放服务遇到问题」（v3.3.0 起潜伏，两引擎同病）**：xiaomusic 的 `_get_file_url` 拼 `http://<NAS_IP>:8775/music/...` 发给音箱（edge-tts 确认音在 `music/tmp/`、点歌下载的本地歌曲在 `music/` 根下），而桥接从未提供 `/music` 路由——日志实证 10-18~19 共 26 次请求全部 404。lifespan 挂载 `StaticFiles(MUSIC_DIR)` 到 `/music`；修复后实测音箱拉取 206 成功。
+- 测试：`test_native_engine.py` 增至 25 项（8 静态 + 17 集成/结构），覆盖 analytics 桩可 await、条目 URL 引擎分流、15 个口令动作面、`/music` 路由挂载、引擎切换端点持久化。
+
 ## [3.3.3] - 2026-10-19
 
 ### 新增

@@ -57,6 +57,72 @@ def test_native_core_has_shim_surface():
     assert "self.js_plugin_manager = None" in CORE
 
 
+# 口令表能产出的全部动作（默认关键词 + 桥接推送的关键词）。
+# 缺任何一个的后果不是没反应，而是半截行为（见 core.py 注释与 2026-10-19 停止播放事故）。
+NATIVE_COMMAND_SURFACE = [
+    "play",                  # user_key_word_dict「播放」→ 点歌
+    "play_music_list",       # keywords_playlist → 播收藏歌单
+    "play_music_list_index", # 「播放列表第N个」
+    "playlocal",             # keywords_playlocal → 播本地下载
+    "stop",                  # keywords_stop → 停止（必须取消下一曲定时器）
+    "play_next",             # 下一首
+    "play_prev",             # 上一首
+    "set_play_type_one",     # 单曲循环
+    "set_play_type_all",     # 全部循环
+    "set_play_type_rnd",     # 随机播放
+    "set_play_type_sin",     # 单曲播放
+    "set_play_type_seq",     # 顺序播放
+    "stop_after_minute",     # 分钟后关机
+    "gen_music_list",        # 刷新列表
+    "select_index",          # 多匹配待选态「第几个」
+]
+
+
+def test_native_implements_full_command_surface():
+    """NativeCore 必须实现口令表能产出的每个动作。
+
+    2026-10-19 事故：stop 未实现时，分发器执行前的 group_force_stop_xiaoai
+    暂停了音箱（用户以为停了），但 is_playing 仍为 True、下一曲定时器未取消，
+    poller 的 reset_timer_when_answer 把定时器重新 armed，58 秒后自动续播。
+    """
+    for action in NATIVE_COMMAND_SURFACE:
+        assert f"async def {action}(" in CORE, f"NativeCore 缺少口令动作 {action}"
+
+
+def test_native_command_surface_is_async(tmp_path):
+    """集成：口令动作必须全是协程（dispatcher 用 await func(...) 调用）。"""
+    pytest.importorskip("xiaomusic", reason="需要 xiaomusic 环境（容器内/开发 venv）")
+    import asyncio
+    import inspect
+    import logging
+
+    from native.config import build_config
+    from native.core import NativeCore
+
+    conf = tmp_path / "conf"
+    music = tmp_path / "music"
+    conf.mkdir(parents=True)
+    music.mkdir(parents=True)
+
+    async def _build():
+        return NativeCore(
+            build_config(conf_dir=conf, music_dir=music,
+                         nas_ip="192.168.x.x", public_port=8775),
+            logging.getLogger("test"))
+
+    core = asyncio.run(_build())
+    for action in NATIVE_COMMAND_SURFACE:
+        func = getattr(core, action, None)
+        assert func is not None, action
+        assert inspect.iscoroutinefunction(func), action
+
+
+def test_native_dispatch_handles_pending_selection():
+    """多匹配待选态：「第几个」必须走 select_index（移植自 command_handler）。"""
+    assert "_pending_selection" in DISPATCH
+    assert '"select_index", query' in DISPATCH
+
+
 def test_native_dispatch_matches_like_upstream():
     """匹配逻辑必须与上游 command_handler 同构（完全匹配+模糊+激活过滤+停小爱）。"""
     assert "def check_full_match_cmd(" in DISPATCH

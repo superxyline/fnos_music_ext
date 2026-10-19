@@ -21,14 +21,23 @@ analytics / js_plugin_manager / do_tts / handle_fatal_error / add_singer_song
   切换引擎不丢登录态与设备选择
 """
 import logging
+import re
 from pathlib import Path
 
 from xiaomusic.auth import AuthManager
 from xiaomusic.config import Config
+from xiaomusic.const import (
+    PLAY_TYPE_ALL,
+    PLAY_TYPE_ONE,
+    PLAY_TYPE_RND,
+    PLAY_TYPE_SEQ,
+    PLAY_TYPE_SIN,
+)
 from xiaomusic.conversation import ConversationPoller
 from xiaomusic.device_manager import DeviceManager
 from xiaomusic.events import EventBus
 from xiaomusic.music_library import MusicLibrary
+from xiaomusic.utils.text_utils import chinese_to_number
 
 from .dispatch import CommandDispatcher
 from .qrlogin import QRLogin
@@ -134,6 +143,98 @@ class NativeCore:
         dev = self.device_manager.devices.get(did)
         if dev is not None:
             await dev.reset_timer_when_answer(answer_length)
+
+    # ---------------- 其余口令动作（移植自 XiaoMusic，均为薄委托） ----------------
+    # 缺失任何一个的后果不是"没反应"而是"半截行为"：分发器执行口令前都会
+    # group_force_stop_xiaoai 暂停音箱，但动作方法不存在时 is_playing 仍为
+    # True、下一曲定时器不取消—— poller 的 reset_timer_when_answer 会把定时器
+    # 重新 armed，到点自动播下一首（2026-10-19 实测：停止播放后 58 秒自行续播）。
+
+    async def play_next(self, did="", **kwargs):
+        return await self.device_manager.devices[did].play_next()
+
+    async def play_prev(self, did="", **kwargs):
+        return await self.device_manager.devices[did].play_prev()
+
+    async def stop(self, did="", arg1="", **kwargs):
+        # 设备侧 stop：is_playing=False + 取消组内下一曲定时器 + 停音箱（+TTS）
+        return await self.device_manager.devices[did].stop(arg1=arg1)
+
+    async def playlocal(self, did="", arg1="", **kwargs):
+        return await self.device_manager.devices[did].playlocal(arg1)
+
+    async def set_play_type(self, did="", play_type=PLAY_TYPE_RND, dotts=True):
+        await self.device_manager.devices[did].set_play_type(play_type, dotts)
+
+    async def set_play_type_one(self, did="", **kwargs):
+        await self.set_play_type(did, PLAY_TYPE_ONE)
+
+    async def set_play_type_all(self, did="", **kwargs):
+        await self.set_play_type(did, PLAY_TYPE_ALL)
+
+    async def set_play_type_rnd(self, did="", **kwargs):
+        await self.set_play_type(did, PLAY_TYPE_RND)
+
+    async def set_play_type_sin(self, did="", **kwargs):
+        await self.set_play_type(did, PLAY_TYPE_SIN)
+
+    async def set_play_type_seq(self, did="", **kwargs):
+        await self.set_play_type(did, PLAY_TYPE_SEQ)
+
+    async def stop_after_minute(self, did="", arg1=0, **kwargs):
+        try:
+            minute = int(arg1)
+        except (KeyError, ValueError):
+            minute = chinese_to_number(str(arg1))
+        return await self.device_manager.devices[did].stop_after_minute(minute)
+
+    async def play_music_list_index(self, did="", arg1="", **kwargs):
+        """口令:播放列表第几个xx（移植自 XiaoMusic.play_music_list_index）"""
+        patternarg = r"^([零一二三四五六七八九十百千万亿]+)个(.*)"
+        matcharg = re.match(patternarg, arg1)
+        if not matcharg:
+            return await self.play_music_list(did, arg1)
+
+        chinese_index, list_name = matcharg.groups()
+        list_name = self.music_library.find_real_music_list_name(list_name)
+        if list_name not in self.music_library.music_list:
+            await self.do_tts(did, f"播放列表{list_name}不存在")
+            return
+
+        index = chinese_to_number(chinese_index)
+        play_list = self.music_library.music_list[list_name]
+        if 0 <= index - 1 < len(play_list):
+            music_name = play_list[index - 1]
+            self.log.info(f"即将播放 {arg1} 里的第 {index} 个: {music_name}")
+            await self.device_manager.devices[did].play_music_list(
+                list_name, music_name
+            )
+            return
+        await self.do_tts(did, f"播放列表{list_name}中找不到第{index}个")
+
+    async def select_index(self, did="", arg1="", **kwargs):
+        """口令:第几个（多匹配待选态的回复，移植自 XiaoMusic.select_index）"""
+        patternarg = r"^第?([零一二三四五六七八九十百千万亿]+)[个首条集]$"
+        matcharg = re.match(patternarg, arg1)
+        if not matcharg:
+            return
+        index = chinese_to_number(matcharg.groups()[0])
+        device = self.device_manager.devices.get(did)
+        if not device:
+            self.log.warning(f"设备 did:{did} 不存在")
+            return
+        await device.handle_selection(index)
+
+    async def gen_music_list(self, **kwargs):
+        """口令:刷新列表"""
+        self.music_library.gen_all_music_list()
+        self.update_all_playlist()
+        self.log.info("gen_music_list ok")
+
+    def update_all_playlist(self):
+        """更新每个设备的歌单（设备侧 update_playlist 会按需洗牌）。"""
+        for device in self.device_manager.devices.values():
+            device.update_playlist()
 
     # ---------------- 生命周期 ----------------
 

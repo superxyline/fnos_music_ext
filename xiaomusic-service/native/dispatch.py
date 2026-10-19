@@ -42,6 +42,15 @@ class CommandDispatcher:
 
     def match_cmd(self, device, query, ctrl_panel):
         """返回 (动作名, 参数)，未匹配返回 (None, None)。"""
+        # 0) 多匹配待选态：「第几个」类回复优先（移植自 command_handler.match_cmd）
+        if getattr(device, "_pending_selection", None):
+            matcharg = re.match(
+                r"^第?([零一二三四五六七八九十百千万亿]+)[个首条集]$", query
+            )
+            if matcharg:
+                self.log.info(f"[native] 匹配到选择指令. query:{query}")
+                return "select_index", query
+
         # 1) 完全匹配
         opvalue = self.check_full_match_cmd(device, query, ctrl_panel)
         if opvalue:

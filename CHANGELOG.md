@@ -5,7 +5,7 @@
 
 > 以下 v2.3.1 起为本仓库（superxyline 二次开发版）的增量变更；v2.3.0 及之前为上游 javycoder/fnos_music_ext 的变更。
 
-## [Unreleased]
+## [3.3.3] - 2026-10-19
 
 ### 新增
 

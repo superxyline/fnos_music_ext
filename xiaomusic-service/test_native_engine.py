@@ -83,11 +83,23 @@ def test_app_engine_switch_wired():
     assert '"engine": CFG.get("engine", "xiaomusic")' in APP_PY
 
 
+def test_native_playlist_channel_is_music_list_json():
+    """歌单必须走 music_list_json 通道。
+
+    MusicLibrary._append_music_list 只消费 config.music_list_json；
+    music_list_url 仅是 xiaomusic 引擎 refresh_web_music_list 的备用拉取路径。
+    曾漏掉此通道导致 native 引擎歌单为空——三处（读设置/推送/落盘）都要在。
+    """
+    assert 'music_list_json=settings.get("music_list_json", "")' in CONFIG
+    assert '"music_list_json": music_list_json' in CORE
+    assert '"music_list_json"' in APP_PY
+
+
 def test_app_native_branches_present():
     """所有原本走 /xm/* HTTP 的路径都必须有 native 直调分支。"""
     for marker in (
-        "XM.update_keywords(",          # push_playlist
-        "XM.refresh_music_list()",      # push_playlist / 点歌下载后刷新
+        "XM.push_config(",              # push_playlist（歌单+口令）
+        "XM.refresh_music_list()",      # 点歌下载后刷新
         "return await XM.fetch_devices(",  # _fetch_devices
         "_native_save_setting(",        # mi_login / wizard_devices / wizard_reset
         "XM.qrlogin.get_qrcode()",      # wizard_qrcode
@@ -150,7 +162,8 @@ def test_native_engine_smoke(tmp_path):
     assert core.dispatcher.match_cmd(dev, "播放本地歌曲", False) == ("play_music_list", "")
     assert core.dispatcher.match_cmd(dev, "今天天气怎么样", False) == (None, None)
 
-    core.update_keywords(
+    core.push_config(
+        music_list_json="[]",
         keywords_playlist="播放列表,播放歌单",
         keywords_playlocal="播放下载歌曲",
         user_key_word_dict={"播放": "play"},

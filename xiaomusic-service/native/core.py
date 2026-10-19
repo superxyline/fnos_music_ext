@@ -162,27 +162,33 @@ class NativeCore:
         """小米登录是否真实有效（mina_service 存在说明登录成功）。"""
         return self.auth_manager is not None and self.auth_manager.mina_service is not None
 
-    def update_keywords(
+    def push_config(
         self,
         *,
+        music_list_json: str,
         keywords_playlist: str,
         keywords_playlocal: str,
         user_key_word_dict: dict,
         music_list_url: str,
     ):
-        """桥接推送歌单/口令变体（native 模式下替代 /xm/api/system/modifiysetting）。
+        """桥接推送歌单/口令配置（native 模式下替代 /xm/api/system/modifiysetting）。
 
-        Config.update_config 内部会调 init() 重建 key_match_order/key_word_dict。
+        歌单走 music_list_json（MusicLibrary._append_music_list 消费它，
+        与 xiaomusic 引擎 modifiysetting 推送同一字段）；口令变体经
+        Config.update_config 内部 init() 重建 key_match_order/key_word_dict。
         """
         self.config.update_config({
+            "music_list_json": music_list_json,
             "keywords_playlist": keywords_playlist,
             "keywords_playlocal": keywords_playlocal,
             "user_key_word_dict": dict(user_key_word_dict),
             "music_list_url": music_list_url,
         })
+        self.music_library.gen_all_music_list()
 
     async def refresh_music_list(self):
-        """歌单/本地目录变化后重载（native 模式下替代 /xm/api/music/refreshlist）。"""
+        """本地目录变化后重载歌单（native 模式下替代 /xm/api/music/refreshlist
+        的 gen_all_music_list 部分；music_list_json 已在内存，无需重拉 URL）。"""
         self.music_library.gen_all_music_list()
 
     async def fetch_devices(self, trigger_login: bool = False) -> list:

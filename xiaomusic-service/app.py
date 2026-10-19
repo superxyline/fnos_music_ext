@@ -318,14 +318,18 @@ async def push_playlist(playlist: list):
     music_list_url = f"{SELF_URL}/playlist.json"
 
     if CFG.get("engine") == "native":
-        # native：直接更新 Config（内部重建关键词表）+ 重载歌单
-        XM.update_keywords(
+        # native：歌单走 music_list_json（MusicLibrary 直接消费，与 xiaomusic
+        # 引擎 modifiysetting 同一字段）+ 口令变体经 Config.update_config 重建
+        music_list_json = json.dumps(playlist, ensure_ascii=False)
+        XM.push_config(
+            music_list_json=music_list_json,
             keywords_playlist=keywords_playlist,
             keywords_playlocal=keywords_playlocal,
             user_key_word_dict=user_key_word_dict,
             music_list_url=music_list_url,
         )
-        await XM.refresh_music_list()
+        # 落盘 setting.json：与 xiaomusic 引擎互通的配置源，切回时歌单还在
+        _native_save_setting({"music_list_json": music_list_json})
     else:
         # xiaomusic：HTTP 内循环调自家 api
         async with httpx.AsyncClient(base_url=SELF_URL, timeout=15) as cli:

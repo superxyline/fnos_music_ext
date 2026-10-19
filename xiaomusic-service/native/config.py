@@ -61,7 +61,7 @@ def build_config(
         # 必须显式开启指令轮询：默认 false 时 poll_latest_ask 首行空转，
         # 口令永远到不了（音箱自带音乐技能接走全部语音）。
         enable_pull_ask=True,
-        # 口令变体（初始值；后续由桥接 sync 时 update_keywords 刷新）
+        # 口令变体（初始值；后续由桥接 sync 时 push_config 刷新）
         keywords_playlist=settings.get(
             "keywords_playlist", KEYWORDS_PLAYLIST_DEFAULT),
         keywords_playlocal=settings.get(
@@ -69,4 +69,8 @@ def build_config(
         user_key_word_dict=settings.get(
             "user_key_word_dict", dict(USER_KEY_WORD_DICT_DEFAULT)),
         music_list_url=settings.get("music_list_url", ""),
+        # 歌单内容：xiaomusic 引擎的 modifiysetting 把 music_list_json 写进
+        # setting.json，MusicLibrary._append_music_list 消费它——native 直接读，
+        # 启动即带歌单，不必等首次 sync
+        music_list_json=settings.get("music_list_json", ""),
     )

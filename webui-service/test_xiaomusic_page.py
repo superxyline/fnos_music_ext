@@ -208,3 +208,15 @@ def test_status_includes_xiaomusic_process(env_file, svctl):
     # 未启用：不探活，标注按需未启动
     assert rj["services"]["xiaomusic"]["reachable"] is False
     assert "未启用" in rj["services"]["xiaomusic"]["note"]
+
+
+def test_no_xiaomusic_advanced_settings_entry():
+    """完成页不得残留「xiaomusic 高级设置」入口（2026-10-20 移除，易用性）。
+
+    该入口指向 xiaomusic 引擎自带的 /xm/ 页面——引擎已整体移除，入口必须
+    一起删掉，否则用户点进去 404。
+    """
+    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "高级设置" not in app_js
+    assert "/xm/" not in app_js
+    assert "xmUrl" not in app_js

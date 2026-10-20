@@ -1422,8 +1422,6 @@ function xmStep3Html() {
 
 /* ---------- 完成页 ---------- */
 function xmDoneHtml(st) {
-  const nasIp = st.nas_ip || (xmState && xmState.nas_ip) || "";
-  const xmUrl = `http://${escapeHtml(nasIp)}:${st.public_port || 8775}/xm/`;
   return `<div class="card">
     <div class="card-title">配置完成</div>
     <div class="xm-health">
@@ -1445,7 +1443,7 @@ function xmDoneHtml(st) {
       <tr><td>播放收藏 / 播放本地</td><td>随机播放收藏（每次重新打乱）</td></tr>
       <tr><td>播放本地收藏歌曲 / 播放本地歌曲 / 播放本地音乐</td><td>同上</td></tr>
       <tr><td>放几首本地歌 / 放首本地歌 / 随便放几首歌 / 来几首本地歌</td><td>同上（口语说法都支持）</td></tr>
-      <tr><td>播放晴天 / 播放周杰伦的晴天</td><td><b>点歌</b>：收藏里有直接播；没有则在线搜索并自动<b>下载</b>到本地音乐库（<b>不进收藏</b>）后播放</td></tr>
+      <tr><td>播放晴天 / 播放周杰伦的晴天</td><td><b>点歌</b>：收藏里有直接播；没有则本地曲库直接播 / 在线源<b>下载</b>到本地音乐库（<b>都不进收藏</b>）后播放</td></tr>
       <tr><td>下一首 / 上一首 / 暂停 / 停止播放</td><td>播放控制</td></tr>
       <tr><td>随机播放 / 全部循环 / 单曲循环 / 顺序播放</td><td>切换播放模式</td></tr>
       <tr><td>刷新列表</td><td>重新加载歌单</td></tr>
@@ -1454,7 +1452,6 @@ function xmDoneHtml(st) {
     <div class="btn-row">
       <button class="btn" id="xm-sync">立即同步</button>
       <button class="btn" id="xm-reset">重新配置</button>
-      <a class="btn" href="${xmUrl}" target="_blank" rel="noopener noreferrer">xiaomusic 高级设置</a>
     </div>
     <div class="xm-msg" id="xm-done-msg" hidden></div>
   </div>`;
@@ -1710,7 +1707,7 @@ function xmRefreshDone(st) {
     xmSetHealth("#xm-h-poll", true, `口令轮询：正常（${chan}）`);
   } else if (pollOn === false) {
     xmSetHealth("#xm-h-poll", false,
-      "口令轮询：未开启 — 语音指令到不了桥接，请到「xiaomusic 高级设置」开启「监听新消息」");
+      "口令轮询：未开启 — 请点「重新配置」重走向导，或重启小爱音箱进程");
   } else {
     xmSetHealth("#xm-h-poll", false, "口令轮询：状态未知（桥接未返回 pull_ask_on，可能未启动）");
   }

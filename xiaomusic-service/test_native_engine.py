@@ -147,19 +147,22 @@ def test_native_dispatch_matches_like_upstream():
     assert "return None, None" in DISPATCH
 
 
-def test_app_engine_switch_wired():
-    """引擎开关：默认 xiaomusic、lifespan 分支、切换端点、health 暴露。"""
-    assert '"engine": "xiaomusic"' in APP_PY, "引擎默认值必须是 xiaomusic（灰度安全）"
+def test_app_single_engine_wired():
+    """单一 native 引擎：无引擎切换、无 /xm 挂载、lifespan 只建 native。
+
+    2026-10-20：xiaomusic 引擎（XiaoMusic 主类 + /xm api 子应用）整体移除，
+    native 成为唯一引擎——双引擎灰度期结束（真机全链路验证通过后）。
+    """
     assert "def create_native():" in APP_PY
+    assert "def create_xiaomusic(" not in APP_PY
+    assert "XM_APP" not in APP_PY
+    assert '"/api/engine"' not in APP_PY
     start = APP_PY.index("async def lifespan(")
     end = APP_PY.index("app.router.lifespan_context", start)
     lifespan = APP_PY[start:end]
-    assert 'CFG.get("engine") == "native"' in lifespan
     assert "create_native()" in lifespan
-    assert "_app.mount(\"/xm\", XM_APP)" in lifespan, "xiaomusic 引擎仍须挂载 api 子应用"
-    # 切换端点与 health
-    assert '@app.post("/api/engine")' in APP_PY
-    assert '"engine": CFG.get("engine", "xiaomusic")' in APP_PY
+    assert '_app.mount("/xm"' not in lifespan
+    assert 'CFG.get("engine")' not in APP_PY, "不应再有任何引擎分支判断"
 
 
 def test_native_playlist_channel_is_music_list_json():
@@ -184,16 +187,16 @@ def test_native_analytics_stub_is_async():
 
 
 def test_native_playlist_entries_use_public_url():
-    """native 引擎 web_music_proxy=False，条目 URL 原样发给音箱，必须对外可达。
+    """web_music_proxy=False，条目 URL 原样发给音箱，必须对外可达。
 
-    127.0.0.1:8005 是容器内环地址，音箱拿到只会连它自己（播放无声）。
-    xiaomusic 引擎保持 SELF_URL（代理服务端拉取，既有行为）。
+    127.0.0.1:8005 是容器内环地址，音箱拿到只会连它自己（2026-10-19 实测
+    播放无声）。单一引擎后不再有代理包装路径，恒定用对外地址。
     """
     assert "def _play_entry_base()" in APP_PY
     base = APP_PY[APP_PY.index("def _play_entry_base()"):]
     base = base[:base.index("\ndef ")]
-    assert 'CFG.get("engine") == "native"' in base
     assert "PUBLIC_PORT" in base
+    assert "SELF_URL" not in base
     # build_playlist 必须用 _play_entry_base 而不是硬编码 SELF_URL
     body = APP_PY[APP_PY.index("def build_playlist("):]
     body = body[:body.index("\n\n")]
@@ -202,15 +205,18 @@ def test_native_playlist_entries_use_public_url():
 
 
 def test_app_native_branches_present():
-    """所有原本走 /xm/* HTTP 的路径都必须有 native 直调分支。"""
+    """桥接各路径都走引擎直调（不再经 /xm/* HTTP 内循环）。"""
     for marker in (
         "XM.push_config(",              # push_playlist（歌单+口令）
         "XM.refresh_music_list()",      # 点歌下载后刷新
         "return await XM.fetch_devices(",  # _fetch_devices
-        "_native_save_setting(",        # mi_login / wizard_devices / wizard_reset
+        "_save_engine_setting(",        # mi_login / wizard_devices / wizard_reset
         "XM.qrlogin.get_qrcode()",      # wizard_qrcode
     ):
-        assert marker in APP_PY, f"app.py 缺少 native 分支: {marker}"
+        assert marker in APP_PY, f"app.py 缺少直调: {marker}"
+    # 双引擎时代的 /xm HTTP 内循环与根级代理不得残留
+    for dead in ('"/xm/', 'post("/xm', 'get("/xm', 'proxy/music'):
+        assert dead not in APP_PY, f"app.py 残留 xiaomusic 引擎代码: {dead}"
 
 
 def test_keywords_single_source():
@@ -280,14 +286,24 @@ def test_native_engine_smoke(tmp_path):
 
 
 def _fresh_bridge(tmp_path, monkeypatch):
-    """按当前 tmp_path 重新加载 app 模块（模块级路径在 import 时绑定 env，
-    单例缓存会导致测试间串味；pytest-randomly 下必须显式 reload）。"""
+    """按当前 tmp_path 全新加载 app 模块。
+
+    必须按文件路径加载并起独立模块名：pytest prepend 模式会把各测试目录插入
+    sys.path，组合运行时 `import app` 可能命中 webui-service/app.py
+    （2026-10-20 实测踩坑）；import 时绑定 env 路径，故每次全新执行模块。
+    """
     monkeypatch.setenv("XIAOMUSIC_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("NAS_IP", "192.168.x.x")
-    import importlib
+    import importlib.util
+    import sys
 
-    import app as bridge
-    importlib.reload(bridge)
+    here = str(HERE)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    spec = importlib.util.spec_from_file_location(
+        f"fnmusic_bridge_app_{tmp_path.name}", HERE / "app.py")
+    bridge = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bridge)
     return bridge
 
 
@@ -321,11 +337,10 @@ def test_native_shim_awaits_like_device_player(tmp_path):
 
 
 def test_native_playlist_entry_urls_are_speaker_reachable(tmp_path, monkeypatch):
-    """native 引擎下 build_playlist 生成的条目 URL 必须是音箱可达地址。"""
+    """build_playlist 生成的条目 URL 必须是音箱可达地址。"""
     pytest.importorskip("xiaomusic", reason="需要 xiaomusic 环境（容器内/开发 venv）")
     bridge = _fresh_bridge(tmp_path, monkeypatch)
 
-    bridge.CFG["engine"] = "native"
     bridge.CFG["nas_ip"] = "192.168.x.x"
     playlist = bridge.build_playlist([
         {"guid": "abc123", "title": "晴天",
@@ -333,37 +348,53 @@ def test_native_playlist_entry_urls_are_speaker_reachable(tmp_path, monkeypatch)
     ])
     url = playlist[0]["musics"][0]["url"]
     assert url == "http://192.168.x.x:8775/play?guid=abc123"
-    # xiaomusic 引擎保持内环地址（代理服务端拉取）
-    bridge.CFG["engine"] = "xiaomusic"
-    url2 = bridge.build_playlist([
-        {"guid": "abc123", "title": "晴天", "artists": [], "album": {}},
-    ])[0]["musics"][0]["url"]
-    assert url2.startswith("http://127.0.0.1:")
 
 
-def test_app_engine_switch_endpoint(tmp_path, monkeypatch):
-    """引擎切换端点：持久化 + 校验 + health 反映当前引擎（不起服务）。"""
-    pytest.importorskip("xiaomusic", reason="需要 xiaomusic 环境（容器内/开发 venv）")
-    bridge = _fresh_bridge(tmp_path, monkeypatch)
+def test_curated_core_dependencies():
+    """native 引擎的 xiaomusic 侧依赖必须锁死且精选。
 
-    class _Req:
-        def __init__(self, data):
-            self._data = data
+    依赖清单来自 2026-10-20 容器内 ast + 运行时双重导入追踪；上游重依赖
+    （yt-dlp 25M / sentry / apscheduler / watchdog / ga4mp / aiofiles /
+    psutil / pyjwt / python-multipart）不在 native 运行路径，全部裁掉。
+    """
+    core_req = (HERE / "requirements-core.txt").read_text(encoding="utf-8")
+    for dep in ("miservice-fork", "aiohttp", "requests", "pycryptodome",
+                "qrcode", "tzlocal", "mutagen", "pillow",
+                "opencc-python-reimplemented==0.1.7", "edge-tts"):
+        assert dep in core_req, f"精选依赖缺少 {dep}"
+    # 桥接自身依赖与核心依赖分离（requirements.txt 不再含 xiaomusic）
+    bridge_req = (HERE / "requirements.txt").read_text(encoding="utf-8")
+    assert "xiaomusic==" not in bridge_req
+    assert "fastapi" in bridge_req
 
-        async def json(self):
-            return self._data
 
-    import asyncio
-    import json
+def test_dockerfile_installs_xiaomusic_without_deps():
+    """xiaomusic 必须 --no-deps 安装，否则上游重依赖全回来。"""
+    dockerfile = (HERE.parent / "container" / "Dockerfile").read_text(encoding="utf-8")
+    assert "--no-deps xiaomusic==0.6.1" in dockerfile
+    assert "req.xiaomusic-core" in dockerfile
 
-    # 默认 xiaomusic
-    assert bridge.CFG.get("engine") == "xiaomusic"
-    # 非法值拒绝
-    r = asyncio.run(bridge.set_engine(_Req({"engine": "bogus"})))
-    assert r.status_code == 400
-    # 切 native：落盘 + 内存生效
-    r = asyncio.run(bridge.set_engine(_Req({"engine": "native"})))
-    assert r["ok"] and r["engine"] == "native"
-    saved = json.loads((tmp_path / "bridge" / "config.json").read_text(encoding="utf-8"))
-    assert saved["engine"] == "native"
-    assert bridge.CFG["engine"] == "native"
+
+def test_curated_core_dependencies():
+    """native 引擎的 xiaomusic 侧依赖必须锁死且精选。
+
+    依赖清单来自 2026-10-20 容器内 ast + 运行时双重导入追踪；上游重依赖
+    （yt-dlp 25M / sentry / apscheduler / watchdog / ga4mp / aiofiles /
+    psutil / pyjwt / python-multipart）不在 native 运行路径，全部裁掉。
+    """
+    core_req = (HERE / "requirements-core.txt").read_text(encoding="utf-8")
+    for dep in ("miservice-fork", "aiohttp", "requests", "pycryptodome",
+                "qrcode", "tzlocal", "mutagen", "pillow",
+                "opencc-python-reimplemented==0.1.7", "edge-tts"):
+        assert dep in core_req, f"精选依赖缺少 {dep}"
+    # 桥接自身依赖与核心依赖分离（requirements.txt 不再含 xiaomusic）
+    bridge_req = (HERE / "requirements.txt").read_text(encoding="utf-8")
+    assert "xiaomusic==" not in bridge_req
+    assert "fastapi" in bridge_req
+
+
+def test_dockerfile_installs_xiaomusic_without_deps():
+    """xiaomusic 必须 --no-deps 安装，否则上游重依赖全回来。"""
+    dockerfile = (HERE.parent / "container" / "Dockerfile").read_text(encoding="utf-8")
+    assert "--no-deps xiaomusic==0.6.1" in dockerfile
+    assert "req.xiaomusic-core" in dockerfile

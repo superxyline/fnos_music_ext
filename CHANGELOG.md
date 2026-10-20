@@ -5,6 +5,17 @@
 
 > 以下 v2.3.1 起为本仓库（superxyline 二次开发版）的增量变更；v2.3.0 及之前为上游 javycoder/fnos_music_ext 的变更。
 
+## [3.4.0] - 2026-10-20
+
+### 变更
+
+- **移除 xiaomusic 引擎，native 成为唯一口令引擎**（双引擎灰度期结束——native 已于 v3.3.4 在 X4B/L05B/LX06 三台真机完成全链路验证）：
+  - 删除 XiaoMusic 主类集成、`/xm/*` api 子应用挂载、`POST /api/engine` 切换端点、`engine` 配置字段、全部双引擎分支代码与 `/proxy/music` 根级转发（`app.py` -285 行）；`_native_save_setting` 更名 `_save_engine_setting`；`_play_entry_base()` 恒定返回音箱可达地址；`/health` 不再有 `engine` 字段。
+  - 小米登录仍 100% 使用上游代码（`miservice` + `AuthManager` + `MiJiaAPI`），未做任何改动。
+- **依赖裁剪**：`xiaomusic` 改 `--no-deps` 安装 + 精选传递依赖（新增 `xiaomusic-service/requirements-core.txt`，10 项）。清单经容器内 ast 静态展开 + 运行时 `sys.modules` 双重导入追踪（含函数级懒 import：PIL/edge-tts/opencc），并经「仅精选依赖」干净 venv 全链路导入实测验证。镜像不再携带 yt-dlp（25M）、sentry-sdk、apscheduler、watchdog、ga4mp、aiofiles、psutil、pyjwt、python-multipart。
+- **管理台易用性**：小爱音箱完成页移除「xiaomusic 高级设置」入口（其指向的 `/xm/` 页面随引擎一并移除，留着只会 404）；口令表点歌描述更新为「本地曲库直接播 / 在线源下载，都不进收藏」。
+- 测试：`test_native_engine.py` 引擎相关断言改写为「单一 native 引擎」（无切换端点/无 `/xm` 挂载/无引擎分支/无死代码残留）；新增精选依赖清单与 Dockerfile `--no-deps` 断言、WebUI 入口移除断言；修复 `import app` 在组合运行时命中 `webui-service/app.py` 的测试隔离问题（改按文件路径加载）与本地重定向测试服务器的请求体未消费导致的偶发 `ReadError`。
+
 ## [3.3.5] - 2026-10-19
 
 ### 修复

@@ -115,6 +115,11 @@ def test_client_upgrades_base_url_through_redirect():
                 self.send_error(404)
 
         def do_POST(self):
+            # 必须消费请求体：keep-alive 连接上不读 body 会污染同连接下一个
+            # 请求（httpx ReadError，2026-10-20 实测偶发）
+            length = int(self.headers.get("Content-Length") or 0)
+            if length:
+                self.rfile.read(length)
             state["login_hits"] += 1
             self._json({"code": 0, "data": {"token": "test-token-123"}})
 
@@ -131,6 +136,9 @@ def test_client_upgrades_base_url_through_redirect():
             self.end_headers()
 
         def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            if length:
+                self.rfile.read(length)
             self.send_response(302)
             self.send_header("Location", f"http://127.0.0.1:{final_port}{self.path}")
             self.send_header("Content-Length", "0")

@@ -8,7 +8,7 @@
 
 `fnmusic-ext` 是专为 fnOS（飞牛私有云）自带音乐应用（`trim.music`）打造的**无侵入增强扩展**。它通过接管官方后端的 Unix Socket 通信入口，在完全不修改官方程序、nginx 配置与数据库的前提下，让原生飞牛音乐获得在线音乐能力；可随时一条命令还原官方直连。
 
-> 当前版本：**v3.3.5**（v3.3.0＝小爱音箱接管：xiaomusic 桥接 + 管理台三步配置 + 收藏点歌；v3.3.1＝搜索结果标注具体来源平台 `[kuwo]晴天`；v3.3.2＝完成页独立展示口令轮询 / 小米账号状态；v3.3.3＝小米登录失效看门狗 + **native 口令引擎**（复用 xiaomusic 登录/设备/轮询/播放组件、自建编排分发，双引擎可切换）+ 锁定 `xiaomusic==0.6.1`；v3.3.4＝native 引擎真机验证修复三连（播放无声两项、停止后续播、TTS 确认音 404）+ `/music` 静态路由补上 v3.3.0 起潜伏的文件服务缺失 + **fnOS 强制 HTTPS（http→https 自签证书）场景向导第 3 步登录/扫描修复（issue #5）**；v3.3.5＝**点歌不再写入飞牛收藏**（点歌≠收藏，改为注入内存播放列表，歌单重建自动清理）；另含 musicbox `playback.py` 漏 COPY、网易扫码不可达等修复；详见 [CHANGELOG.md](CHANGELOG.md)）
+> 当前版本：**v3.4.0**（v3.3.0＝小爱音箱接管：xiaomusic 桥接 + 管理台三步配置 + 收藏点歌；v3.3.1＝搜索结果标注具体来源平台 `[kuwo]晴天`；v3.3.2＝完成页独立展示口令轮询 / 小米账号状态；v3.3.3＝小米登录失效看门狗 + **native 口令引擎**（复用 xiaomusic 登录/设备/轮询/播放组件、自建编排分发，双引擎可切换）+ 锁定 `xiaomusic==0.6.1`；v3.3.4＝native 引擎真机验证修复三连（播放无声两项、停止后续播、TTS 确认音 404）+ `/music` 静态路由补上 v3.3.0 起潜伏的文件服务缺失 + **fnOS 强制 HTTPS（http→https 自签证书）场景向导第 3 步登录/扫描修复（issue #5）**；v3.3.5＝**点歌不再写入飞牛收藏**（点歌≠收藏，改为注入内存播放列表，歌单重建自动清理）；v3.4.0＝**移除 xiaomusic 引擎，native 成为唯一口令引擎**（真机验证后灰度期结束）+ **依赖裁剪**（`--no-deps` + 精选依赖，镜像告别 yt-dlp 25M/sentry 等）+ 管理台移除「xiaomusic 高级设置」入口；另含 musicbox `playback.py` 漏 COPY、网易扫码不可达等修复；详见 [CHANGELOG.md](CHANGELOG.md)）
 
 ![飞牛桌面里的 fnMusic 扩展管理](preview_image/preview.png)
 
@@ -235,20 +235,18 @@ git pull
 - **想换小米账号 / 重选设备**：完成页点「重新配置」＝完全重置（退出小米登录、清飞牛配置、桥接重启回第一步），确认后需重新扫码并重新勾选设备。
 - **常用口令**：`播放收藏` / `播放本地收藏歌曲` / `放几首本地歌`（随机打乱播放收藏）、`播放晴天` / `播放周杰伦的晴天`（点歌：收藏优先；不在收藏则本地曲库直接播 / 在线源下载，**都不写入收藏**）、`下一首` / `上一首` / `暂停` / `停止播放`、`随机播放` / `全部循环` / `单曲循环`、`刷新列表`。
 
-### 口令引擎：xiaomusic / native 双引擎（v3.3.3，native 于 v3.3.4 完成真机验证）
+### 口令引擎（v3.4.0 起为单一 native 引擎）
 
-桥接内置两套口令引擎，配置项 `engine`（位于 `/data/xiaomusic/bridge/config.json`，默认 `xiaomusic`）：
+口令引擎为自研的 **native** 实现（`xiaomusic-service/native/`），复用 xiaomusic 的登录/设备/轮询/播放组件（`miservice`/`AuthManager`/`MiJiaAPI`/`DeviceManager`/`ConversationPoller`/`MusicLibrary`/`XiaoMusicDevice`/`Config`），编排与命令分发为自己实现：
 
-| 引擎 | 说明 |
-| :--- | :--- |
-| `xiaomusic` | 上游 XiaoMusic 主类 + 其 HTTP api 子应用（`/xm/*`），行为与 v3.3.0~3.3.2 完全一致 |
-| `native` | 复用上游登录/设备/轮询/播放组件（`AuthManager`/`DeviceManager`/`ConversationPoller`/`MusicLibrary`/`XiaoMusicDevice`/`MiJiaAPI`），自建编排与命令分发（`xiaomusic-service/native/`）；不挂 `/xm/*` api，音箱直连桥接 `/play` 取流（不经 xiaomusic 代理） |
+- 不挂载 xiaomusic 的 HTTP api 子应用，向导/歌单/取流全走桥接自身端点；
+- `web_music_proxy=False`：音箱直连桥接 `/play` 取流，不经代理（少一跳）；
+- 口令匹配移植自上游 `command_handler`（完全匹配 + 模糊匹配 + 激活口令过滤 + 多匹配「第几个」）；
+- 小米登录 100% 使用上游代码（`miservice` + `AuthManager` + `MiJiaAPI` 扫码），未做任何改动；
+- 已于 v3.3.4 在真实设备完成全链路验证（X4B/L05B/LX06 三台：口令播放、点歌三段路径、全部口令、TTS 确认音、播完接歌单、登录失效自愈）；
+- v3.4.0 起移除此前的 xiaomusic 引擎（XiaoMusic 主类 + `/xm/*` api 子应用）与引擎切换开关，并对 xiaomusic 改 `--no-deps` 安装 + 精选依赖（`requirements-core.txt`），镜像不再携带 yt-dlp（25M）/sentry-sdk/apscheduler/watchdog 等不在运行路径上的重依赖。
 
-- **两引擎共用 conf 目录**（`auth.json`/`setting.json`/`music_list_json`），切换不丢登录态、设备勾选与歌单。
-- 切换方式：`curl -X POST http://<NAS_IP>:8775/api/engine -H 'Content-Type: application/json' -d '{"engine":"native"}'`，随后 `docker exec fnmusic-sources supervisorctl restart xiaomusic` 生效；回滚把 `engine` 改回 `xiaomusic` 再重启即可。
-- `/health` 的 `engine` 字段显示当前引擎；`pull_ask_on`/`poll_degraded`/`pull_ask_sec` 等观测字段两引擎通用。
-- 口令表、点歌兜底、播完接歌单、登录失效看门狗等行为两引擎一致；`native` 的匹配逻辑移植自上游 `command_handler`（完全匹配 + 模糊匹配 + 激活口令过滤）。
-- `native` 已于 v3.3.4 在真实设备完成全链路验证（X4B/L05B/LX06 三台：口令播放、点歌三段路径、停止/下一首/随机播放等全部口令、TTS 确认音、播完接歌单、登录失效自愈）；新装默认仍为 `xiaomusic`（稳妥），`native` 一个配置开关即用。
+`/health` 暴露 `pull_ask_on`/`poll_degraded`/`pull_ask_sec`/`mi_logged` 等观测字段。
 
 ## 开发与测试
 

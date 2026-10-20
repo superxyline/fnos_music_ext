@@ -1,0 +1,24 @@
+# native 口令引擎的 xiaomusic 侧依赖。
+#
+# xiaomusic==0.6.1 本体由 Dockerfile 以 --no-deps 安装：上游依赖过重且大半
+# 不在 native 运行路径上（yt-dlp 25M、sentry-sdk、apscheduler、watchdog、
+# ga4mp、aiofiles、psutil、pyjwt、python-multipart…）。版本必须锁死 0.6.1——
+# 上游已停止更新（0.6.1 为终版），口令轮询/mina 通道/设备 did 等所有行为
+# 结论都基于 0.6.1 实测，不锁版本会让重建镜像时静默引入上游改动导致退化。
+#
+# 以下清单为 native 引擎实测依赖闭包（2026-10-20 容器内 ast 静态展开 +
+# 运行时 sys.modules 双重验证，含函数级懒 import：PIL/edge-tts/opencc）：
+#   miservice-fork —— auth/device_player 直接 import（自带 aiohttp/
+#     fake-useragent/mutagen/rich/setuptools，按正常依赖解析）
+#   tzlocal —— qrcode_login 需要（apscheduler 被裁后不会再来，必须显式）
+#   其余为 miservice/music_library/device_player/text_utils 直接用
+miservice-fork
+aiohttp
+requests
+pycryptodome
+qrcode
+tzlocal
+mutagen
+pillow
+opencc-python-reimplemented==0.1.7
+edge-tts

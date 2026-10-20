@@ -70,6 +70,7 @@ COPY musicbox-service/requirements.txt /srv/req.musicbox
 COPY lxmusic-service/requirements.txt /srv/req.lxmusic
 COPY webui-service/requirements.txt /srv/req.webui
 COPY xiaomusic-service/requirements.txt /srv/req.xiaomusic
+COPY xiaomusic-service/requirements-core.txt /srv/req.xiaomusic-core
 RUN set -eu; \
     fix_dns() { \
         { \
@@ -79,10 +80,12 @@ RUN set -eu; \
         cat /tmp/resolv.fnmusic > /etc/resolv.conf 2>/dev/null || true; \
     }; \
     fix_dns; \
-    pip install --no-cache-dir -r /srv/req.musicdl -r /srv/req.musicbox -r /srv/req.lxmusic -r /srv/req.webui -r /srv/req.xiaomusic \
+    pip install --no-cache-dir --no-deps xiaomusic==0.6.1 \
+    && pip install --no-cache-dir -r /srv/req.musicdl -r /srv/req.musicbox -r /srv/req.lxmusic -r /srv/req.webui -r /srv/req.xiaomusic -r /srv/req.xiaomusic-core \
     || { echo "[WARN] pip 镜像源（${PIP_INDEX_URL}）安装失败，回退官方 PyPI 重试..." >&2; \
-         pip install --no-cache-dir -i https://pypi.org/simple \
-            -r /srv/req.musicdl -r /srv/req.musicbox -r /srv/req.lxmusic -r /srv/req.webui -r /srv/req.xiaomusic; } \
+         pip install --no-cache-dir --no-deps -i https://pypi.org/simple xiaomusic==0.6.1 \
+         && pip install --no-cache-dir -i https://pypi.org/simple \
+            -r /srv/req.musicdl -r /srv/req.musicbox -r /srv/req.lxmusic -r /srv/req.webui -r /srv/req.xiaomusic -r /srv/req.xiaomusic-core; } \
     && rm -f /srv/req.*
 
 RUN useradd -m -u 1000 appuser \

@@ -42,16 +42,25 @@ def test_inject_updates_memory_only():
     assert "fn.add_favorite" not in body
 
 
+def _load_bridge():
+    """按文件路径加载桥接 app 模块（避免 import app 命中 webui-service/app.py）。"""
+    import importlib.util
+    import sys
+
+    if str(HERE) not in sys.path:
+        sys.path.insert(0, str(HERE))
+    spec = importlib.util.spec_from_file_location("fnmusic_bridge_app_pf", HERE / "app.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def test_inject_works_on_native_engine():
     """集成：注入后条目与收藏条目同构（http URL），歌名进入目标歌单且幂等。"""
-    import importlib
-
-    import app as bridge
-    importlib.reload(bridge)
+    bridge = _load_bridge()
 
     lib = types.SimpleNamespace(all_music={}, music_list={}, _extra_index_search={})
     bridge.XM = types.SimpleNamespace(music_library=lib)
-    bridge.CFG["engine"] = "native"
     bridge.CFG["nas_ip"] = "192.168.x.x"
     bridge.CFG["playlist_name"] = "本地收藏"
 
@@ -70,10 +79,7 @@ def test_inject_works_on_native_engine():
 
 def test_inject_ignores_broken_state():
     """没有音乐库/空歌名时安全返回，不抛异常。"""
-    import importlib
-
-    import app as bridge
-    importlib.reload(bridge)
+    bridge = _load_bridge()
 
     bridge.XM = None
     assert bridge._inject_to_playlist("晴天", "guid-x") == ""

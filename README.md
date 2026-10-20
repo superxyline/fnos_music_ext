@@ -8,7 +8,7 @@
 
 `fnmusic-ext` 是专为 fnOS（飞牛私有云）自带音乐应用（`trim.music`）打造的**无侵入增强扩展**。它通过接管官方后端的 Unix Socket 通信入口，在完全不修改官方程序、nginx 配置与数据库的前提下，让原生飞牛音乐获得在线音乐能力；可随时一条命令还原官方直连。
 
-> 当前版本：**v3.4.0**（v3.3.0＝小爱音箱接管：xiaomusic 桥接 + 管理台三步配置 + 收藏点歌；v3.3.1＝搜索结果标注具体来源平台 `[kuwo]晴天`；v3.3.2＝完成页独立展示口令轮询 / 小米账号状态；v3.3.3＝小米登录失效看门狗 + **native 口令引擎**（复用 xiaomusic 登录/设备/轮询/播放组件、自建编排分发，双引擎可切换）+ 锁定 `xiaomusic==0.6.1`；v3.3.4＝native 引擎真机验证修复三连（播放无声两项、停止后续播、TTS 确认音 404）+ `/music` 静态路由补上 v3.3.0 起潜伏的文件服务缺失 + **fnOS 强制 HTTPS（http→https 自签证书）场景向导第 3 步登录/扫描修复（issue #5）**；v3.3.5＝**点歌不再写入飞牛收藏**（点歌≠收藏，改为注入内存播放列表，歌单重建自动清理）；v3.4.0＝**移除 xiaomusic 引擎，native 成为唯一口令引擎**（真机验证后灰度期结束）+ **依赖裁剪**（`--no-deps` + 精选依赖，镜像告别 yt-dlp 25M/sentry 等）+ 管理台移除「xiaomusic 高级设置」入口；另含 musicbox `playback.py` 漏 COPY、网易扫码不可达等修复；详见 [CHANGELOG.md](CHANGELOG.md)）
+> 当前版本：**v3.4.1**（v3.4.1＝**带屏小爱播放界面 audio_id 解析**：修复屏幕歌名/封面/歌词偶尔显示错误——歌单条目后台预解析小米曲库 audioID 并缓存（实测 275 首命中 96.7%），双格式拆名 + 繁简归一 + 三级匹配；v3.3.0＝小爱音箱接管：xiaomusic 桥接 + 管理台三步配置 + 收藏点歌；v3.3.1＝搜索结果标注具体来源平台 `[kuwo]晴天`；v3.3.2＝完成页独立展示口令轮询 / 小米账号状态；v3.3.3＝小米登录失效看门狗 + **native 口令引擎**（复用 xiaomusic 登录/设备/轮询/播放组件、自建编排分发，双引擎可切换）+ 锁定 `xiaomusic==0.6.1`；v3.3.4＝native 引擎真机验证修复三连（播放无声两项、停止后续播、TTS 确认音 404）+ `/music` 静态路由补上 v3.3.0 起潜伏的文件服务缺失 + **fnOS 强制 HTTPS（http→https 自签证书）场景向导第 3 步登录/扫描修复（issue #5）**；v3.3.5＝**点歌不再写入飞牛收藏**（点歌≠收藏，改为注入内存播放列表，歌单重建自动清理）；v3.4.0＝**移除 xiaomusic 引擎，native 成为唯一口令引擎**（真机验证后灰度期结束）+ **依赖裁剪**（`--no-deps` + 精选依赖，镜像告别 yt-dlp 25M/sentry 等）+ 管理台移除「xiaomusic 高级设置」入口；另含 musicbox `playback.py` 漏 COPY、网易扫码不可达等修复；详见 [CHANGELOG.md](CHANGELOG.md)）
 
 ![飞牛桌面里的 fnMusic 扩展管理](preview_image/preview.png)
 
@@ -246,7 +246,9 @@ git pull
 - 已于 v3.3.4 在真实设备完成全链路验证（X4B/L05B/LX06 三台：口令播放、点歌三段路径、全部口令、TTS 确认音、播完接歌单、登录失效自愈）；
 - v3.4.0 起移除此前的 xiaomusic 引擎（XiaoMusic 主类 + `/xm/*` api 子应用）与引擎切换开关，并对 xiaomusic 改 `--no-deps` 安装 + 精选依赖（`requirements-core.txt`），镜像不再携带 yt-dlp（25M）/sentry-sdk/apscheduler/watchdog 等不在运行路径上的重依赖。
 
-`/health` 暴露 `pull_ask_on`/`poll_degraded`/`pull_ask_sec`/`mi_logged` 等观测字段。
+- 带屏设备（X4B 等，v3.4.1）：播放界面歌名/歌手/封面/歌词由小米曲库 audioID 决定，桥接在歌单重建后**后台预解析**全部条目的 audioID 并落盘缓存（双格式拆名 + 繁简归一 + 三级匹配），播放时直接命中——实测 275 首命中 96.7%，屏幕不再随机显示错歌；曲库确实没有的歌显示默认占位（与上游一致）。
+
+`/health` 暴露 `pull_ask_on`/`poll_degraded`/`pull_ask_sec`/`mi_logged`/`audio_id_cache` 等观测字段。
 
 ## 开发与测试
 

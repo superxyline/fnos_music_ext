@@ -38,6 +38,12 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from fnmusic_client import FnMusicClient, sign_authx
+from audio_id_resolver import (
+    AudioIdCache,
+    resolve_audio_ids,
+    search_audio_id,
+    DEFAULT_AUDIO_ID,
+)
 from native.keywords import (
     KEYWORDS_PLAYLIST_DEFAULT,
     KEYWORDS_PLAYLOCAL_DEFAULT,
@@ -52,6 +58,7 @@ MUSIC_DIR = DATA_DIR / "music"        # xiaomusic 音乐目录（本方案只用
 BRIDGE_DIR = DATA_DIR / "bridge"      # 桥接数据
 WIZARD_STATE_FILE = BRIDGE_DIR / "wizard_state.json"
 BRIDGE_CONFIG_FILE = BRIDGE_DIR / "config.json"
+AUDIO_ID_CACHE_FILE = BRIDGE_DIR / "audio_id_cache.json"
 
 # 内部监听端口（容器内）：WebUI 与 xiaomusic 自身的内环调用都走它
 BRIDGE_PORT = int(os.getenv("BRIDGE_PORT", "8005"))
@@ -109,6 +116,9 @@ def save_json(path: Path, data):
 
 
 CFG = load_json(BRIDGE_CONFIG_FILE, dict(DEFAULT_CONFIG))
+
+# 小米曲库 audio_id 缓存（X4B 等带屏设备屏幕显示的元数据来源，见 audio_id_resolver）
+AUDIO_ID_CACHE = AudioIdCache(AUDIO_ID_CACHE_FILE)
 
 # ---------------- 口令引擎 ----------------
 # 注意：引擎构造内部会创建 aiohttp.ClientSession，必须在有事件循环的
@@ -238,6 +248,7 @@ async def do_sync(force: bool = False) -> dict:
         STATE.playlist_songs = len(playlist[0]["musics"]) if playlist else 0
         log.info("收藏列表变化，重建歌单（%d 首，乱序）", STATE.playlist_songs)
         await push_playlist(playlist)
+        _spawn_audio_id_resolve(playlist)
     return {"updated": changed, "favorites": len(favorites)}
 
 
@@ -298,9 +309,11 @@ async def lifespan(_app):
     patch_play_search()
     # 3.6 轮询看门狗：登录失效时停止撞击小米接口（避免风控恶性循环）
     patch_poll_watchdog()
-    # 3.7 轮询间隔守卫：登录态变化时把 pull_ask_sec 在 1s / 60s 之间切换
+    # 3.7 audio_id 解析：带屏设备屏幕显示正确的歌曲信息（见 patch docstring）
+    patch_audio_id_resolver()
+    # 3.8 轮询间隔守卫：登录态变化时把 pull_ask_sec 在 1s / 60s 之间切换
     asyncio.create_task(poll_guard_loop())
-    # 3.8 本地音乐文件服务（/music/*）：
+    # 3.9 本地音乐文件服务（/music/*）：
     #     xiaomusic 的 _get_file_url 会拼 http://{nas_ip}:{public_port}/music/...
     #     发给音箱——edge-tts 确认音在 music/tmp/ 下、点歌下载的本地歌曲在
     #     music/ 根下，都走这个 URL。桥接必须提供该路由，否则音箱拉不到音频，
@@ -687,6 +700,105 @@ def patch_play_search():
     log.info("[play] 点歌搜索兜底已生效")
 
 
+# ---------------- audio_id 解析：带屏设备屏幕显示正确的歌曲信息 ----------------
+def _spawn_audio_id_resolve(playlist: list):
+    """歌单重建后后台预解析条目的 audio_id（不等结果，播放时缓存即生效）。
+
+    只解析未缓存的（增量）；登录不可用则跳过，等下次同步补。
+    """
+    names = []
+    for group in playlist or []:
+        for m in (group.get("musics") or []):
+            n = (m.get("name") or "").strip()
+            if n:
+                names.append(n)
+    if not names:
+        return
+
+    async def _task():
+        mina = None
+        if XM is not None and XM.auth_manager is not None:
+            mina = XM.auth_manager.mina_service
+        if mina is None:
+            log.info("[audio_id] 小米未登录，跳过预解析（播放时按需解析）")
+            return
+        log.info("[audio_id] 开始预解析（%d 首待查）", len(names))
+        try:
+            stats = await resolve_audio_ids(mina, names, AUDIO_ID_CACHE)
+            pruned = AUDIO_ID_CACHE.prune(names)
+            AUDIO_ID_CACHE.save()
+            log.info("[audio_id] 预解析完成 %s（清理过期缓存 %d 条）", stats, pruned)
+        except Exception as e:
+            log.warning("[audio_id] 预解析任务异常: %s", e)
+
+    asyncio.create_task(_task())
+
+
+def patch_audio_id_resolver():
+    """包装上游 XiaoMusicDevice._get_audio_id，修掉带屏设备"屏幕显示错歌"。
+
+    原理（2026-10-20 源码级定位）：X4B 等 NEED_USE_PLAY_MUSIC_API 设备走
+    mina ubus player_play_music，屏幕歌名/歌手/封面/歌词全由 audio_id 的
+    曲库记录决定（播放内容则是桥接 URL，两者无绑定）。上游 _get_audio_id
+    按「歌名-歌手」拆名，而桥接歌单名是「歌手 - 歌名」（artist 在前），
+    拆分后与曲库歌名永远不相等 → 掉 songList[0] 兜底：蒙对显示正确，
+    蒙错屏幕显示另一首歌（用户反馈"偶尔显示错误"的根因）。
+
+    本包装：仅对真正走 play_music 路径的设备（名单内或 use_music_api/
+    continue_play）生效，行为 = 缓存优先 → 规范化多候选搜索 → 仍不中则
+    上游原逻辑兜底；解析结果写缓存（负缓存防反复打接口）。
+    """
+    if XM is None:
+        return
+    try:
+        from xiaomusic.const import NEED_USE_PLAY_MUSIC_API
+        from xiaomusic.device_player import XiaoMusicDevice
+    except ImportError:
+        log.info("[audio_id] 无 xiaomusic 环境，跳过 audio_id 解析包装")
+        return
+    original = XiaoMusicDevice._get_audio_id
+
+    async def patched(self, name):
+        cfg = self.config
+        fixed = str(getattr(cfg, "use_music_audio_id", None) or DEFAULT_AUDIO_ID)
+        name = (name or "").strip()
+        if not name:
+            return fixed
+        use_api = bool(getattr(cfg, "use_music_api", False)
+                       or getattr(cfg, "continue_play", False))
+        hardware = getattr(self, "hardware", "") or ""
+        if not (use_api or hardware in NEED_USE_PLAY_MUSIC_API):
+            # 非 play_music 路径的设备屏幕不显示卡片，照搬上游：用配置值
+            return fixed
+        # 1. 缓存优先（"" = 负缓存：查过曲库没有）
+        cached = AUDIO_ID_CACHE.get(name)
+        if cached is not None:
+            return cached or fixed
+        # 2. 规范化多候选搜索
+        audio_id = ""
+        try:
+            mina = getattr(self.auth_manager, "mina_service", None)
+            if mina is not None:
+                audio_id = await search_audio_id(mina, name)
+        except Exception as e:
+            log.warning("[audio_id] 解析 %r 失败，回退上游逻辑: %s", name, e)
+        # 3. 仍不中：保留上游宽松兜底语义（异常时也不阻断播放）
+        if not audio_id:
+            try:
+                audio_id = await original(self, name)
+            except Exception as e:
+                log.debug("[audio_id] 上游兜底失败: %s", e)
+                audio_id = ""
+        audio_id = str(audio_id or "")
+        AUDIO_ID_CACHE.set(name, audio_id)
+        AUDIO_ID_CACHE.save()
+        log.info("[audio_id] 解析 %r -> %s", name, audio_id or "默认占位")
+        return audio_id or fixed
+
+    XiaoMusicDevice._get_audio_id = patched
+    log.info("[audio_id] 屏幕音频ID解析已生效（缓存 %s）", AUDIO_ID_CACHE.stats())
+
+
 # ---------------- 音频流代理（桥接 → 飞牛） ----------------
 @app.get("/play")
 @app.head("/play")
@@ -1020,6 +1132,8 @@ async def health():
         "poll_degraded": poll_degraded(),
         # 当前实际轮询间隔（秒）：正常 1，登录失效降频 60
         "pull_ask_sec": (getattr(XM.config, "pull_ask_sec", None) if XM else None),
+        # 带屏设备 audio_id 缓存：resolved=已匹配曲库ID，negative=查过没有
+        "audio_id_cache": AUDIO_ID_CACHE.stats(),
     }
 
 

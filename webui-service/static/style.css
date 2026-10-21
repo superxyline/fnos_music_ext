@@ -240,14 +240,6 @@ input[type="radio"] { accent-color: var(--accent); margin-top: 4px; }
 }
 
 /* ---------------------------------------------------------------- 关于页 */
-.nav-dot {
-  display: inline-block;
-  width: 7px; height: 7px;
-  margin-left: 5px;
-  border-radius: 50%;
-  background: #e5484d;
-  vertical-align: middle;
-}
 .about-version { display: flex; align-items: center; gap: 8px; font-size: 20px; font-weight: 700; }
 .new-badge {
   border: 0; cursor: pointer;

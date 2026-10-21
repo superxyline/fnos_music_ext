@@ -3,8 +3,8 @@
 只校验关键防护逻辑还在，防止后续改动把已修的坑改回去：
   - 口令轮询看门狗：登录失效时必须不再请求小米接口（历史上每秒撞击，
     10 分钟 6396 次 400，加重风控）；
-  - health 暴露 poll_degraded 供前端提示；
-  - 管理台「小爱音箱」导航红点（登录失效可见）。
+  - health 暴露 poll_degraded 供完成页健康检查展示；
+  - 管理台菜单不再有红点（用户明确要求，2026-10-21）。
 """
 from pathlib import Path
 
@@ -67,13 +67,24 @@ def test_done_page_prefers_degraded_message():
     assert body.index("poll_degraded") < body.index("口令轮询：正常")
 
 
-def test_webui_nav_has_xiaomusic_alert_dot():
+def test_wizard_steps_all_done_on_completion_page():
+    # 完成页（step=4）时"完成"步骤也必须显示绿色对勾，不能停留在蓝色 active
+    js = (WEBUI / "app.js").read_text(encoding="utf-8")
+    assert "step >= XM_STEPS.length" in js, "管理台步骤条缺少完成页全点亮逻辑"
+
+    wiz = (HERE / "static" / "wizard.html").read_text(encoding="utf-8")
+    assert "step >= labels.length" in wiz, "旁路页步骤条缺少完成页全点亮逻辑"
+
+
+def test_webui_nav_has_no_alert_dot():
+    # 用户明确要求：管理台「关于 / 小爱音箱」菜单不显示红点（2026-10-21）
     html = (WEBUI / "index.html").read_text(encoding="utf-8")
-    assert 'id="xm-dot"' in html, "桌面侧栏缺少小爱音箱红点"
-    assert 'id="xm-dot-m"' in html, "移动底栏缺少小爱音箱红点"
+    assert 'id="xm-dot"' not in html, "桌面侧栏不应再有红点"
+    assert 'id="xm-dot-m"' not in html, "移动底栏不应再有红点"
+    assert 'id="about-dot"' not in html and 'id="about-dot-m"' not in html, "关于菜单不应再有红点"
 
     js = (WEBUI / "app.js").read_text(encoding="utf-8")
-    assert "function xmUpdateNavDot(" in js
-    assert "poll_degraded" in js
-    # 状态刷新与页面轮询都要同步红点
-    assert js.count("xmUpdateNavDot(") >= 3
+    assert "function xmUpdateNavDot(" not in js, "红点逻辑应已移除"
+    # 关于页内 NEW 徽标（非菜单红点）保留：有新版本时仍提示
+    assert 'id="about-new"' in html
+    assert 'if (badge) badge.hidden = !on;' in js

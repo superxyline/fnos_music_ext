@@ -77,9 +77,7 @@ async function loadStatus() {
       if (!s.reachable && s.note) return `<span class="state-line"><span class="dot"></span>${PROC_LABEL[name]}：${s.note}</span>`;
       return `<span class="state-line"><span class="dot ${s.reachable ? "ok" : "err"}"></span>${PROC_LABEL[name]}：${s.reachable ? "正常" : "不可达"}</span>`;
     }).join("");
-    // 小爱音箱：登录失效 / 轮询降频 → 导航红点提示
-    const xmSvc = (st.services || {}).xiaomusic || {};
-    xmUpdateNavDot(xmSvc.reachable ? xmSvc.detail : null);
+    // 小爱音箱登录失效 / 轮询降频等异常状态：进入小爱音箱页后由完成页健康检查展示
     const lxCard = $("#ov-lx-card");
     if (st.current_provider === "lxmusic" && st.lx_source) {
       lxCard.hidden = false;
@@ -1194,10 +1192,6 @@ let updateState = null;   // /api/update-check 的最近结果（有更新时非
 let aboutLoaded = false;
 
 function setUpdateBadge(on) {
-  ["#about-dot", "#about-dot-m"].forEach((sel) => {
-    const dot = $(sel);
-    if (dot) dot.hidden = !on;
-  });
   const badge = $("#about-new");
   if (badge) badge.hidden = !on;
 }
@@ -1313,8 +1307,10 @@ async function loadXmPage() {
 function xmStepsHtml(step) {
   return `<div class="xm-steps">` + XM_STEPS.map((lb, i) => {
     const n = i + 1;
-    const cls = n < step ? "done" : (n === step ? "active" : "");
-    return `<div class="step ${cls}"><span class="num">${n < step ? "✓" : n}</span>${lb}</div>`
+    // step=4 即完成页：全部步骤（含"完成"）都点亮为绿色对勾
+    const done = n < step || step >= XM_STEPS.length;
+    const cls = done ? "done" : (n === step ? "active" : "");
+    return `<div class="step ${cls}"><span class="num">${done ? "✓" : n}</span>${lb}</div>`
       + (i < XM_STEPS.length - 1 ? `<div class="bar"></div>` : "");
   }).join("") + `</div>`;
 }
@@ -1487,7 +1483,7 @@ function xmBind(step, st) {
     xmHealthTimer = setInterval(async () => {
       try {
         const fresh = await api("/api/xiaomusic/status");
-        if (fresh && fresh.ok) { xmRefreshDone(fresh); xmUpdateNavDot(fresh); }
+        if (fresh && fresh.ok) { xmRefreshDone(fresh); }
       } catch (_) { /* 忽略单次失败 */ }
     }, 5000);
   }
@@ -1672,16 +1668,6 @@ function xmSetHealth(id, ok, text) {
   el.className = "xm-health-item " + (ok ? "ok" : "err");
   const t = el.querySelector(".txt");
   if (t) t.textContent = text;
-}
-
-/* 导航红点：登录失效或轮询降频时常亮，用户不必进页面才发现 */
-function xmUpdateNavDot(detail) {
-  const d = detail || {};
-  const bad = d.mi_logged === false || d.poll_degraded === true;
-  ["#xm-dot", "#xm-dot-m"].forEach((sel) => {
-    const el = $(sel);
-    if (el) el.hidden = !bad;
-  });
 }
 
 function xmRefreshDone(st) {

@@ -118,8 +118,10 @@ function renderSteps(step) {
   let html = '';
   labels.forEach((lb, i) => {
     const n = i + 1;
-    const cls = n < step ? 'done' : (n === step ? 'active' : '');
-    html += `<div class="step ${cls}"><span class="num">${n < step ? '✓' : n}</span>${lb}</div>`;
+    // step=4 即完成页：全部步骤（含"完成"）都点亮为绿色对勾
+    const done = n < step || step >= labels.length;
+    const cls = done ? 'done' : (n === step ? 'active' : '');
+    html += `<div class="step ${cls}"><span class="num">${done ? '✓' : n}</span>${lb}</div>`;
     if (i < labels.length - 1) html += `<div class="bar"></div>`;
   });
   $('#steps').innerHTML = html;

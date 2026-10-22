@@ -15,6 +15,7 @@ const vm = require("node:vm");
 /* ------------------------------------------------ 最小 DOM/浏览器桩 -------- */
 function stubEl() {
   const classes = new Set();
+  const listeners = new Map();
   return {
     hidden: false, textContent: "", innerHTML: "", className: "", value: "",
     checked: false, disabled: false, src: "", dataset: {}, _t: null,
@@ -28,7 +29,13 @@ function stubEl() {
       },
       contains(c) { return classes.has(c); },
     },
-    addEventListener() {},
+    addEventListener(type, fn) {
+      if (!listeners.has(type)) listeners.set(type, []);
+      listeners.get(type).push(fn);
+    },
+    dispatch(type, event = {}) {
+      for (const fn of listeners.get(type) || []) fn(event);
+    },
     querySelectorAll() { return []; },
   };
 }
@@ -251,6 +258,230 @@ test("自动下载歌词开关：loadConfig 回填 + collectConfig 收集", asyn
   enqueue("/app/fnmusic-ext/api/config", { values: {} });
   await global.loadConfig();
   assert.strictEqual(els.get("#lyric-auto-dl").checked, false);
+});
+
+/* ------------------------------------------------ 主题 / 设置 -------------- */
+const themeBootSrc = fs.readFileSync(path.join(__dirname, "static", "theme-boot.js"), "utf8");
+
+// 每例完整加载生产 app.js 到独立页面，避免主题偏好、媒体/宿主监听器污染既有用例。
+// 仅以同名函数桩替换 SDK 加载边界（我方为 lxLoadTrimSdk），不改主题实现。
+async function themeHarness(options = {}) {
+  const elements = new Map();
+  const get = (sel) => {
+    if (!elements.has(sel)) elements.set(sel, stubEl());
+    return elements.get(sel);
+  };
+  const appliedThemes = [];
+  const root = { dataset: new Proxy({}, { set(target, key, value) {
+    if (key === "theme") appliedThemes.push(value);
+    target[key] = value;
+    return true;
+  } }) };
+  const radios = ["auto", "light", "dark"].map((value) => Object.assign(stubEl(), { value }));
+  const pages = ["overview", "settings", "llm", "tee"].map((page) =>
+    Object.assign(stubEl(), { id: "page-" + page }));
+  const nav = ["settings", "settings", "llm", "tee"].map((page) =>
+    Object.assign(stubEl(), { dataset: { page } }));
+  const media = Object.assign(stubEl(), { matches: !!options.dark });
+  const saved = new Map(options.saved == null ? [] : [["fnmusic-theme", options.saved]]);
+  if (options.hostSaved != null) saved.set("fnmusic-host-theme", options.hostSaved);
+  const storage = {
+    getItem(key) { if (options.blockStorage) throw new Error("storage denied"); return saved.get(key) ?? null; },
+    setItem(key, value) { if (options.blockStorage) throw new Error("storage denied"); saved.set(key, value); },
+    removeItem(key) { if (options.blockStorage) throw new Error("storage denied"); saved.delete(key); },
+  };
+  const win = Object.assign(stubEl(), {
+    location: { pathname: options.pathname || "/" }, localStorage: storage,
+    matchMedia: options.noMedia ? undefined : () => media,
+  });
+  const calls = [];
+  const context = vm.createContext({
+    window: win,
+    document: {
+      documentElement: root,
+      querySelector: get,
+      querySelectorAll(sel) {
+        return ({ "input[name=theme]": radios, ".page": pages, "[data-page]": nav })[sel] || [];
+      },
+    },
+    fetch: async (url, request = {}) => {
+      calls.push({ url, ...request });
+      return { ok: true, json: async () => defaults.get(String(url).split("?")[0]) || { ok: true } };
+    },
+    setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
+    __sdk: options.sdk || false, __sdkCalls: 0,
+  });
+  vm.runInContext(themeBootSrc, context, { filename: "theme-boot.js" });
+  const initialTheme = root.dataset.theme;
+  vm.runInContext(src + '\nasync function lxLoadTrimSdk() { __sdkCalls++; return __sdk; }', context, { filename: "app.js" });
+  await tick(0);
+  return { context, root, initialTheme, appliedThemes, radios, media, saved, win, calls, elements, pages, nav };
+}
+
+function themeSelected(h) {
+  return h.radios.filter((el) => el.checked).map((el) => el.value);
+}
+
+function changeTheme(h, value) {
+  h.radios.forEach((el) => { el.checked = el.value === value; });
+  h.radios.find((el) => el.checked).dispatch("change");
+}
+
+test("首屏主题：偏好优先，非法/缺省/存储禁用回退系统，无媒体查询默认浅色", async () => {
+  for (const [options, expected, selected] of [
+    [{ dark: true }, "dark", "auto"],
+    [{ dark: false }, "light", "auto"],
+    [{ saved: "light", dark: true }, "light", "light"],
+    [{ saved: "dark", dark: false }, "dark", "dark"],
+    [{ saved: "invalid", dark: true }, "dark", "auto"],
+    [{ saved: "auto", dark: true }, "dark", "auto"],
+    [{ blockStorage: true, dark: true }, "dark", "auto"],
+    [{ noMedia: true }, "light", "auto"],
+  ]) {
+    const h = await themeHarness(options);
+    assert.strictEqual(h.initialTheme, expected, "样式表前已写入正确主题");
+    assert.strictEqual(h.root.dataset.theme, expected, "app 初始化与首屏引导一致");
+    assert.deepStrictEqual(themeSelected(h), [selected]);
+    assert.strictEqual(h.context.__sdkCalls, 0, "直连不加载宿主 SDK");
+  }
+});
+
+test("设置主题：立即生效、持久化/恢复 auto，不标脏、不写业务配置", async () => {
+  const h = await themeHarness();
+  const configBefore = JSON.stringify(h.context.collectConfig());
+  for (const value of ["dark", "light"]) {
+    changeTheme(h, value);
+    assert.strictEqual(h.root.dataset.theme, value);
+    assert.strictEqual(h.saved.get("fnmusic-theme"), value);
+    assert.deepStrictEqual(themeSelected(h), [value]);
+    const reloaded = await themeHarness({ saved: h.saved.get("fnmusic-theme"), dark: value !== "dark" });
+    assert.strictEqual(reloaded.initialTheme, value);
+  }
+  changeTheme(h, "auto");
+  assert.strictEqual(h.saved.has("fnmusic-theme"), false);
+  h.media.matches = true;
+  h.media.dispatch("change");
+  assert.strictEqual(h.root.dataset.theme, "dark");
+  assert.deepStrictEqual(themeSelected(h), ["auto"]);
+  assert.strictEqual(JSON.stringify(h.context.collectConfig()), configBefore);
+  assert.strictEqual(h.elements.get("#save-bar").classList.contains("show"), false);
+  h.win.dispatch("beforeunload", { preventDefault() { assert.fail("主题不应产生未保存警告"); } });
+  assert.ok(h.calls.every((call) => !call.method || call.method === "GET"));
+  h.context.markDirty("已编辑业务配置");
+  changeTheme(h, "dark");
+  assert.strictEqual(h.elements.get("#save-bar").classList.contains("show"), true, "不清除既有脏标记");
+});
+
+test("主题：存储拒绝写入仍在本次页面生效，手动偏好不受系统切换影响", async () => {
+  const h = await themeHarness({ blockStorage: true });
+  changeTheme(h, "dark");
+  h.media.dispatch("change");
+  assert.strictEqual(h.root.dataset.theme, "dark");
+  changeTheme(h, "light");
+  h.media.matches = true;
+  h.media.dispatch("change");
+  assert.strictEqual(h.root.dataset.theme, "light");
+  changeTheme(h, "auto");
+  assert.strictEqual(h.root.dataset.theme, "dark");
+});
+
+test("设置导航：桌面和移动入口切换同一页面，不破坏 LLM 导航", async () => {
+  const h = await themeHarness();
+  for (const button of h.nav.slice(0, 2)) {
+    h.context.switchPage("tee");
+    button.dispatch("click");
+    assert.deepStrictEqual(h.pages.filter((el) => el.classList.contains("active")).map((el) => el.id), ["page-settings"]);
+    assert.ok(h.nav.slice(0, 2).every((el) => el.classList.contains("active")));
+    h.context.switchPage("llm");
+    assert.strictEqual(h.pages.find((el) => el.id === "page-llm").classList.contains("active"), true);
+  }
+});
+
+test("宿主主题：初值、os/theme 动态切换优先系统，手动偏好优先宿主", async () => {
+  let notify;
+  const h = await themeHarness({
+    pathname: "/app/fnmusic-ext/", dark: false,
+    sdk: {
+      isWeb: true, isStandaloneWeb: false,
+      getPlatformConfig: async () => ({ theme: "dark" }),
+      $on: async (name, fn) => { assert.strictEqual(name, "os/theme"); notify = fn; },
+    },
+  });
+  assert.strictEqual(h.initialTheme, "light");
+  assert.strictEqual(h.root.dataset.theme, "dark");
+  assert.deepStrictEqual(themeSelected(h), ["auto"]);
+  h.media.dispatch("change");
+  assert.strictEqual(h.root.dataset.theme, "dark");
+  notify("light");
+  assert.strictEqual(h.root.dataset.theme, "light");
+  changeTheme(h, "dark");
+  notify("light");
+  assert.strictEqual(h.root.dataset.theme, "dark");
+  changeTheme(h, "auto");
+  assert.strictEqual(h.root.dataset.theme, "light");
+  h.media.matches = true;
+  notify("invalid");
+  assert.strictEqual(h.root.dataset.theme, "dark", "未知宿主主题回退媒体查询");
+});
+
+test("宿主主题：刷新沿用缓存直到异步校正，直连和手动选择不受缓存影响", async () => {
+  let notify;
+  const sdk = {
+    isWeb: true,
+    getPlatformConfig: async () => ({ theme: "dark" }),
+    $on: async (_, fn) => { notify = fn; },
+  };
+  const first = await themeHarness({ pathname: "/app/fnmusic-ext/", sdk });
+  assert.strictEqual(first.saved.get("fnmusic-host-theme"), "dark");
+  let resolveConfig;
+  const reloaded = await themeHarness({
+    pathname: "/app/fnmusic-ext/", hostSaved: first.saved.get("fnmusic-host-theme"),
+    sdk: { getPlatformConfig: () => new Promise((resolve) => { resolveConfig = resolve; }) },
+  });
+  assert.strictEqual(reloaded.initialTheme, "dark");
+  assert.ok(reloaded.appliedThemes.every((value) => value === "dark"), "SDK 返回前不能切回设备浅色");
+  resolveConfig({ theme: "light" });
+  await tick(0);
+  assert.strictEqual(reloaded.root.dataset.theme, "light");
+  assert.strictEqual(reloaded.saved.get("fnmusic-host-theme"), "light");
+  notify("light");
+  assert.strictEqual(first.saved.get("fnmusic-host-theme"), "light");
+  notify("invalid");
+  assert.strictEqual(first.saved.has("fnmusic-host-theme"), false);
+  for (const options of [
+    { hostSaved: "dark" },
+    { pathname: "/app/fnmusic-ext/", hostSaved: "dark", saved: "light", sdk },
+    { pathname: "/app/fnmusic-ext/", hostSaved: "invalid" },
+  ]) {
+    const h = await themeHarness(options);
+    assert.strictEqual(h.initialTheme, "light");
+    assert.strictEqual(h.root.dataset.theme, "light");
+  }
+});
+
+test("宿主主题：缓存失效或宿主不可用时清缓存并回退系统，存储禁用不阻断", async () => {
+  for (const sdk of [false, {},
+    { getPlatformConfig: async () => { throw new Error("no host"); } },
+    { getPlatformConfig: async () => ({ theme: "invalid" }) },
+  ]) {
+    const h = await themeHarness({ pathname: "/app/fnmusic-ext/", hostSaved: "dark", sdk });
+    assert.strictEqual(h.initialTheme, "dark");
+    assert.strictEqual(h.root.dataset.theme, "light", "缓存失效后回退系统");
+    assert.strictEqual(h.saved.has("fnmusic-host-theme"), false);
+    h.media.matches = true;
+    h.media.dispatch("change");
+    assert.strictEqual(h.root.dataset.theme, "dark");
+  }
+  const blocked = await themeHarness({
+    pathname: "/app/fnmusic-ext/", blockStorage: true,
+    sdk: { getPlatformConfig: async () => ({ theme: "dark" }) },
+  });
+  assert.strictEqual(blocked.root.dataset.theme, "dark", "存储禁用不阻断宿主主题");
+  const standalone = await themeHarness({
+    pathname: "/app/fnmusic-ext/",
+    sdk: { isStandaloneWeb: true, getPlatformConfig: async () => ({ theme: "dark" }) },
+  });
+  assert.strictEqual(standalone.root.dataset.theme, "dark");
 });
 
 /* ------------------------------------------------ 运行 --------------------- */

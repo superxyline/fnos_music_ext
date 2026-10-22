@@ -60,6 +60,106 @@ function switchPage(page) {
 }
 $$("[data-page]").forEach((btn) => btn.addEventListener("click", () => switchPage(btn.dataset.page)));
 
+/* -------------------------------------------------------------- 主题 / 外观
+   默认「跟随系统」：飞牛 Web 宿主里以宿主主题为准（getPlatformConfig 取初值，
+   $on('os/theme') 监听后续切换，见 fnOS「页面交互」文档）；宿主不可用或独立浏览器
+   退回 prefers-color-scheme。用户选择只存当前浏览器，不进 .env，也不参与保存条。
+   首屏由 theme-boot.js（样式表之前的同步脚本）引导，避免深色用户先闪白底。 */
+const THEME_KEY = "fnmusic-theme";
+const HOST_THEME_KEY = "fnmusic-host-theme";
+const themeMedia = (typeof window !== "undefined" && typeof window.matchMedia === "function")
+  ? window.matchMedia("(prefers-color-scheme: dark)")
+  : null;
+let themePref = "auto";  // auto | light | dark —— 「设置 → 外观」里的选择
+let hostTheme = null;    // 飞牛宿主报告的主题：light | dark（无宿主时为 null）
+
+function normalizeTheme(value) {
+  return value === "dark" || value === "light" ? value : null;
+}
+
+function readThemePref() {
+  try {
+    const saved = window.localStorage.getItem(THEME_KEY);
+    if (saved === "light" || saved === "dark") return saved;
+  } catch (_) { /* 隐私模式/直连没有 localStorage：按跟随系统处理 */ }
+  return "auto";
+}
+
+function updateHostTheme(value) {
+  hostTheme = normalizeTheme(value);
+  try {
+    if (hostTheme) window.localStorage.setItem(HOST_THEME_KEY, hostTheme);
+    else window.localStorage.removeItem(HOST_THEME_KEY);
+  } catch (_) { /* 宿主主题仍可在本次页面生效 */ }
+}
+
+function effectiveTheme() {
+  if (themePref !== "auto") return themePref;
+  if (hostTheme) return hostTheme;
+  return themeMedia && themeMedia.matches ? "dark" : "light";
+}
+
+function applyTheme() {
+  const theme = effectiveTheme();
+  // 与飞牛文档示例一致：主题写到 <html data-theme>，CSS 按此覆盖配色变量
+  if (typeof document !== "undefined" && document.documentElement && document.documentElement.dataset) {
+    document.documentElement.dataset.theme = theme;
+  }
+  $$("input[name=theme]").forEach((el) => { el.checked = el.value === themePref; });
+}
+
+function setThemePref(pref) {
+  themePref = normalizeTheme(pref) || "auto";
+  try {
+    if (themePref === "auto") window.localStorage.removeItem(THEME_KEY);
+    else window.localStorage.setItem(THEME_KEY, themePref);
+  } catch (_) { /* 存不了就只对本次会话生效 */ }
+  applyTheme();
+}
+
+async function initTheme() {
+  themePref = readThemePref();
+  const pathname = (typeof window !== "undefined" && window.location && window.location.pathname) || "";
+  const embedded = pathname.startsWith("/app/");
+  hostTheme = null;
+  if (embedded) {
+    try { hostTheme = normalizeTheme(window.localStorage.getItem(HOST_THEME_KEY)); } catch (_) {}
+  }
+  applyTheme();
+  $$("input[name=theme]").forEach((el) => el.addEventListener("change", () => {
+    if (el.checked) setThemePref(el.value);
+  }));
+  // 独立浏览器 / 设备级深浅色变化（宿主主题优先，变化由下面的 $on 刷新）
+  if (themeMedia && typeof themeMedia.addEventListener === "function") {
+    themeMedia.addEventListener("change", () => { if (themePref === "auto" && !hostTheme) applyTheme(); });
+  }
+  if (!embedded) return;  // 直连 8774：没有飞牛宿主，不碰 SDK
+  const sdk = await lxLoadTrimSdk();  // 复用 NAS 文件选择的 SDK 单例（同语义）
+  if (!sdk) {
+    updateHostTheme(null);
+    applyTheme();
+    return;
+  }
+  try {
+    // 移动端 App 内嵌页也能取到主题；独立浏览器没有宿主桥，抛错后走媒体查询
+    const config = await sdk.getPlatformConfig();
+    updateHostTheme(config && (config.theme || (config.os && config.os.theme)));
+  } catch (_) {
+    updateHostTheme(null);
+  }
+  applyTheme();
+  if (!sdk.isWeb || sdk.isStandaloneWeb) return;  // 只有 Web 宿主支持 $on 主题事件
+  try {
+    if (typeof sdk.$on === "function") {
+      // 仅 Web 宿主支持；移动端 App 内嵌页与独立浏览器没有该事件
+      await sdk.$on("os/theme", (theme) => {
+        updateHostTheme(theme);
+        applyTheme();
+      });
+    }
+  } catch (_) { /* 宿主不支持事件推送时退回媒体查询 */ }
+}
+
 /* -------------------------------------------------------------- 概览 */
 async function loadStatus() {
   try {
@@ -1441,6 +1541,7 @@ function xmDoneHtml(st) {
       <tr><td>放几首本地歌 / 放首本地歌 / 随便放几首歌 / 来几首本地歌</td><td>同上（口语说法都支持）</td></tr>
       <tr><td>播放晴天 / 播放周杰伦的晴天</td><td><b>点歌</b>：收藏里有直接播；没有则本地曲库直接播 / 在线源<b>下载</b>到本地音乐库（<b>都不进收藏</b>）后播放</td></tr>
       <tr><td>下一首 / 上一首 / 暂停 / 停止播放</td><td>播放控制</td></tr>
+      <tr><td>停下来吧 / 别放了 / 别播了 / 安静 / 停一下 / 闭嘴</td><td>停止播放（口语说法也行；停止后不会自动续播）</td></tr>
       <tr><td>随机播放 / 全部循环 / 单曲循环 / 顺序播放</td><td>切换播放模式</td></tr>
       <tr><td>刷新列表</td><td>重新加载歌单</td></tr>
     </table>
@@ -1738,6 +1839,7 @@ async function xmResetWizard() {
 (async function boot() {
   await loadConfig();
   await loadStatus();
+  initTheme().catch(() => {});  // 外观先应用（内部等宿主 SDK，不阻塞配置加载）
   await loadPlatforms(false);  // 页面加载不自动拉起预览进程，等用户点选音源
   setInterval(loadStatus, 15000);
   loadUpdateCheck();           // 进管理页查一次（后端 6h 缓存，不轮询、不烧限额）

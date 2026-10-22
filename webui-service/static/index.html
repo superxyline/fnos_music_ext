@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>fnmusic-ext 管理台</title>
+  <!-- 先定主题再加载样式，深色模式下避免首屏白闪 -->
+  <script src="/app/fnmusic-ext/static/theme-boot.js"></script>
   <link rel="stylesheet" href="/app/fnmusic-ext/static/style.css?v=3.4.2">
   <link rel="icon" type="image/png" href="/app/fnmusic-ext/static/icon.png">
 </head>
@@ -26,6 +28,7 @@
         <button class="nav-item" data-page="match">歌曲匹配</button>
         <button class="nav-item" data-page="xiaomusic">小爱音箱</button>
         <button class="nav-item" data-page="llm">高级 · 大模型</button>
+        <button class="nav-item" data-page="settings">设置</button>
         <button class="nav-item" data-page="about">关于</button>
       </nav>
       <div class="sidebar-foot" id="sidebar-foot"></div>
@@ -327,6 +330,19 @@
           由此产生的一切后果由使用者自行承担。</p>
         </div>
       </section>
+
+      <!-- 设置 -->
+      <section class="page" id="page-settings">
+        <h2>设置</h2>
+        <div class="card">
+          <div class="card-title">外观</div>
+          <div class="radio-list" id="theme-list">
+            <label><input type="radio" name="theme" value="auto"><div><b>跟随系统</b><span>默认。跟随设备与飞牛 OS 的浅色/深色设置，切换后界面立即生效</span></div></label>
+            <label><input type="radio" name="theme" value="light"><div><b>浅色</b><span>始终使用浅色界面</span></div></label>
+            <label><input type="radio" name="theme" value="dark"><div><b>深色</b><span>始终使用深色界面</span></div></label>
+          </div>
+        </div>
+      </section>
     </main>
   </div>
 
@@ -340,6 +356,7 @@
     <button class="nav-item" data-page="match">匹配</button>
     <button class="nav-item" data-page="xiaomusic">音箱</button>
     <button class="nav-item" data-page="llm">高级</button>
+    <button class="nav-item" data-page="settings">设置</button>
     <button class="nav-item" data-page="about">关于</button>
   </nav>
 

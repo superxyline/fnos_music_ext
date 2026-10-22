@@ -791,3 +791,19 @@ def test_html_and_static_served_with_no_cache(env_file, tmp_path, monkeypatch):
         # 接口响应不受影响（本来就是动态的）
         r = client.get("/api/config")
     assert "cache-control" not in r.headers
+
+
+def test_musicdl_test_timeout_widens_for_all_scope():
+    """全平台实测慢源多：超时必须放宽，否则前端等到 502 什么都测不到。"""
+    assert webui._musicdl_test_timeout("enabled") == 35.0
+    assert webui._musicdl_test_timeout("all") == 75.0
+    # 未知/空值按默认（老前端不传 scope 也不能炸）
+    assert webui._musicdl_test_timeout("") == 35.0
+    assert webui._musicdl_test_timeout("whatever") == 35.0
+
+
+def test_musicdl_test_body_accepts_scope():
+    """scope 字段可选、默认 enabled：老调用方（不传）行为不变。"""
+    assert webui.MusicdlTestBody(keyword="晴天").scope == "enabled"
+    assert webui.MusicdlTestBody(keyword="晴天", scope="all").scope == "all"
+    assert webui.MusicdlTestBody(keyword="晴天", sources=["kw"]).sources == ["kw"]

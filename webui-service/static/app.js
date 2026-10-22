@@ -450,28 +450,55 @@ $("#platform-search").addEventListener("input", renderPlatformChips);
 $("#platform-reload").addEventListener("click", loadPlatforms);
 
 /* -- musicdl 音源测试搜索：输入歌名逐平台验证是否出歌 -- */
+// 测试范围（2026-10-22 用户需求）：enabled=只测已勾选平台（默认，历史行为）；
+// all=一次测全部注册平台（新装/换源时快速看哪些平台能出歌）
+let musicdlTestScope = "enabled";
+
+function renderMusicdlTestScope() {
+  document.querySelectorAll("#musicdl-test-scope .chip").forEach((chip) =>
+    chip.classList.toggle("on", chip.dataset.scope === musicdlTestScope));
+}
+
+function setMusicdlTestScope(scope) {
+  musicdlTestScope = scope === "all" ? "all" : "enabled";
+  renderMusicdlTestScope();
+}
+document.querySelectorAll("#musicdl-test-scope .chip").forEach((chip) =>
+  chip.addEventListener("click", () => setMusicdlTestScope(chip.dataset.scope)));
+
 async function musicdlTest() {
   const q = $("#musicdl-test-q").value.trim();
   const box = $("#musicdl-test-result");
   if (!q) return toast("请输入歌名", "fail");
+  const sources = musicdlTestScope === "all" ? (platforms.registered || []) : platforms.enabled;
+  if (!sources.length) {
+    return toast(musicdlTestScope === "all" ? "平台列表还没加载，请先点刷新列表" : "没有勾选任何平台", "fail");
+  }
   box.hidden = false;
   box.className = "report";
-  box.textContent = "测试中…（部分慢平台可能要等十几秒）";
+  const scopeLabel = musicdlTestScope === "all" ? "全部平台" : "已勾选";
+  box.textContent = `测试中…（${scopeLabel} ${sources.length} 个，部分慢平台可能要等十几秒）`;
   const btn = $("#musicdl-test-run");
   btn.disabled = true;
   try {
     const body = await api("/api/musicdl/test", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ keyword: q, sources: platforms.enabled }),
+      body: JSON.stringify({ keyword: q, sources, scope: musicdlTestScope }),
     });
     const rows = (body.platforms || []).map((p) => {
       const ok = p.count > 0;
       const head = ok ? `✓ ${p.count} 条：${(p.samples || []).join(" / ")}` : `✗ ${p.error || "无结果"}`;
       return `<div class="kv" style="color:${ok ? "var(--ok)" : "var(--err)"}"><b>${escapeHtml(p.source)}</b> ${escapeHtml(head)}</div>`;
     });
-    box.innerHTML = rows.join("") || '<div class="kv muted">没有勾选任何平台</div>';
-    const bad = !(body.platforms || []).length || (body.platforms || []).some((p) => !p.count);
+    const tested = body.platforms || [];
+    const hit = tested.filter((p) => p.count > 0).length;
+    const secs = body.tookMs != null ? `，耗时 ${(body.tookMs / 1000).toFixed(1)}s` : "";
+    const summary = `<div class="kv muted">范围：${scopeLabel} ${sources.length} 个 · 出歌 ${hit} 个${secs}</div>`;
+    box.innerHTML = summary + (rows.join("") || '<div class="kv muted">没有可测的平台</div>');
+    // 判定：已勾选模式全部出歌才算 ok（历史行为）；全部模式只要有平台出歌即 ok
+    // （57 个平台里个别没有某首歌是正常的，不能把整页标红）
+    const bad = !tested.length || (musicdlTestScope === "enabled" ? tested.some((p) => !p.count) : hit === 0);
     box.className = "report " + (bad ? "fail" : "ok");
   } catch (e) {
     box.className = "report fail";

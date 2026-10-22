@@ -1066,6 +1066,13 @@ async def api_platforms(request: Request):
 class MusicdlTestBody(BaseModel):
     keyword: str
     sources: list[str] = []
+    # 测试范围（2026-10-22 用户需求）：enabled=只测已勾选平台；all=一次测全部注册平台
+    scope: str = "enabled"
+
+
+def _musicdl_test_timeout(scope: str) -> float:
+    """音源测试超时：全平台实测慢源多（数十个平台并发），放宽等待。"""
+    return 75.0 if scope == "all" else 35.0
 
 
 def _summarize_musicdl_search(data: dict) -> list[dict]:
@@ -1097,6 +1104,7 @@ async def api_musicdl_test(body: MusicdlTestBody, request: Request):
     """用歌名实测 musicdl 音源：转发 /search（limit=3），按平台聚合并报告。
 
     只读操作，不写曲库；sources 为空时用 musicdl 当前启用的平台白名单。
+    scope=all（前端传全部注册平台）时放宽超时——慢源多，等更久。
     """
     keyword = body.keyword.strip()
     if not keyword:
@@ -1109,7 +1117,8 @@ async def api_musicdl_test(body: MusicdlTestBody, request: Request):
     started = time.monotonic()
     client = get_http(request)
     try:
-        resp = await client.get(f"{CONF['musicdl_url']}/search", params=params, timeout=35.0)
+        resp = await client.get(f"{CONF['musicdl_url']}/search", params=params,
+                                timeout=_musicdl_test_timeout(body.scope))
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"musicdl 服务不可达: {exc}") from exc
     data = _resp_json(resp)

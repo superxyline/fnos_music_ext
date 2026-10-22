@@ -80,14 +80,20 @@ const defaults = new Map([
   ["/app/fnmusic-ext/api/platforms", { ok: true, enabled: [], registered: [] }],
 ]);
 let routes = new Map(); // path -> bodies 队列（Error 表示 HTTP 非 2xx）
+let lastFetch = null;   // 最近一次 fetch 的 {url, path, body}（POST body 已解析）
 
 function enqueue(p, ...bodies) {
   if (!routes.has(p)) routes.set(p, []);
   routes.get(p).push(...bodies);
 }
 
-global.fetch = async (url) => {
+global.fetch = async (url, options) => {
   const p = String(url).split("?")[0];
+  lastFetch = {
+    url: String(url),
+    path: p,
+    body: options && options.body ? JSON.parse(options.body) : null,
+  };
   if (routes.has(p) && routes.get(p).length) {
     const body = routes.get(p).shift();
     if (body instanceof Error) {
@@ -101,6 +107,7 @@ global.fetch = async (url) => {
 function reset() {
   els.clear();
   routes = new Map();
+  lastFetch = null;
 }
 
 const tick = (ms) => new Promise((r) => realSetTimeout(r, ms));
@@ -560,6 +567,76 @@ test("关于页：项目仓库/问题反馈同时列 GitHub 与 Gitee", async ()
   assert.ok(html.includes("问题反馈 · Gitee"), "Gitee 反馈入口");
   assert.ok(html.includes("https://gitee.com/superxyline/fnos_music_ext"), "Gitee 链接地址");
   assert.strictEqual(els.get("#about-version").textContent, "v3.5.1");
+});
+
+/* 音源测试：范围切换（已勾选 / 全部平台）——2026-10-22 用户需求 */
+test("音源测试：默认只测已勾选平台，可切换全部注册平台", async () => {
+  reset();
+  global.setMusicdlTestScope("enabled"); // 范围是页面级状态：显式初始化，不依赖用例顺序
+  enqueue("/app/fnmusic-ext/api/platforms", {
+    ok: true,
+    enabled: ["kw", "mg"],
+    registered: ["kw", "mg", "kg", "tx", "wy"],
+  });
+  await global.loadPlatforms(false);
+  document.querySelector("#musicdl-test-q").value = "晴天";
+
+  // 默认范围：已勾选
+  enqueue("/app/fnmusic-ext/api/musicdl/test", {
+    ok: true,
+    keyword: "晴天",
+    tookMs: 3200,
+    platforms: [{ source: "kw", count: 3, samples: ["晴天 - 周杰伦"] }],
+  });
+  await global.musicdlTest();
+  assert.strictEqual(lastFetch.body.scope, "enabled");
+  assert.deepStrictEqual(lastFetch.body.sources, ["kw", "mg"]);
+  let html = els.get("#musicdl-test-result").innerHTML;
+  assert.ok(html.includes("范围：已勾选 2 个"), "汇总行显示范围与平台数");
+  assert.ok(html.includes("出歌 1 个"), "汇总行显示出歌数");
+  assert.ok(html.includes("耗时 3.2s"), "汇总行显示耗时");
+
+  // 切到全部平台：registered 全量 + scope=all
+  global.setMusicdlTestScope("all");
+  enqueue("/app/fnmusic-ext/api/musicdl/test", {
+    ok: true,
+    keyword: "晴天",
+    tookMs: 8123,
+    platforms: [
+      { source: "kw", count: 2, samples: [] },
+      { source: "kg", count: 0, error: "无结果" },
+    ],
+  });
+  await global.musicdlTest();
+  assert.strictEqual(lastFetch.body.scope, "all");
+  assert.deepStrictEqual(lastFetch.body.sources, ["kw", "mg", "kg", "tx", "wy"]);
+  html = els.get("#musicdl-test-result").innerHTML;
+  assert.ok(html.includes("范围：全部平台 5 个"));
+  assert.ok(html.includes("耗时 8.1s"));
+  assert.strictEqual(els.get("#musicdl-test-result").className, "report ok",
+    "全部模式只要有平台出歌即 ok（个别平台没有某首歌是正常的）");
+});
+
+test("音源测试：全部模式一个平台都没出歌才标红；空范围有提示", async () => {
+  reset();
+  global.setMusicdlTestScope("enabled"); // 范围是页面级状态：显式初始化，不依赖用例顺序
+  enqueue("/app/fnmusic-ext/api/platforms", { ok: true, enabled: [], registered: ["kw"] });
+  await global.loadPlatforms(false);
+  document.querySelector("#musicdl-test-q").value = "晴天";
+  // 没勾选任何平台：提示且不发测试请求
+  const before = lastFetch && lastFetch.path;
+  await global.musicdlTest();
+  assert.strictEqual(lastFetch && lastFetch.path, before, "无勾选平台时不得发测试请求");
+  assert.strictEqual(els.get("#toast").hidden, false);
+
+  // 切全部：全都不出歌 → 标红
+  global.setMusicdlTestScope("all");
+  enqueue("/app/fnmusic-ext/api/musicdl/test", {
+    ok: true, keyword: "晴天", tookMs: 500,
+    platforms: [{ source: "kw", count: 0, error: "无结果" }],
+  });
+  await global.musicdlTest();
+  assert.strictEqual(els.get("#musicdl-test-result").className, "report fail");
 });
 
 /* ------------------------------------------------ 运行 --------------------- */

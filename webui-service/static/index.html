@@ -104,8 +104,12 @@
           </div>
           <div class="card">
             <div class="card-title">音源测试</div>
-            <p class="hint">输入歌名，用当前勾选的平台试搜一次（只读，不写曲库），逐平台报告是否出歌。</p>
+            <p class="hint">输入歌名试搜一次（只读，不写曲库），逐平台报告是否出歌。可只测<b>已勾选</b>的平台，也可一次测<b>全部</b>注册平台（平台多、慢源可能要等更久）。</p>
             <div class="btn-row">
+              <span id="musicdl-test-scope">
+                <span class="chip on" data-scope="enabled">已勾选</span>
+                <span class="chip" data-scope="all">全部平台</span>
+              </span>
               <input class="input grow" id="musicdl-test-q" placeholder="歌名，如：晴天" value="晴天">
               <button class="btn" id="musicdl-test-run">测试搜索</button>
             </div>

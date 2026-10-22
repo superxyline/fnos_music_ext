@@ -81,6 +81,7 @@ const defaults = new Map([
 ]);
 let routes = new Map(); // path -> bodies 队列（Error 表示 HTTP 非 2xx）
 let lastFetch = null;   // 最近一次 fetch 的 {url, path, body}（POST body 已解析）
+let fetchLog = [];       // 全部 fetch 记录（分批/多次请求断言用）
 
 function enqueue(p, ...bodies) {
   if (!routes.has(p)) routes.set(p, []);
@@ -94,6 +95,7 @@ global.fetch = async (url, options) => {
     path: p,
     body: options && options.body ? JSON.parse(options.body) : null,
   };
+  fetchLog.push(lastFetch);
   if (routes.has(p) && routes.get(p).length) {
     const body = routes.get(p).shift();
     if (body instanceof Error) {
@@ -108,6 +110,7 @@ function reset() {
   els.clear();
   routes = new Map();
   lastFetch = null;
+  fetchLog = [];
 }
 
 const tick = (ms) => new Promise((r) => realSetTimeout(r, ms));
@@ -637,6 +640,34 @@ test("音源测试：全部模式一个平台都没出歌才标红；空范围�
   });
   await global.musicdlTest();
   assert.strictEqual(els.get("#musicdl-test-result").className, "report fail");
+});
+
+
+test("音源测试：全部模式分批限流，>8 个平台拆成多批请求", async () => {
+  reset();
+  global.setMusicdlTestScope("all");
+  const registered = Array.from({ length: 10 }, (_, i) => `P${i}MusicClient`);
+  enqueue("/app/fnmusic-ext/api/platforms", { ok: true, enabled: [], registered });
+  await global.loadPlatforms(false);
+  document.querySelector("#musicdl-test-q").value = "晴天";
+  enqueue("/app/fnmusic-ext/api/musicdl/test", {
+    ok: true, tookMs: 1000,
+    platforms: registered.slice(0, 8).map((s) => ({ source: s, count: 0, error: "无结果" })),
+  });
+  enqueue("/app/fnmusic-ext/api/musicdl/test", {
+    ok: true, tookMs: 800,
+    platforms: registered.slice(8).map((s) => ({ source: s, count: 1, samples: [] })),
+  });
+  await global.musicdlTest();
+
+  const calls = fetchLog.filter((e) => e.path.endsWith("/api/musicdl/test"));
+  assert.strictEqual(calls.length, 2, "10 个平台必须拆成 2 批（8 + 2）");
+  assert.strictEqual(calls[0].body.sources.length, 8);
+  assert.strictEqual(calls[1].body.sources.length, 2);
+  assert.strictEqual(calls[0].body.scope, "all");
+  const html = els.get("#musicdl-test-result").innerHTML;
+  assert.ok(html.includes("出歌 2 个"), "两批结果合并统计");
+  assert.ok(html.includes("P9MusicClient"), "第二批平台也在报告里");
 });
 
 /* ------------------------------------------------ 运行 --------------------- */

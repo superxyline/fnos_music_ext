@@ -470,42 +470,67 @@ async function musicdlTest() {
   const q = $("#musicdl-test-q").value.trim();
   const box = $("#musicdl-test-result");
   if (!q) return toast("请输入歌名", "fail");
-  const sources = musicdlTestScope === "all" ? (platforms.registered || []) : platforms.enabled;
+  const scopeAll = musicdlTestScope === "all";
+  const sources = scopeAll ? (platforms.registered || []) : platforms.enabled;
   if (!sources.length) {
-    return toast(musicdlTestScope === "all" ? "平台列表还没加载，请先点刷新列表" : "没有勾选任何平台", "fail");
+    return toast(scopeAll ? "平台列表还没加载，请先点刷新列表" : "没有勾选任何平台", "fail");
   }
   box.hidden = false;
   box.className = "report";
-  const scopeLabel = musicdlTestScope === "all" ? "全部平台" : "已勾选";
-  box.textContent = `测试中…（${scopeLabel} ${sources.length} 个，部分慢平台可能要等十几秒）`;
+  const scopeLabel = scopeAll ? "全部平台" : "已勾选";
+  // 全部模式分批（2026-10-22）：一次打几十个源 = 数百条外网连接，
+  // 会把出口/路由会话表压垮（实测导致所有音源搜索集体变慢/超时）。8 个一批串行。
+  const BATCH = 8;
+  const chunks = [];
+  if (scopeAll) {
+    for (let i = 0; i < sources.length; i += BATCH) chunks.push(sources.slice(i, i + BATCH));
+  } else {
+    chunks.push(sources);
+  }
+  box.textContent = `测试中…（${scopeLabel} ${sources.length} 个${chunks.length > 1 ? `，分 ${chunks.length} 批` : ""}，部分慢平台可能要等十几秒）`;
   const btn = $("#musicdl-test-run");
   btn.disabled = true;
+  const tested = [];   // 分批累积（catch 里也要能读到已测结果）
+  let tookMs = 0;
   try {
-    const body = await api("/api/musicdl/test", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ keyword: q, sources, scope: musicdlTestScope }),
-    });
-    const rows = (body.platforms || []).map((p) => {
+    for (let i = 0; i < chunks.length; i++) {
+      if (chunks.length > 1) {
+        box.textContent = `测试中…（第 ${i + 1}/${chunks.length} 批，已完成 ${tested.length}/${sources.length} 个平台）`;
+      }
+      const body = await api("/api/musicdl/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keyword: q, sources: chunks[i], scope: musicdlTestScope }),
+      });
+      tested.push(...(body.platforms || []));
+      tookMs += body.tookMs || 0;
+    }
+    const rows = tested.map((p) => {
       const ok = p.count > 0;
       const head = ok ? `✓ ${p.count} 条：${(p.samples || []).join(" / ")}` : `✗ ${p.error || "无结果"}`;
       return `<div class="kv" style="color:${ok ? "var(--ok)" : "var(--err)"}"><b>${escapeHtml(p.source)}</b> ${escapeHtml(head)}</div>`;
     });
-    const tested = body.platforms || [];
     const hit = tested.filter((p) => p.count > 0).length;
-    const secs = body.tookMs != null ? `，耗时 ${(body.tookMs / 1000).toFixed(1)}s` : "";
+    const secs = tookMs ? `，耗时 ${(tookMs / 1000).toFixed(1)}s` : "";
     const summary = `<div class="kv muted">范围：${scopeLabel} ${sources.length} 个 · 出歌 ${hit} 个${secs}</div>`;
     box.innerHTML = summary + (rows.join("") || '<div class="kv muted">没有可测的平台</div>');
     // 判定：已勾选模式全部出歌才算 ok（历史行为）；全部模式只要有平台出歌即 ok
     // （57 个平台里个别没有某首歌是正常的，不能把整页标红）
-    const bad = !tested.length || (musicdlTestScope === "enabled" ? tested.some((p) => !p.count) : hit === 0);
+    const bad = !tested.length || (scopeAll ? hit === 0 : tested.some((p) => !p.count));
     box.className = "report " + (bad ? "fail" : "ok");
   } catch (e) {
     box.className = "report fail";
-    box.textContent = `测试失败：${e.message}`;
+    box.textContent = `测试失败：${e.message}${testedSafe(tested)}`;
   } finally {
     btn.disabled = false;
   }
+}
+
+// 分批中途失败时把已测结果也带出来，别让用户白等
+function testedSafe(tested) {
+  if (!tested || !tested.length) return "";
+  const hit = tested.filter((p) => p.count > 0).length;
+  return `（已测 ${tested.length} 个平台，其中 ${hit} 个出歌）`;
 }
 $("#musicdl-test-run").addEventListener("click", musicdlTest);
 $("#musicdl-test-q").addEventListener("keydown", (e) => { if (e.key === "Enter") musicdlTest(); });

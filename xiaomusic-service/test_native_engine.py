@@ -398,3 +398,195 @@ def test_dockerfile_installs_xiaomusic_without_deps():
     dockerfile = (HERE.parent / "container" / "Dockerfile").read_text(encoding="utf-8")
     assert "--no-deps xiaomusic==0.6.1" in dockerfile
     assert "req.xiaomusic-core" in dockerfile
+
+
+# ---------------- 口语化停止指令（2026-10-21 用户反馈） ----------------
+# 场景：对小爱说"停下来吧"——小爱自带技能接走并停了音箱，但桥接侧
+# is_playing 仍为 True、下一曲定时器仍 armed，到点自动续播一首
+# （用户感知"停一会又播"）。两道防线：
+#   1. 停止口令扩充 + 停止优先匹配（keywords.py / dispatch.py）
+#   2. 未匹配指令的停止兜底：拆定时器 + is_playing=False（dispatch.py）
+
+UPSTREAM_STOP_KEYWORDS = [
+    "关机", "暂停", "停止", "停止播放", "关闭", "退出", "关掉音乐",
+]
+COLLOQUIAL_STOP_KEYWORDS = [
+    "停下来", "停下来吧", "停下", "停一下", "停了", "停掉", "停",
+    "别放了", "别放歌了", "别播了", "别唱了", "别响了", "不要再放了",
+    "不要放了", "安静", "安静点", "消停", "消停点", "闭嘴",
+    "音乐停", "停止音乐", "暂停播放", "关闭音乐", "退出播放", "关掉",
+]
+
+
+def test_stop_keywords_cover_upstream_and_colloquial():
+    """停止口令 = 上游默认 + 口语变体（少一个上游词都是行为回退）。"""
+    assert "KEYWORDS_STOP_DEFAULT" in KEYWORDS
+    for kw in UPSTREAM_STOP_KEYWORDS:
+        assert f'"{kw}"' in KEYWORDS, f"停止口令丢了上游默认词 {kw}"
+    for kw in COLLOQUIAL_STOP_KEYWORDS:
+        assert f'"{kw}"' in KEYWORDS, f"停止口令缺口语变体 {kw}"
+
+
+def test_native_config_passes_stop_keywords():
+    """build_config 必须把停止口令传给上游 Config（否则只有上游规范词生效）。"""
+    assert "keywords_stop=" in CONFIG, "build_config 未传 keywords_stop"
+    assert "KEYWORDS_STOP_DEFAULT" in CONFIG
+
+
+def test_dispatch_has_stop_priority_and_fallback():
+    """分发器必须：停止口令先于点歌模糊匹配 + 未匹配时的停止兜底。"""
+    assert "_TIMED_STOP_RE" in DISPATCH, "「N分钟后关机」必须免于被停止口令抢走"
+    assert "_PLAY_INTENT_RE" in DISPATCH, "「播放安静」是点歌，必须免于被停止抢走"
+    assert "_stop_fallback" in DISPATCH, "缺未匹配指令的停止兜底（自动续播根因）"
+    assert "cancel_group_next_timer" in DISPATCH
+    assert "STOP_HINT_RE" in DISPATCH
+
+
+class _FakeLog:
+    def info(self, *a, **k):
+        pass
+
+    def warning(self, *a, **k):
+        pass
+
+    def debug(self, *a, **k):
+        pass
+
+
+class _FakeConfig:
+    """最小 Config 桩：key_match_order/key_word_dict/get_active_cmd_arr。"""
+
+    def __init__(self):
+        self.key_match_order = [
+            "分钟后关机", "下一首", "上一首", "关机", "刷新列表",
+            "播放列表", "播放",
+        ]
+        self.key_word_dict = {
+            "分钟后关机": "stop_after_minute",
+            "下一首": "play_next",
+            "上一首": "play_prev",
+            "关机": "stop",
+            "刷新列表": "gen_music_list",
+            "播放列表": "play_music_list",
+            "播放": "play",
+        }
+
+    def get_active_cmd_arr(self):
+        return []
+
+
+class _FakeDevice:
+    def __init__(self):
+        self.is_playing = True
+        self._pending_selection = None
+        self.group_name = "g"
+        self.calls = []
+
+    async def group_force_stop_xiaoai(self):
+        self.calls.append("force_stop")
+
+    async def cancel_group_next_timer(self):
+        self.calls.append("cancel_group")
+
+    async def cancel_next_timer(self):
+        self.calls.append("cancel_next")
+
+
+class _FakeCore:
+    def __init__(self):
+        self.config = _FakeConfig()
+        self.log = _FakeLog()
+        self.device = _FakeDevice()
+        self.device_manager = type("DM", (), {"devices": {"did1": self.device}})()
+        self.calls = []
+
+    async def stop(self, did="", arg1="", **kw):
+        self.calls.append(("stop", arg1))
+
+    async def play(self, did="", arg1="", **kw):
+        self.calls.append(("play", arg1))
+
+    async def play_next(self, did="", **kw):
+        self.calls.append(("play_next", ""))
+
+    async def stop_after_minute(self, did="", arg1=0, **kw):
+        self.calls.append(("stop_after_minute", arg1))
+
+    async def gen_music_list(self, **kw):
+        self.calls.append(("gen_music_list", ""))
+
+
+def test_dispatch_stop_colloquial_variants():
+    """口语停止词必须命中 stop 动作（用户原话：停下来吧）。"""
+    import asyncio
+
+    for query in ("停下来吧", "别放了", "安静", "停一下", "闭嘴", "消停点"):
+        core = _FakeCore()
+        d = core.device
+        asyncio.run(_run_dispatch(core, query))
+        assert core.calls == [("stop", "")], f"{query!r} 未命中 stop: {core.calls}"
+        assert "force_stop" in d.calls
+
+
+async def _run_dispatch(core, query):
+    from native.dispatch import CommandDispatcher
+    await CommandDispatcher(core).dispatch("did1", query)
+
+
+def test_dispatch_stop_beats_play_fuzzy():
+    """「停止播放音乐」必须先判停止——否则被「播放」抢走变成点歌(arg=音乐)。"""
+    import asyncio
+
+    core = _FakeCore()
+    asyncio.run(_run_dispatch(core, "停止播放音乐"))
+    assert core.calls == [("stop", "")], core.calls
+
+
+def test_dispatch_timed_stop_not_hijacked():
+    """「30分钟后关机」是定时关机，不能被停止口令抢走变成立即停止。"""
+    import asyncio
+
+    core = _FakeCore()
+    asyncio.run(_run_dispatch(core, "30分钟后关机"))
+    assert core.calls == [("stop_after_minute", "30")], core.calls
+
+
+def test_dispatch_play_intent_not_hijacked():
+    """「播放安静」是点歌（歌名），不能被停止口令抢走。"""
+    import asyncio
+
+    core = _FakeCore()
+    asyncio.run(_run_dispatch(core, "播放安静"))
+    assert core.calls == [("play", "安静")], core.calls
+
+
+def test_dispatch_stop_fallback_cancels_timer():
+    """未匹配指令的口语停止（小爱已接走）：必须拆定时器 + is_playing=False，
+    否则桥接定时器到点自动续播（用户反馈的根因）。"""
+    import asyncio
+
+    core = _FakeCore()
+    asyncio.run(_run_dispatch(core, "别放啦"))
+    assert core.calls == [], "兜底不应执行任何口令动作"
+    assert core.device.calls == ["cancel_group"], core.device.calls
+    assert core.device.is_playing is False
+
+
+def test_dispatch_stop_fallback_noop_when_not_playing():
+    """没在播放时口语词不触发兜底（无定时器可拆）。"""
+    import asyncio
+
+    core = _FakeCore()
+    core.device.is_playing = False
+    asyncio.run(_run_dispatch(core, "别放啦"))
+    assert core.calls == [] and core.device.calls == []
+
+
+def test_dispatch_stop_fallback_skips_play_intent():
+    """含点歌意图词的Query不走停止兜底（「放首别的歌」之类）。"""
+    import asyncio
+
+    core = _FakeCore()
+    asyncio.run(_run_dispatch(core, "放首别放过的歌"))
+    assert core.calls == [] and core.device.calls == []
+    assert core.device.is_playing is True

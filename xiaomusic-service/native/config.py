@@ -13,6 +13,7 @@ from xiaomusic.config import Config
 from .keywords import (
     KEYWORDS_PLAYLIST_DEFAULT,
     KEYWORDS_PLAYLOCAL_DEFAULT,
+    KEYWORDS_STOP_DEFAULT,
     USER_KEY_WORD_DICT_DEFAULT,
 )
 
@@ -66,6 +67,9 @@ def build_config(
             "keywords_playlist", KEYWORDS_PLAYLIST_DEFAULT),
         keywords_playlocal=settings.get(
             "keywords_playlocal", KEYWORDS_PLAYLOCAL_DEFAULT),
+        # 停止口令：上游默认太规范（无口语变体），口语停止会被小爱自带技能
+        # 接走导致桥接侧定时器到点续播（2026-10-21 用户反馈）
+        keywords_stop=settings.get("keywords_stop", KEYWORDS_STOP_DEFAULT),
         user_key_word_dict=settings.get(
             "user_key_word_dict", dict(USER_KEY_WORD_DICT_DEFAULT)),
         music_list_url=settings.get("music_list_url", ""),

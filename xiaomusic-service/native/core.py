@@ -64,6 +64,9 @@ class NativeCore:
         self.js_plugin_manager = None
         self.running_task: list = []
         self.last_cmd = ""
+        # 保序歌单名（桥接 push_config 下发）：顺序播放本地歌曲专用，
+        # 内容与「本地收藏」相同但按收藏进入的先后排列、不乱序
+        self.playlist_seq_name = ""
 
         # 组件装配（顺序照搬 XiaoMusic.__init__ 中与本方案相关的部分）
         self.device_manager = DeviceManager(config=cfg, log=log, xiaomusic=self)
@@ -124,6 +127,43 @@ class NativeCore:
             await self.do_tts(did, f"播放列表{list_name}不存在")
             return
         await self.device_manager.devices[did].play_music_list(list_name, music_name)
+
+    async def play_favorites_seq(self, did="", arg1="", **kwargs):
+        """口令:顺序播放本地歌曲——按收藏进入歌单的先后，从第一首开始播。
+
+        与「播放收藏」（乱序）的差别在两点，缺一不可：
+        1. 歌单内容是桥接另推的保序歌单（同名两份：一份乱序一份保序）；
+        2. 设备临时切顺序模式（PLAY_TYPE_SEQ）：上游 update_playlist 在随机
+           模式下会 force_reshuffle，保序歌单也会被洗乱；顺序模式下
+           _play_list 直接取歌单原序，且播完触底即停（不循环）。
+        第一首显式点名播放（上游 _play_next 恒取"下一首"，空位置会跳过第一首）。
+        之后的「播放收藏」由桥接 patch 负责把设备切回随机模式。
+        """
+        dev = self.device_manager.devices.get(did)
+        if dev is None:
+            self.log.warning("[native] 顺序播放：设备 %s 不在列表", did)
+            return
+        list_name = self.playlist_seq_name or "本地收藏（顺序）"
+        if list_name not in self.music_library.music_list:
+            # 歌单还没推下来（首次同步未完成）：明确播报，不静默失败
+            await self.do_tts(did, "顺序歌单还没准备好，请稍后再试")
+            return
+        ordered = self.music_library.music_list[list_name]
+        if not ordered:
+            await self.do_tts(did, "顺序歌单是空的")
+            return
+        # 第一首必须显式点名播放：上游 _play_next→get_music 恒取"当前曲的
+        # 下一首"（index+1），空位置会落到第二首——随机模式无感，顺序模式
+        # 就是"跳过第一首收藏"，与需求直接相悖。
+        first = ordered[0]
+        try:
+            # 顺序模式 + 不播报模式切换（dotts=False）：与歌单播放保持一致安静
+            await dev.set_play_type(PLAY_TYPE_SEQ, False)
+        except Exception as e:  # noqa: BLE001
+            self.log.warning("[native] 顺序模式切换失败: %s", e)
+            return
+        self.log.info("[native] 顺序播放歌单 %s（收藏顺序，从第一首 %r 起）", list_name, first)
+        await dev.play_music_list(list_name, first)
 
     async def play(self, did="", arg1="", **kwargs):
         parts = (arg1 or "").split("|")
@@ -273,13 +313,16 @@ class NativeCore:
         keywords_playlocal: str,
         user_key_word_dict: dict,
         music_list_url: str,
+        playlist_seq_name: str = "",
     ):
         """桥接推送歌单/口令配置（native 模式下替代 /xm/api/system/modifiysetting）。
 
         歌单走 music_list_json（MusicLibrary._append_music_list 消费它，
         与 xiaomusic 引擎 modifiysetting 推送同一字段）；口令变体经
         Config.update_config 内部 init() 重建 key_match_order/key_word_dict。
+        playlist_seq_name 是保序歌单名（顺序播放本地歌曲专用）。
         """
+        self.playlist_seq_name = playlist_seq_name or ""
         self.config.update_config({
             "music_list_json": music_list_json,
             "keywords_playlist": keywords_playlist,

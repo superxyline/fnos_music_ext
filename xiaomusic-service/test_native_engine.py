@@ -75,6 +75,7 @@ NATIVE_COMMAND_SURFACE = [
     "stop_after_minute",     # 分钟后关机
     "gen_music_list",        # 刷新列表
     "select_index",          # 多匹配待选态「第几个」
+    "play_favorites_seq",    # 顺序播放本地歌曲（保序歌单 + SEQ 模式）
 ]
 
 
@@ -590,3 +591,184 @@ def test_dispatch_stop_fallback_skips_play_intent():
     asyncio.run(_run_dispatch(core, "放首别放过的歌"))
     assert core.calls == [] and core.device.calls == []
     assert core.device.is_playing is True
+
+
+# ---------------- 顺序播放本地歌曲（v3.5.1） ----------------
+
+class _SeqDevStub:
+    """match_cmd 用的最小设备桩。"""
+
+    is_playing = True
+
+
+def _fav_seq_dispatcher():
+    """不依赖 xiaomusic 的分发器桩：复刻上游默认表的相关部分。
+
+    「顺序播放」→ set_play_type_seq 排在 key_match_order 前排——正是它
+    会把「顺序播放本地歌曲」整句抢成模式切换的根源，必须原样复刻。
+    """
+    import logging
+
+    from native.dispatch import CommandDispatcher
+
+    class _Cfg:
+        key_match_order = ["顺序播放", "播放本地歌曲", "播放列表", "播放"]
+        key_word_dict = {
+            "顺序播放": "set_play_type_seq",
+            "播放本地歌曲": "play_music_list",
+            "播放列表": "play_music_list",
+            "播放": "play",
+        }
+
+        def get_active_cmd_arr(self):
+            return []
+
+    class _Core:
+        config = _Cfg()
+        log = logging.getLogger("test-fav-seq")
+
+    return CommandDispatcher(_Core())
+
+
+def test_fav_seq_dispatch_beats_upstream_mode_word():
+    """「顺序播放本地歌曲」必须判成 play_favorites_seq。
+
+    上游默认词「顺序播放」（set_play_type_seq）在 key_match_order 默认表
+    前排，模糊匹配会把整句抢成模式切换（arg=本地歌曲）——音箱什么都不播。
+    """
+    d = _fav_seq_dispatcher()
+    for q in ("顺序播放本地歌曲", "顺序播放本地收藏", "按顺序播放本地歌曲",
+              "挨着播放本地收藏", "顺序播放一下本地歌曲"):
+        assert d.match_cmd(_SeqDevStub(), q, True) == ("play_favorites_seq", ""), q
+
+
+def test_fav_seq_does_not_steal_upstream_seq_mode():
+    """上游「顺序播放」模式切换与点歌不被误收编（口令都带本地/收藏）。"""
+    d = _fav_seq_dispatcher()
+    assert d.match_cmd(_SeqDevStub(), "顺序播放", True) == ("set_play_type_seq", "")
+    assert d.match_cmd(_SeqDevStub(), "顺序播放周杰伦", True) == ("set_play_type_seq", "周杰伦")
+    assert d.match_cmd(_SeqDevStub(), "播放晴天", True) == ("play", "晴天")
+    assert d.match_cmd(_SeqDevStub(), "播放本地歌曲", True) == ("play_music_list", "")
+
+
+def test_fav_seq_keywords_require_local_or_favorite():
+    """口令表与兜底正则都必须带「本地/收藏」：绝不误伤模式切换与点歌。"""
+    from native.keywords import FAV_SEQ_HINT_RE, KEYWORDS_FAV_SEQ_DEFAULT
+
+    kws = [k.strip() for k in KEYWORDS_FAV_SEQ_DEFAULT.split(",") if k.strip()]
+    assert kws, "顺序播放口令表不能为空"
+    for kw in kws:
+        assert ("本地" in kw) or ("收藏" in kw), f"口令 {kw} 缺本地/收藏限定"
+    assert FAV_SEQ_HINT_RE.search("顺序播放一下本地歌曲")
+    assert FAV_SEQ_HINT_RE.search("挨着播放收藏")
+    assert not FAV_SEQ_HINT_RE.search("顺序播放")        # 上游模式切换
+    assert not FAV_SEQ_HINT_RE.search("顺序播放周杰伦")  # 点歌
+    assert not FAV_SEQ_HINT_RE.search("播放本地歌曲")    # 乱序歌单口令
+
+
+def test_fav_seq_action_plays_first_song_in_order(tmp_path):
+    """顺序播放动作：切 SEQ 模式（不播报）+ 点名第一首开播。
+
+    第一首必须显式点名：上游 _play_next→get_music 恒取"当前曲的下一首"
+    （index+1），空位置会落到第二首——随机模式无感，顺序模式就是跳过
+    第一首收藏。
+    """
+    pytest.importorskip("xiaomusic", reason="需要 xiaomusic 环境（容器内/开发 venv）")
+    import asyncio
+    import logging
+    import types
+
+    from native.core import NativeCore
+    from xiaomusic.const import PLAY_TYPE_SEQ
+
+    core = NativeCore.__new__(NativeCore)
+    core.log = logging.getLogger("test-fav-seq-action")
+    core.playlist_seq_name = "本地收藏（顺序）"
+    calls: dict = {}
+
+    class _Dev:
+        device = types.SimpleNamespace(
+            playlist2music={"本地收藏（顺序）": "旧歌"}, cur_music="旧歌")
+
+        async def set_play_type(self, play_type, dotts=True):
+            calls["play_type"] = (play_type, dotts)
+
+        async def play_music_list(self, list_name, music_name=""):
+            calls["play"] = (list_name, music_name)
+
+        async def do_tts(self, value):
+            calls["tts"] = value
+
+    core.device_manager = types.SimpleNamespace(devices={"d1": _Dev()})
+    core.music_library = types.SimpleNamespace(music_list={
+        "本地收藏": ["乱序A", "乱序B"],
+        "本地收藏（顺序）": ["第一首 - 甲", "第二首 - 乙"],
+    })
+    asyncio.run(core.play_favorites_seq(did="d1"))
+
+    assert calls["play_type"] == (PLAY_TYPE_SEQ, False), "顺序模式且不播报切换"
+    assert calls["play"] == ("本地收藏（顺序）", "第一首 - 甲"), "从第一首开始"
+    assert "tts" not in calls, "正常路径不播报"
+
+
+def test_fav_seq_action_warns_when_playlist_missing(tmp_path):
+    """保序歌单没推下来（首次同步未完成）：明确播报，不静默失败。"""
+    pytest.importorskip("xiaomusic", reason="需要 xiaomusic 环境（容器内/开发 venv）")
+    import asyncio
+    import logging
+    import types
+
+    from native.core import NativeCore
+
+    core = NativeCore.__new__(NativeCore)
+    core.log = logging.getLogger("test-fav-seq-missing")
+    core.playlist_seq_name = "本地收藏（顺序）"
+    calls: dict = {}
+
+    class _Dev:
+        async def set_play_type(self, play_type, dotts=True):
+            calls["play_type"] = True
+
+        async def play_music_list(self, list_name, music_name=""):
+            calls["play"] = True
+
+        async def do_tts(self, value):
+            calls["tts"] = value
+
+    core.device_manager = types.SimpleNamespace(devices={"d1": _Dev()})
+    core.music_library = types.SimpleNamespace(music_list={"本地收藏": ["a - b"]})
+    asyncio.run(core.play_favorites_seq(did="d1"))
+
+    assert "play_type" not in calls and "play" not in calls
+    assert "还没准备好" in (calls.get("tts") or ""), "缺歌单要明确播报"
+
+
+def test_build_playlist_emits_shuffled_and_ordered_lists(tmp_path, monkeypatch):
+    """两份同曲歌单：乱序在前（空参数口令取第一个），保序在后（顺序播放入口）。
+
+    顺序不能反：MusicLibrary 按 JSON 顺序入库，「播放收藏」空参数模糊匹配
+    取第一个歌单——保序的排在前面会让乱序口令变成顺序播放。
+    """
+    bridge = _fresh_bridge(tmp_path, monkeypatch)
+    bridge.CFG["nas_ip"] = "192.168.x.x"
+    favs = [
+        {"guid": f"g{i:02d}", "title": f"歌{i}", "artists": [{"name": f"手{i}"}]}
+        for i in range(12)
+    ]
+    playlist = bridge.build_playlist(favs)
+
+    assert len(playlist) == 2
+    rnd, seq = playlist
+    assert rnd["name"] == bridge.CFG["playlist_name"] == "本地收藏"
+    assert seq["name"] == bridge.CFG["playlist_seq_name"] == "本地收藏（顺序）"
+    rnd_names = [m["name"] for m in rnd["musics"]]
+    seq_names = [m["name"] for m in seq["musics"]]
+    assert seq_names == [f"手{i} - 歌{i}" for i in range(12)], "保序歌单必须严格按收藏顺序"
+    assert sorted(rnd_names) == sorted(seq_names), "两份歌单必须同曲"
+    assert rnd_names != seq_names, "乱序歌单不应与保序相同（12 首全同序概率可忽略）"
+
+
+def test_bridge_push_config_forwards_seq_playlist_name(tmp_path, monkeypatch):
+    """push_playlist 必须把保序歌单名传给引擎（顺序播放据此定位歌单）。"""
+    assert "playlist_seq_name" in APP_PY
+    assert 'CFG.get("playlist_seq_name"' in APP_PY

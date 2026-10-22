@@ -18,7 +18,7 @@ try:
 except ImportError:  # 无 xiaomusic 环境（本地测试）：字面量兜底，与上游一致
     KEY_WORD_ARG_BEFORE_DICT = {"分钟后关机": True}
 
-from .keywords import KEYWORDS_STOP_DEFAULT, STOP_HINT_RE
+from .keywords import KEYWORDS_STOP_DEFAULT, STOP_HINT_RE, KEYWORDS_FAV_SEQ_DEFAULT, FAV_SEQ_HINT_RE
 
 # 点歌意图词：Query 含这些词说明"要放歌"。与停止口令冲突时按位置判：
 # 「停止播放音乐」停止词在前 → 停止；「播放安静」点歌词在前 → 点歌
@@ -38,6 +38,20 @@ class CommandDispatcher:
         self.stop_keywords = [
             k.strip() for k in (KEYWORDS_STOP_DEFAULT or "").split(",") if k.strip()
         ]
+        # 顺序播放本地收藏口令（必须先于上游默认词「顺序播放」判定）
+        self.fav_seq_keywords = [
+            k.strip() for k in (KEYWORDS_FAV_SEQ_DEFAULT or "").split(",") if k.strip()
+        ]
+
+    def _fav_seq_intent(self, query) -> bool:
+        """Query 是否是「顺序播放本地歌曲」类口令（位置无关，整句判定）。
+
+        上游默认词「顺序播放」（set_play_type_seq）在 key_match_order 默认表
+        里排在前，模糊匹配会把「顺序播放本地歌曲」整句抢成模式切换、
+        arg=本地歌曲——音箱什么都不播。这些口令必须在模糊匹配前显式优先。
+        """
+        return any(kw in query for kw in self.fav_seq_keywords) or bool(
+            FAV_SEQ_HINT_RE.search(query))
 
     def _stop_intent(self, query) -> bool:
         """Query 是否是停止意图（位置感知：停止词必须早于点歌词）。"""
@@ -102,6 +116,12 @@ class CommandDispatcher:
         if self._stop_intent(query):
             self.log.info(f"[native] 匹配到停止口令. query:{query}")
             return "stop", ""
+
+        # 0.5) 顺序播放本地收藏：先于上游默认词「顺序播放」（模式切换）与
+        #      一切模糊匹配，否则整句被 set_play_type_seq 抢走、什么都不播
+        if self._fav_seq_intent(query):
+            self.log.info(f"[native] 匹配到顺序播放本地收藏口令. query:{query}")
+            return "play_favorites_seq", ""
 
         # 1) 多匹配待选态：「第几个」类回复优先（移植自 command_handler.match_cmd）
         if getattr(device, "_pending_selection", None):

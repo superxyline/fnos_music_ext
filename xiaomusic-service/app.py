@@ -96,6 +96,7 @@ DEFAULT_CONFIG = {
     "fnmusic_username": "",
     "fnmusic_password": "",
     "playlist_name": "本地收藏",
+    "playlist_seq_name": "本地收藏（顺序）",
     "playlist_keyword": "播放本地收藏歌曲",
     "sync_interval": 300,
     "transcode_mode": "auto",
@@ -193,6 +194,13 @@ def _play_entry_base() -> str:
 
 
 def build_playlist(favorites: list) -> list:
+    """歌单（两份同曲、顺序不同）：
+    - 「本地收藏」：乱序——口令「播放收藏」随机听（历史行为）
+    - 「本地收藏（顺序）」：按收藏进入的先后排列——口令「顺序播放本地歌曲」
+      从第一首开始顺序听（2026-10-22 用户需求）
+    保序歌单必须在乱序歌单之后：MusicLibrary 按 JSON 顺序入库，
+    「播放收藏」空参数模糊匹配取第一个歌单，不能因此变成顺序版。
+    """
     musics = []
     seen = set()
     for t in favorites:
@@ -210,13 +218,17 @@ def build_playlist(favorites: list) -> list:
             "name": name,
             "url": f"{_play_entry_base()}/play?guid={t.get('guid', '')}",
         })
-    random.shuffle(musics)
-    return [{"name": CFG["playlist_name"], "musics": musics}]
+    shuffled = list(musics)
+    random.shuffle(shuffled)
+    return [
+        {"name": CFG["playlist_name"], "musics": shuffled},
+        {"name": CFG["playlist_seq_name"], "musics": musics},
+    ]
 
 
 # ---------------- 飞牛音乐同步 ----------------
 async def do_sync(force: bool = False) -> dict:
-    """登录飞牛 → 拉收藏 → 乱序生成歌单 → 推送 xiaomusic"""
+    """登录飞牛 → 拉收藏 → 生成歌单（乱序+保序两份）→ 推送 xiaomusic"""
     if not CFG["fnmusic_username"] or not CFG["fnmusic_password"]:
         return {"updated": False, "reason": "未配置飞牛账号"}
 
@@ -246,7 +258,7 @@ async def do_sync(force: bool = False) -> dict:
     if changed:
         playlist = build_playlist(favorites)
         STATE.playlist_songs = len(playlist[0]["musics"]) if playlist else 0
-        log.info("收藏列表变化，重建歌单（%d 首，乱序）", STATE.playlist_songs)
+        log.info("收藏列表变化，重建歌单（%d 首：乱序 + 保序两份）", STATE.playlist_songs)
         await push_playlist(playlist)
         _spawn_audio_id_resolve(playlist)
     return {"updated": changed, "favorites": len(favorites)}
@@ -270,6 +282,7 @@ async def push_playlist(playlist: list):
         keywords_playlocal=keywords_playlocal,
         user_key_word_dict=user_key_word_dict,
         music_list_url=music_list_url,
+        playlist_seq_name=CFG.get("playlist_seq_name", ""),
     )
     _save_engine_setting({"music_list_json": music_list_json})
     STATE.last_push_at = time.time()
@@ -425,9 +438,16 @@ def patch_playlist_behavior():
     动态调用，实例属性 patch 有效）：清空 playlist2music 和 cur_music，
     使 _play_internal 走 check_play_next→_play_next→get_next_music 分支，
     从洗牌后的新列表第一首开始播放。
+    另：随机歌单播放前把设备切回随机模式——「顺序播放本地歌曲」会把设备切到
+    顺序模式（保序歌单不被洗牌），若不切回，之后的「播放收藏」在顺序模式下
+    直接取推送时 baked 的乱序、不再每次重洗，"重新打乱"的承诺就丢了。
     """
     if XM is None:
         return
+    try:
+        from xiaomusic.const import PLAY_TYPE_RND
+    except ImportError:  # 无 xiaomusic 环境（本地测试）：上游常量值兜底
+        PLAY_TYPE_RND = 2
     original = XM.play_music_list
 
     async def patched_play_music_list(did="", arg1="", **kwargs):
@@ -437,6 +457,9 @@ def patch_playlist_behavior():
             if dev is not None:
                 dev.device.playlist2music.clear()
                 dev.device.cur_music = ""
+                if getattr(dev.device, "play_type", None) != PLAY_TYPE_RND:
+                    # 不播报模式切换（dotts=False）：口令播放歌单本就安静
+                    await dev.set_play_type(PLAY_TYPE_RND, False)
                 log.info("[playlist] 口令播放歌单，已重置播放位置（重新洗牌从头播）list=%r", list_name)
         except Exception as e:
             log.warning("[playlist] 重置播放位置失败: %s", e)
@@ -712,6 +735,8 @@ def _spawn_audio_id_resolve(playlist: list):
             n = (m.get("name") or "").strip()
             if n:
                 names.append(n)
+    # 两份歌单（乱序/保序）曲目相同：去重后再解析，避免预解析数量翻倍
+    names = list(dict.fromkeys(names))
     if not names:
         return
 

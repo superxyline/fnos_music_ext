@@ -116,7 +116,10 @@ def save_json(path: Path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-CFG = load_json(BRIDGE_CONFIG_FILE, dict(DEFAULT_CONFIG))
+# 加载顺序：默认值打底 + 配置文件覆盖——新增默认键（如 playlist_seq_name）
+# 对老安装必须自动生效，不能读不到键就 KeyError（2026-10-22 3.5.1 实测：
+# load_json 读到文件就整份返回，新键缺席导致 /sync 500）
+CFG = {**DEFAULT_CONFIG, **load_json(BRIDGE_CONFIG_FILE, {})}
 
 # 小米曲库 audio_id 缓存（X4B 等带屏设备屏幕显示的元数据来源，见 audio_id_resolver）
 AUDIO_ID_CACHE = AudioIdCache(AUDIO_ID_CACHE_FILE)
@@ -221,8 +224,8 @@ def build_playlist(favorites: list) -> list:
     shuffled = list(musics)
     random.shuffle(shuffled)
     return [
-        {"name": CFG["playlist_name"], "musics": shuffled},
-        {"name": CFG["playlist_seq_name"], "musics": musics},
+        {"name": CFG.get("playlist_name", "本地收藏"), "musics": shuffled},
+        {"name": CFG.get("playlist_seq_name", "本地收藏（顺序）"), "musics": musics},
     ]
 
 

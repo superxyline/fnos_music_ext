@@ -772,3 +772,27 @@ def test_bridge_push_config_forwards_seq_playlist_name(tmp_path, monkeypatch):
     """push_playlist 必须把保序歌单名传给引擎（顺序播放据此定位歌单）。"""
     assert "playlist_seq_name" in APP_PY
     assert 'CFG.get("playlist_seq_name"' in APP_PY
+
+
+def test_bridge_config_merges_defaults_over_file(tmp_path, monkeypatch):
+    """老安装的配置文件缺新键：默认值必须打底（3.5.1 实测 KeyError 500）。
+
+    load_json 读到文件就整份返回，新增默认键（playlist_seq_name）对老安装
+    缺席，do_sync 直接 KeyError——歌单停更、顺序播放不可用。
+    """
+    conf = tmp_path / "bridge"
+    conf.mkdir(parents=True)
+    # 老配置文件：只有旧键（模拟 3.5.0 及以前写出的 config.json）
+    (conf / "config.json").write_text(
+        '{"nas_ip": "10.0.0.1", "playlist_name": "本地收藏"}', encoding="utf-8")
+    bridge = _fresh_bridge(tmp_path, monkeypatch)
+
+    assert bridge.CFG["nas_ip"] == "10.0.0.1", "配置文件的值优先"
+    assert bridge.CFG["playlist_name"] == "本地收藏"
+    assert bridge.CFG["playlist_seq_name"] == "本地收藏（顺序）", "新键必须由默认值打底"
+    # build_playlist 不再抛 KeyError，且两份歌单都在
+    playlist = bridge.build_playlist([
+        {"guid": "g1", "title": "晴天", "artists": [{"name": "周杰伦"}]},
+    ])
+    assert [p["name"] for p in playlist] == ["本地收藏", "本地收藏（顺序）"]
+

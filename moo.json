@@ -6,7 +6,7 @@
     "distributor": "superxyline",
     "generated_by": "tools/update_moo_index.py",
     "description": "fnMusic 音源扩展（fnos_music_ext 二次开发版）协议源索引：发布产物与版本信息由 tools/update_moo_index.py 回填。",
-    "updated_at": "2026-10-21T19:10:21+08:00"
+    "updated_at": "2026-10-22T20:33:30+08:00"
   },
   "apps": {
     "fnmusic-ext": {
@@ -29,6 +29,24 @@
       "service_port": 8774,
       "install_dep_apps": "trim.music",
       "releases": {
+        "3.5.0": {
+          "changelog": "## [3.5.0] - 2026-10-22\n\n### 新增\n\n- **深色主题 + 设置页（移植上游 PR #72 及后续修复）**：管理台支持「跟随系统 / 浅色 / 深色」三档外观（设置 → 外观，存当前浏览器 localStorage，不进 .env）。嵌入飞牛时以宿主主题为准（getPlatformConfig 取初值 + $on(\"os/theme\") 监听切换，宿主主题缓存 localStorage 供刷新首屏引导）；直连 8774 或宿主不可用时回退 prefers-color-scheme。theme-boot.js 在样式表之前同步执行，深色用户不闪白底。CSS 重构为完整变量体系（浅色 :root + 深色 :root[data-theme=\"dark\"] 只覆盖配色，布局共用），原有硬编码颜色全部变量化；内容列居中统一页宽（--content-max），保存条与卡片右缘对齐；hover 反馈不再用 opacity/filter（避免降低文字对比度，移植上游 98a5a37/749b61c 修复）；二维码保持白底不随主题反色\n- 测试：新增 test_frontend_theme.py（8 项结构契约：boot 时序/设置页三选项/变量覆盖/对比度 4.5:1/列宽对齐/键名一致）；test_app_js.js +7 项主题行为用例（首屏引导/偏好持久化/宿主 os/theme/缓存刷新沿用/失效回退）\n\n- **口语化停止指令扩充（用户反馈）**：停止口令从上游 7 个规范词扩充到 30+ 变体（`停下来吧`/`别放了`/`别播了`/`别唱了`/`别响了`/`不要再放了`/`安静`/`消停`/`闭嘴`/`停一下`/`停了`/`停掉`/`音乐停`/`暂停播放` 等，上游原有 7 词全保留）。口语停止此前会被小爱自带技能接走——音箱停了，但桥接侧 `is_playing` 仍为 `True`、下一曲定时器仍 armed，到点自动续播一首（用户感知\"停一会又播下一首\"）。\n\n### 修复\n\n- **停止口令优先于点歌模糊匹配**：`停止播放音乐` 这类 Query 以前会被 `播放` 关键词抢先匹配成点歌（arg=音乐）；现在停止词出现在点歌词之前即判停止（位置感知），`播放安静`（歌名）等点歌不受影响，`N分钟后关机`（定时关机）也不被抢走。\n- **未匹配指令的停止兜底**：口令没匹配上但明显是\"别放了\"的口语时，自动取消组内下一曲定时器并置 `is_playing=False`，杜绝自动续播；点歌意图词（`播放`/`放首` 等）不触发兜底。\n- **收藏自动绑定三处缺口补齐（对照上游 #82 / `4502fde`）**：\n  - **滚动缓存转存带歌词**：红心触达的试听缓存定名挪进曲库时，除随迁已有 `.lrc` 外，`FNMUSIC_LYRIC_AUTO_DL` 开启时向源站补拉歌词，且补拉排在通知官方扫描之前——官方扫描入库时 `.lrc` 已落在音频旁，入库即带歌词。\n  - **在途去重**：滚动缓存转存按 guid 去重（重复收藏/列表自愈并发触发只搬一次文件；搬运走线程池，不再阻塞事件循环）；官方绑定轮询按 (user, guid) 去重；同用户对账加 per-user 锁串行——并发触发不再重复打官方搜索、重复建官方红心。\n  - **待关联集合去污染**：`_seed_pending_from_favorites` 只认曲库内的文件——滚动缓存形态（官方扫描不索引 cache 目录）的条目进了待关联集合也永远匹配不上，只会每轮收藏列表请求反复打官方搜索；收藏列表自愈循环相应改为：滚动缓存命中先转存进曲库再绑定。\n  - 转存成功即登记待关联并起轮询（对齐上游绑定调度），不必等下一次收藏列表请求；元数据缺失转存不了时回退后台整轨下载——不以 unknown 定名入库，也不卡在滚动缓存里被淘汰。\n  - 测试：新增 `proxy/tests/test_fav_rolling_promote.py`（10 项：音频+歌词随迁 / ID3 兜底 / 元数据双空保持缓存形态 / 转存在途去重 / 失败回退后台下载 / 转存后即时登记 / 轮询去重与清理 / 对账串行不重叠 / seed 过滤滚动缓存 / 列表自愈端到端）。",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/superxyline/fnos_music_ext/releases/download/v3.5.0/fnmusic-ext-3.5.0.fpk",
+              "size": 2130520,
+              "size_mb": 2.0,
+              "sha256": "5959a18e37c040c1679000ceb210a00359d76cf18f7a4dc48028b0cffdf35912"
+            },
+            "arm": {
+              "download_url": "https://github.com/superxyline/fnos_music_ext/releases/download/v3.5.0/fnmusic-ext-3.5.0.fpk",
+              "size": 2130520,
+              "size_mb": 2.0,
+              "sha256": "5959a18e37c040c1679000ceb210a00359d76cf18f7a4dc48028b0cffdf35912"
+            }
+          },
+          "updated_at": "2026-10-22T20:33:30+08:00"
+        },
         "3.4.2": {
           "changelog": "## v3.4.2\n\n### 修复\n\n- **小爱音箱配置向导\"完成\"步骤不显示绿色对勾（用户反馈）**：完成后端返回 `step=4`，而步骤条规则是 `n < step ? done : active`——第 4 步\"完成\"永远落在蓝色 `active` 上显示数字 4。修复：完成页（`step >= 步骤总数`）时全部步骤（含\"完成\"）点亮为绿色 ✓。管理台与旁路页（8775）同步修复。\n\n### 变更\n\n- **管理台「关于」「小爱音箱」菜单移除红点（用户要求）**：删除桌面侧栏与移动端底栏共 4 个红点元素及 `xmUpdateNavDot` 逻辑。登录失效 / 轮询降频等异常状态的展示不受影响——小爱音箱页\"完成页健康检查\"本就有醒目提示。\n\n### 升级说明\n\n- 从 v3.3.x / v3.4.0 / v3.4.1 升级：登录态、设备勾选、歌单、audio_id 缓存全部保留（conf 目录不变）；无需重新配置。\n- 纯前端改动，升级后强刷浏览器（Ctrl+F5）即可看到新界面。\n\n详见 [CHANGELOG.md](https://github.com/superxyline/fnos_music_ext/blob/main/CHANGELOG.md)。",
           "packages": {
@@ -45,7 +63,7 @@
               "sha256": "5e3e38b76314b0d9b582f86b8344acaf5fb34b729dcbdf046665de51cbd8a956"
             }
           },
-          "updated_at": "2026-10-21T19:10:21+08:00"
+          "updated_at": "2026-10-22T20:33:30+08:00"
         },
         "3.4.1": {
           "changelog": "## v3.4.1\n\n### 新增\n\n- **带屏设备播放界面 audio_id 解析：修复\"屏幕显示错歌\"（用户真机反馈）**\n\n  X4B 等带屏音箱播放时，屏幕上的歌名/歌手/封面/歌词由 mina ubus `player_play_music` 指令里的 `audio_id` 对应的小米曲库记录决定（播放内容是桥接 URL，两者本无绑定）。上游 `_get_audio_id` 按「歌名-歌手」拆名，而歌单条目名是「歌手 - 歌名」（artist 在前），拆分后与曲库歌名永远不相等，只能掉到搜索结果第一首兜底——蒙对显示正确、蒙错显示另一首歌（即\"偶尔显示错误\"的根因）。\n\n  - **预解析**：歌单重建后后台批量解析全部条目并落盘 `bridge/audio_id_cache.json`（重启不丢；负缓存防反复打接口；接口异常中止本轮且不写负缓存，登录恢复后自动重试）\n  - **标题规范化**：繁→简（opencc，容器必装依赖）+ NFKC 全半角 + 去 feat./Live/Remix/- Remastered 等修饰后缀\n  - **三级匹配**：严格（歌名相等+歌手互含）→ 宽松（歌名相等）→ 近似（歌名互含）\n  - **播放兜底**：仅对走 `play_music` 路径的设备（X4B 等）生效，其余设备照搬上游行为\n  - `/health` 暴露 `audio_id_cache` 统计（resolved / negative）\n  - 实测（275 首收藏，真机 NAS）：预解析 **266 首命中（96.7%）**，约 100 秒跑完\n  - 已知边界：audio_id 只影响屏幕显示与歌词时间轴，不决定播放内容；曲库确实没有的歌只能显示默认占位（与上游一致）\n\n- 测试：新增 `test_audio_id_resolver.py`（25 项）\n\n### 升级说明\n\n- 从 v3.3.x / v3.4.0 升级：登录态、设备勾选、歌单、audio_id 缓存全部保留（conf 目录不变）；无需重新配置。\n- 预解析在歌单重建后自动进行，无需手动触发；首次约 1-2 分钟后台完成。\n\n详见 [CHANGELOG.md](https://github.com/superxyline/fnos_music_ext/blob/main/CHANGELOG.md)。",
@@ -63,7 +81,7 @@
               "sha256": "4a88f9f7d2124e00cffc268cc52e321207ba698de974165773077c1ddd1eee55"
             }
           },
-          "updated_at": "2026-10-21T19:10:21+08:00"
+          "updated_at": "2026-10-22T20:33:30+08:00"
         },
         "3.4.0": {
           "changelog": "## v3.4.0\n\n### 变更\n\n- **移除 xiaomusic 引擎，native 成为唯一口令引擎**（双引擎灰度期结束——native 已于 v3.3.4 在 X4B/L05B/LX06 三台真实设备完成全链路验证）：\n  - 删除 XiaoMusic 主类集成、`/xm/*` api 子应用挂载、`POST /api/engine` 切换端点、`engine` 配置字段、全部双引擎分支代码与 `/proxy/music` 根级转发（`app.py` -285 行）；\n  - 小米登录仍 100% 使用上游代码（`miservice` + `AuthManager` + `MiJiaAPI` 扫码），未做任何改动。\n- **依赖裁剪**：`xiaomusic` 改 `--no-deps` 安装 + 精选传递依赖（`requirements-core.txt`，10 项，经 ast + 运行时双重导入追踪与干净 venv 全链路实测验证）。镜像不再携带 yt-dlp（25M）、sentry-sdk、apscheduler、watchdog、ga4mp、aiofiles、psutil、pyjwt、python-multipart。\n- **管理台易用性**：小爱音箱完成页移除「xiaomusic 高级设置」入口（其指向的 `/xm/` 页面随引擎一并移除）；口令表点歌描述更新为「本地曲库直接播 / 在线源下载，都不进收藏」。\n- 测试：单一引擎断言（无切换端点/无 `/xm` 挂载/无引擎分支/无死代码残留）+ 依赖清单与 Dockerfile `--no-deps` 断言 + WebUI 入口移除断言；修复 `import app` 组合运行串味（按文件路径加载）与本地重定向测试服务器请求体未消费导致的偶发 `ReadError`。\n\n### 升级说明\n\n- 从 v3.3.x 升级：登录态、设备勾选、歌单全部保留（conf 目录不变）；原 `engine` 配置字段被忽略（不再有意义），无需手动清理。\n- 依赖精简在**镜像构建时**生效——已安装的应用热更新代码不重装镜像，依赖不变；重装/升级 FPK 后镜像即为精简版。\n\n详见 [CHANGELOG.md](https://github.com/superxyline/fnos_music_ext/blob/main/CHANGELOG.md)。",
@@ -81,7 +99,7 @@
               "sha256": "14999efadde8a3a9fe675b7295e70eb90c047334bde99e24120e684f8697e2ec"
             }
           },
-          "updated_at": "2026-10-21T19:10:21+08:00"
+          "updated_at": "2026-10-22T20:33:30+08:00"
         },
         "3.3.5": {
           "changelog": "## v3.3.5\n\n### 修复\n\n- **点歌会悄悄污染飞牛收藏（用户真机反馈）**：口令点一首没有收藏的歌——能正常播放，但歌被写进了 fnOS 收藏列表。根因：v3.3.0 起的点歌兜底在「本地曲库命中但未收藏」分支先 `add_favorite` 再强制同步（为了让歌进入播放列表），副作用是用户收藏被污染。**点歌 ≠ 收藏**。改为 `_inject_to_playlist()`：把曲目注入**内存**播放列表（`music_library.all_music` + 目标歌单 + 反查索引），当下可点播、下一首可接续；下次歌单重建（收藏变化 / 刷新列表 / 点歌下载）自动清掉，不落盘、不进收藏。在线歌仍走 ffmpeg 下载到本地目录（本来就不入收藏）。\n- 测试：新增 `test_play_fallback.py`（4 静态 + 1 集成：注入条目与收藏条目同构、幂等、异常状态安全）。`xiaomusic-service` 37 passed。\n- 仓库卫生：`.gitignore` 增加 `HANDOFF_*.md` / `AGENTS.md` 防护（本地交接文档含部署细节，绝不入库）。\n\n详见 [CHANGELOG.md](https://github.com/superxyline/fnos_music_ext/blob/main/CHANGELOG.md)。",
@@ -99,7 +117,7 @@
               "sha256": "22c62d826b74e10128f3343d05bb42eee27ea9b0b1c0a864862f2f4f81c61695"
             }
           },
-          "updated_at": "2026-10-21T19:10:21+08:00"
+          "updated_at": "2026-10-22T20:33:30+08:00"
         },
         "3.3.4": {
           "changelog": "## v3.3.4\n\n### 修复\n\n- **fnOS 强制 HTTPS 场景下向导第 3 步登录/扫描必失败（issue #5）**：fnOS 网页入口默认 `http://<ip>:5666/*` 一律 302 到 `https://<ip>:5667/*`（自签证书）。修复：客户端 `verify=False` + `trust_env=False`（不继承容器代理）；新增登录前一次性重定向探测并升级 `base_url`（全局仍不跟随重定向，保留 stream 跨源剥离凭据的设计）；`scan_fnmusic()` 跟随重定向并返回最终源站；向导落盘登录后的实际地址。新增 `test_fnmusic_client.py`（5 静态 + 1 真实重定向集成测试）。\n- **native 引擎口令播放无声（两项，真机实测）**：① `device_player.py:612` 播放前一刻 `await analytics.send_play_event(...)`，native 的 analytics 桩是同步方法直接 TypeError——口令/歌单/找歌全正常但音箱无声；桩改协程。② 歌单条目 URL 未按引擎分流：native（web_music_proxy=False）把容器内环地址原样发给音箱；改为对外可达地址，xiaomusic 引擎保持原行为。\n- **「停止播放」后约一分钟自动续播（真机实测）**：NativeCore 漏实现 `stop` 动作——分发器执行口令前的 `group_force_stop_xiaoai` 暂停了音箱（以为停了），但 `is_playing` 仍为 True、「下一曲定时器」未取消，轮询器 `reset_timer_when_answer` 把定时器重新 armed，到点自动播下一首。补齐口令表全部 15 个动作 + 多匹配「第几个」分支 + 命令面覆盖率测试。\n- **TTS 确认音 404 → 小爱提示「播放服务遇到问题」（v3.3.0 起潜伏，两引擎同病）**：xiaomusic 的 `_get_file_url` 拼 `http://<NAS_IP>:8775/music/...` 发给音箱，桥接从未提供 `/music` 路由——日志实证 26 次请求全 404。lifespan 挂载 `StaticFiles(MUSIC_DIR)`，修复后实测音箱拉取 206。\n- 测试：`test_native_engine.py` 25 项 + `test_fnmusic_client.py` 6 项。\n\n### 说明\n\n- `native` 引擎已在本机真实设备（X4B/L05B/LX06 三台）完成全链路验证；新装默认仍为 `xiaomusic`，`native` 经 `POST /api/engine` 一个开关切换，两引擎共用 conf 目录、切换不丢登录态。\n\n详见 [CHANGELOG.md](https://github.com/superxyline/fnos_music_ext/blob/main/CHANGELOG.md)。",
@@ -117,7 +135,7 @@
               "sha256": "2db56ec7b12ea5a03e2738ea0a79295b85ddb5f7373e36cd5dbf6b610b85b7ba"
             }
           },
-          "updated_at": "2026-10-21T19:10:21+08:00"
+          "updated_at": "2026-10-22T20:33:30+08:00"
         },
         "3.3.3": {
           "changelog": "## v3.3.3\n\n### 修复\n- **小米登录失效后疯狂撞接口**（实测 10 分钟 6396 次 400）：登录失败后 poller 仍按 1s 遍历设备请求对话记录，形成「失效→狂撞→风控加重→更难恢复」恶性循环。修复分两层：轮询看门狗（`mina_service` 为空时直接返回零请求 + 降频 60s）+ 间隔守卫（设备列表为空时看门狗不被调用，需独立任务维护间隔）。扫码恢复后最多 60 秒自动接上，无需重启进程。`/health` 新增 `poll_degraded`/`pull_ask_sec`，管理台导航红点提示。\n\n### 新增\n- **native 口令引擎（双引擎）**：新增 `xiaomusic-service/native/`——复用上游登录/设备/轮询/播放组件（AuthManager/DeviceManager/ConversationPoller/MusicLibrary/XiaoMusicDevice/MiJiaAPI），自建编排与命令分发。不挂 xiaomusic 的 `/xm/*` api，音箱直连桥接 `/play` 取流。与 xiaomusic 引擎共用 conf 目录，切换不丢登录态/设备/歌单。\n- 引擎开关：桥接配置 `engine`（默认 `xiaomusic`），`POST /api/engine` 切换（重启进程生效），`/health` 暴露 `engine`。\n- 锁定 `xiaomusic==0.6.1`（上游已停更，防重建镜像静默退化）。\n- 测试：`test_native_engine.py`（8 静态 + 2 集成）。\n\n详见 [CHANGELOG.md](https://github.com/superxyline/fnos_music_ext/blob/main/CHANGELOG.md)。",
@@ -135,7 +153,7 @@
               "sha256": "d18f0f93cfa77cbc8763fb979deb5b8eb0ed7565762ee7da513539bb64edf88f"
             }
           },
-          "updated_at": "2026-10-21T19:10:21+08:00"
+          "updated_at": "2026-10-22T20:33:30+08:00"
         },
         "3.3.2": {
           "changelog": "## 修复：完成页看不到运行状态\n\n管理台「小爱音箱」页的完成区，之前只有一行灰色小字提示，而且 **`pull_ask_on` 正常时只显示「小米账号登录态」那一句**——「口令轮询状态」根本不出现，看起来就像状态区没渲染。\n\n本版改为**两个独立状态项**（左侧色条 + 状态圆点，正常绿色 / 异常红色）：\n\n| 状态项 | 正常时 | 异常时 |\n| :--- | :--- | :--- |\n| ① **口令轮询** | 绿字「正常（小爱对话记录通道）」或「（mina 通道）」 | 红字「未开启 — 语音指令到不了桥接」+ 指引去 xiaomusic 高级设置开「监听新消息」；桥接未启动时显示「状态未知」 |\n| ② **小米账号** | 绿字「登录有效，口令可正常下发到音箱」 | 红字「登录已失效 — 口令无法下发」+ 引导点「重新配置」重新扫码 |\n\n两项各自独立判定，不再是互斥的单行提示；配置页每 5 秒刷新一次，状态变化即时可见。\n\n### 其他\n\n- 静态资源引用加 `?v=3.3.2` 版本参数，**避免浏览器继续使用缓存里的旧 app.js**（升级后如果仍看到旧界面，Ctrl+F5 强刷一次）\n- 新增回归测试 `test_done_page_renders_two_independent_health_rows`：断言两个状态 id 独立存在、判定顺序不互斥、样式类齐全、旧的单行实现不残留\n\n### 升级\n\n装本 fpk 覆盖安装即可，`.env`、小米登录态、收藏歌单均保留。\n\n---\n\n**完整变更**：[CHANGELOG.md](https://github.com/superxyline/fnos_music_ext/blob/main/CHANGELOG.md#332---2026-10-18) · 校验和见 `fnmusic-ext-3.3.2.fpk.sha256`",
@@ -153,7 +171,7 @@
               "sha256": "0b318e4b4fbdbd4268927b62597b4008f0f016d0c3ced3b85e6d001d5fc8c471"
             }
           },
-          "updated_at": "2026-10-21T19:10:21+08:00"
+          "updated_at": "2026-10-22T20:33:30+08:00"
         },
         "3.3.1": {
           "changelog": "## 搜索结果标注具体来源平台\n\n在线搜索结果不再笼统显示 `[dl]`，改为按实际平台标注具体来源：\n\n| 来源 | 显示效果 |\n| :--- | :--- |\n| musicdl · 酷我 | `[kuwo]晴天` |\n| musicdl · 咪咕 | `[migu]晴天` |\n| musicdl · 哔哩哔哩 | `[bilibili]晴天` |\n| 网易云（musicbox） | `[music box]晴天` |\n| 洛雪（自定义源） | `[源备注名]晴天`（无备注 `[lx]晴天`） |\n\n前缀与歌名之间**统一不插空格**，同一条列表里形态一致，便于一眼区分本地曲库与在线来源、以及来自哪个平台。\n\n### 细节\n\n- 标记只作用于**搜索结果列表**；收藏、播放历史、元数据等其他出口仍是不带前缀的干净标题\n- **边界处理**：歌名为空或纯空白时不加前缀（不会出现只有 `[kuwo]` 的空壳条目）；源站歌名本身已带同名前缀时不重复叠加；来源名异常（非 ASCII 短名或含方括号）不拼进标题，退回 `[dl]`\n- **写回历史精确剥离**：按 `trackGUID` 的 `online:<平台>:<id>` 反解前缀后剥离，兼容 3.3.0 之前「带空格 + 统称」的 `[dl] 晴天`；`[AI生成]晴天`、`[Live]晴天` 这类原生方括号歌名不会被误伤\n- 平台短名清单与 `install.sh` 的 `SOURCE_PLATFORM_TABLE` 同源，新增平台漏配会被 `test_musicdl_source_names_cover_platform_table` 直接挡住\n\n### 验证\n\n- `proxy/tests/test_source_tag.py` 10 项 + `test_merge.py` 59 项全过（含空标题、纯空白、幂等、未知来源回退、旧格式剥离、原生方括号不误伤）\n- NAS 实测 musicdl 真实返回：`[bilibili]晴天` 渲染正确，写回历史剥离后还原为 `晴天`\n\n---\n\n**完整变更**：[CHANGELOG.md](https://github.com/superxyline/fnos_music_ext/blob/main/CHANGELOG.md#331---2026-10-18) · 校验和见 `fnmusic-ext-3.3.1.fpk.sha256`",
@@ -171,7 +189,7 @@
               "sha256": "e92a5b5f935a7dff1f4e70c849b744281ef44b44bff8ca3cac5a8ecf84fad7d7"
             }
           },
-          "updated_at": "2026-10-21T19:10:21+08:00"
+          "updated_at": "2026-10-22T20:33:30+08:00"
         },
         "3.3.0": {
           "changelog": "## 小爱音箱接管（fnmusic-xiaomusic 移植）\n\n把独立应用 [fnmusic-xiaomusic](https://github.com/superxyline/fnmusic-xiaomusic) 的桥接服务移植进本扩展，成为 `fnmusic-sources` 容器内第 5 个 supervisor 进程（容器内 8005 → 宿主 **8775**）。\n\n### 新增\n\n- **管理台「小爱音箱」页**（左侧菜单，桌面 + 移动）：三步向导 —— ① 小米账号登录（账号密码 / 米家 App 扫码）→ ② 勾选要接管的音箱（多选）→ ③ 飞牛音乐地址自动扫描 + 账号密码验证；完成页显示收藏数 / 歌单数 / 推送状态 / **小米登录态** / **口令轮询状态**，附口令表、「立即同步」「重新配置」「xiaomusic 高级设置」\n- **口令能力**（与独立版一致）：`播放收藏` 等 14+ 变体随机播放飞牛收藏；`播放晴天` 点歌（收藏优先 → 本地曲库 → 在线源下载，不进收藏）；下一首/暂停/循环模式；播完自动接歌单；5 分钟定时同步收藏\n- **独立开关** `FNMUSIC_XIAOMUSIC_ENABLED`（保存即起停桥接进程，默认关；与音源三选一互斥无关，可任意叠加）\n- 数据落 `/data/xiaomusic/`（sources-data 卷内），升级不丢；桥接自带页面保留作旁路（`http://<NAS_IP>:8775/`）\n\n### 修复（本轮实测定位）\n\n- **口令全不到达**：`XIAOMUSIC_ENABLE_PULL_ASK` 默认 `false`，`conversation.py::poll_latest_ask` 主循环首行直接空转 —— 轮询器从未拉取对话记录，口令全被小爱自带音乐技能接走。已双处钉死 `enable_pull_ask=True`，并在 `/health` 暴露 `pull_ask_on` / `ask_channel` 让此类静默故障可观测\n- **指令通道纠偏**：实测本机固件 mina `ubus nlp_result_get` 走 ROM 代理模式（只返回 `{code:0,data:{code:0}}`，无 `info` 字段），而对话记录 API 完全可用（records 含 `query`/`time`），故固定走对话记录通道\n- **设备勾选存成 UUID 致只对单台生效**：did 映射未建立时主动刷新，保存端点校验纯数字，前端对取不到 did 的设备禁用勾选\n- **「重新配置」改为完全重置**：退出小米登录 → 清飞牛配置 → 桥接重启回第一步\n- **小米登录态可观测**：失效时完成页红字提示并引导重新登录\n- **「音箱访问地址」禁止填容器网关**：改为必填 + 显式拒绝，避免口令收得到但拉不到流\n- **musicbox `playback.py` 漏 COPY**：导致 musicbox 崩溃循环、WebUI 网易扫码登录报「musicbox 服务不可达」—— 已补进镜像并新增「服务模块全部 COPY」回归测试\n\n### 升级注意\n\n- 从 3.2.0 升级：直接装本 fpk 即可（`.env` 与数据保留，小爱音箱开关默认关，需到管理台开启）\n- 首次配置：「音箱访问本机的地址」必须填 **NAS 的局域网 IP**（与音箱同网段），不能填容器网关\n- 已知限制：点歌类口令会先经小爱云端路由，小爱可能先抢答一句（「网易云暂无合适版本…」），1~2 秒内被 xiaomusic 强制停止并切换为飞牛音源\n\n---\n\n**完整变更**：[CHANGELOG.md](https://github.com/superxyline/fnos_music_ext/blob/main/CHANGELOG.md) · 校验和见 `fnmusic-ext-3.3.0.fpk.sha256`",
@@ -189,7 +207,7 @@
               "sha256": "bfe66f111ad8e27f82a6e0edc94e210b39535d116008e7b774107bcd71ce7898"
             }
           },
-          "updated_at": "2026-10-21T19:10:21+08:00"
+          "updated_at": "2026-10-22T20:33:30+08:00"
         },
         "3.2.0": {
           "changelog": "### 安装\n\n下载 `fnmusic-ext-3.2.0.fpk`，在 fnOS「应用中心 → 手动安装」选择该文件即可；已装旧版会走升级流程（自动备份并恢复 .env、网易登录、收藏、播放历史）。\n\n### 校验和\n\n```\n0a70ae18047f83f48b945064e1e0af8bd2460509e83ac9d25713fefa9d0d62c2 *dist/fnmusic-ext-3.2.0.fpk\n```\n\n### 变更\n\n### 新增\n\n- **公共歌单（上游 issue #55）**：管理页「播放与推荐 → 公共歌单」可浏览网易官方的**排行榜 / 推荐歌单 / 分类歌单 / 精品歌单 / 账号推荐**，勾选后以只读虚拟歌单注入音乐页（热门推荐下方、官方歌单上方），最多 50 份、按选择顺序展示。链路：musicbox 新增 `/api/v1/public-playlists/{capabilities,categories,,/{id},/{id}/tracks}` 五档发现接口（匿名可用，账号推荐需登录）→ WebUI `/api/public-playlists/*` 反代（白名单 + 分类/列表短缓存，能力声明与曲目列表不缓存）→ `proxy/publicplaylists.py` 注入（摘要 30 分钟内存 + 失败冷却 2 分钟 + 24 小时磁盘快照，曲目 10 分钟内存 LRU 8 份 + 后台串行预取）。歌单 guid 自包含（`online:playlist:public:musicbox:netease:chart:<id>`），封面 coverId 与曲目 guid 沿用确定性 md5 伪装，播放/歌词/封面全部走既有 `online:netease` 链路；加歌/移歌/删除由 proxy 只读吸收，不回写网易。新增 `FNMUSIC_PUBLIC_PLAYLISTS_ENABLED` / `FNMUSIC_PUBLIC_PLAYLISTS_SELECTION`（热重载）。\n- **网易云歌单常驻扩展到公共歌单**：只要开了公共歌单且选择里含网易歌单，musicbox 就按常驻规则保活（匿名即可，不要求扫码登录）；未登录时只有账号歌单部分告警，公共歌单照常可用。容器入口与健康检查同步识别该需求（公共歌单场景无需盘上 cookie）。\n- **关于页 + 检查更新**：新增「关于」页（版本、部署形态、上游/仓库链接、免责声明），启动与本页打开时各查一次 GitHub Release（失败回退 Gitee，成功缓存 6 小时、失败 10 分钟），有新版时导航点红点并在弹窗展示更新说明（Markdown 清洗为纯文本）。\n- **moo 商店协议源索引**：`moo.json`（`schema_version: \"moo\"`）由 `tools/update_moo_index.py` 从 GitHub Release 生成（只收正式版，版本降序，顶层 version 与首条一致），支持商店直接安装与升级。\n- **曲库文件命名模板（issue #47）**：`FNMUSIC_LIBRARY_NAME_PATTERN` 支持 `{artist}` / `{title}` / `{source}` 占位符（默认 `{artist} - {title}`）；歌手缺失时自动去掉占位符与多余分隔符，路径分隔符清洗，截断 200 字符。对之后新落盘的歌曲生效。\n- **网易首播预热与共享取链（issue #56 安全子集）**：两侧都改成「一次解析、多方复用」——\n  - musicbox（`musicbox-service/playback.py`）：进程内取链按 (歌曲, 音质) 共享一个 `asyncio.to_thread` 任务，12 秒预算内并发请求只解析一次，调用方取消（App 频繁 seek/切歌）不会打断共享任务，事件循环不被阻塞；单档取链超时由 10s 收紧到 5s，失败快速降档。\n  - proxy：网易取链改为 Task 共享（同曲并发只出网一次），整条音质阶梯共用 30 秒预算（5 档 x 5s 串行会吃满 App 起播耐心），并新增**首播预热**——metadata 请求时并行解析直链，客户端真正起播时直链已在钉链里；预热钉链单独记账，音质配置热重载时统一下掉。新增 `netease_resolve` / `netease_resolve_wait` / `netease_resolve_timeout` / `netease_prefetch` 诊断日志。\n\n### 修复\n\n- **流式播放被反代缓冲（issue #49）**：所有媒体响应补 `X-Accel-Buffering: no`（音频流、HEAD、HLS playlist），根治 nginx 两层反代下\"起播要等整段/拖进度条卡住\"；新增 Range 形态分类（none/open/suffix/partial/invalid）与首块/总耗时投递日志，客户端中途断开、上游中断各有独立结果标记，便于定位\"能播但不流畅\"。\n- **酷我 CDN 403（issue #54）**：洛雪取链的 UA 与探活 UA 统一为 Chrome 128 PC UA（proxy 与 lxmusic-service 逐字符一致，新增跨服务一致性测试），并在钉住失效时按冷却 60 秒快速失败，避免反复拿到同一批已失效直链。\n- **musicdl 平台表对齐上游 2.14.1**：退役 50（LivePOO）/54（LiziYY）/56（ITingWa），新增 65（gequke）/66（leedodo）/67（heishan）；`requirements.txt` 提至 `musicdl>=2.14.1`，平台表测试同步锁定退役编号不得复用。",
@@ -391,11 +409,11 @@
         }
       },
       "first_release_at": "2026-10-06T13:04:31Z",
-      "version": "3.4.2",
-      "download_url": "https://github.com/superxyline/fnos_music_ext/releases/download/v3.4.2/fnmusic-ext-3.4.2.fpk",
-      "sha256": "5e3e38b76314b0d9b582f86b8344acaf5fb34b729dcbdf046665de51cbd8a956",
-      "size": 2110519,
-      "updated_at": "2026-10-21T19:10:21+08:00"
+      "version": "3.5.0",
+      "download_url": "https://github.com/superxyline/fnos_music_ext/releases/download/v3.5.0/fnmusic-ext-3.5.0.fpk",
+      "sha256": "5959a18e37c040c1679000ceb210a00359d76cf18f7a4dc48028b0cffdf35912",
+      "size": 2130520,
+      "updated_at": "2026-10-22T20:33:30+08:00"
     }
   }
 }

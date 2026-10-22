@@ -334,6 +334,7 @@ input[type="radio"] { accent-color: var(--accent); margin-top: 4px; }
 }
 .modal-head { border-bottom: 1px solid var(--line); }
 .modal-foot { border-top: 1px solid var(--line); justify-content: flex-end; }
+.update-go-row { display: inline-flex; gap: 10px; }
 .modal-body { padding: 14px 16px; overflow: auto; }
 .update-log {
   margin: 10px 0 0;

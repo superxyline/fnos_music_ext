@@ -25,6 +25,20 @@ def test_update_modal_structure():
     assert 'id="update-modal"' in HTML and 'class="modal-mask"' in HTML
     assert 'id="update-go"' in HTML and 'target="_blank"' in HTML
     assert 'rel="noopener noreferrer"' in HTML
+    # 双下载源（2026-10-22 用户需求）：GitHub 主按钮 + Gitee 备选
+    assert 'id="update-go-gitee"' in HTML
+    assert HTML.count('id="update-go-row"') == 1
+
+
+def test_about_page_lists_both_repos():
+    """关于页必须同时给 GitHub 与 Gitee 两个仓库/反馈入口（用户需求）。"""
+    assert '"repo_url_gitee"' in JS or "repo_url_gitee" in JS
+    assert "项目仓库 · Gitee" in JS
+    assert "issues_url_gitee" in JS
+    # 后端 ABOUT 常量两平台链接都要有
+    app_py = (Path(__file__).resolve().parent / "app.py").read_text(encoding="utf-8")
+    assert '"repo_url_gitee": "https://gitee.com/superxyline/fnos_music_ext"' in app_py
+    assert '"issues_url_gitee"' in app_py
 
 
 def test_hidden_elements_have_css_fallback():

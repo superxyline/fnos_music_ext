@@ -158,3 +158,49 @@ def test_failure_negative_cache_expires(client, monkeypatch):
     monkeypatch.setattr(webui.time, "time", lambda: real() + webui._UPDATE_FAIL_TTL + 1)
     client.get("/api/update-check")
     assert hits["n"] == 4, "负缓存过期后重新出网"
+
+
+def test_cache_hit_recomputes_has_update_after_local_upgrade(client, monkeypatch):
+    """本地升级后缓存未过期：has_update 必须按当前版本重算，NEW 不诈尸。
+
+    2026-10-22 实测：热部署 3.4.2→3.5.0 后 webui 进程没重启，内存缓存停在
+    升级前的版本对比，NEW 一直亮到 6h TTL 过期——用户看到"已是最新版还提示
+    升级"。真源数据（latest）仍按 TTL 缓存不出网，只按当前版本重算结论。
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"tag_name": "v3.5.0", "body": "x"})
+
+    _mock(handler)
+    monkeypatch.setattr(webui, "_read_version", lambda: "3.4.2")
+    first = client.get("/api/update-check").json()
+    assert first["has_update"] is True
+
+    # 模拟本地升级：VERSION 变了，缓存还在 TTL 内（不得重新出网）
+    hits = {"n": 0}
+
+    def counting(request: httpx.Request) -> httpx.Response:
+        hits["n"] += 1
+        return httpx.Response(200, json={"tag_name": "v3.5.0", "body": "x"})
+
+    _mock(counting)
+    monkeypatch.setattr(webui, "_read_version", lambda: "3.5.0")
+    second = client.get("/api/update-check").json()
+
+    assert hits["n"] == 0, "缓存命中不得重新出网"
+    assert second["has_update"] is False, "升级后必须立刻熄灭 NEW"
+    assert second["current_version"] == "3.5.0"
+    assert second["latest"]["version"] == "3.5.0", "真源数据仍走缓存"
+
+
+def test_update_check_returns_both_mirrors(client):
+    """升级弹窗要能自选下载源：latest.mirrors 必须同时给 GitHub/Gitee。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"tag_name": "v9.9.9", "body": ""})
+
+    _mock(handler)
+    data = client.get("/api/update-check").json()
+    mirrors = data["latest"]["mirrors"]
+    assert [m["name"] for m in mirrors] == ["GitHub", "Gitee"]
+    urls = {m["name"]: m["url"] for m in mirrors}
+    assert urls["GitHub"].endswith("/releases/tag/v9.9.9")
+    assert "gitee.com/superxyline/fnos_music_ext" in urls["Gitee"]

@@ -68,6 +68,12 @@ UPDATE_SOURCES = (
         "page": "https://gitee.com/superxyline/fnos_music_ext/releases",
     },
 )
+# 升级入口镜像（弹窗里让用户自选下载源）：tag 路径两平台一致（v<版本>），
+# 用主源返回的版本号拼 URL，无需为第二个源再出网一次 API。
+UPDATE_MIRRORS = (
+    {"name": "GitHub", "page": "https://github.com/superxyline/fnos_music_ext/releases"},
+    {"name": "Gitee", "page": "https://gitee.com/superxyline/fnos_music_ext/releases"},
+)
 # 成功缓存 6 小时（GitHub 匿名限额 60 次/小时），双源皆败负缓存 10 分钟——
 # 前端进页面即查但不轮询，命中缓存不出网
 _UPDATE_OK_TTL = 6 * 3600.0
@@ -80,7 +86,9 @@ ABOUT = {
     "author": "superxyline（基于 javycoder 上游二次开发）",
     "author_url": "https://github.com/superxyline",
     "repo_url": "https://github.com/superxyline/fnos_music_ext",
+    "repo_url_gitee": "https://gitee.com/superxyline/fnos_music_ext",
     "issues_url": "https://github.com/superxyline/fnos_music_ext/issues",
+    "issues_url_gitee": "https://gitee.com/superxyline/fnos_music_ext/issues",
 }
 
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]*\)")
@@ -764,12 +772,24 @@ async def api_update_check(request: Request):
 
     结果缓存（成功 6h / 双源皆败 10min，按响应里有无 source 键区分）：
     前端进页面即查但不轮询，命中缓存不出网。双源皆败不报 500——前端静默降级，
-    红点只是锦上添花，不能因检查失败打扰用户。"""
+    红点只是锦上添花，不能因检查失败打扰用户。
+
+    缓存命中时按**当前版本**重算 has_update：本地升级（如热部署）后真源数据
+    还在 TTL 内，若直接用旧结论会继续亮 NEW——2026-10-22 用户实测"已是最新
+    版还提示升级"的根因（webui 进程没重启，内存缓存停在升级前的版本对比）。
+    """
     now = time.time()
     cached = _update_cache.get("data")
     if cached and now - _update_cache.get("ts", 0.0) < (
             _UPDATE_OK_TTL if "source" in cached else _UPDATE_FAIL_TTL):
-        return cached
+        if "source" not in cached:
+            return cached  # 失败负缓存：与版本无关，原样返回
+        current = _read_version()
+        fresh = dict(cached)
+        fresh["current_version"] = current
+        fresh["has_update"] = _version_newer(
+            str((cached.get("latest") or {}).get("version") or ""), current)
+        return fresh
     current = _read_version()
     errors: list[str] = []
     for source in UPDATE_SOURCES:
@@ -777,13 +797,18 @@ async def api_update_check(request: Request):
         if not ok:
             errors.append(str(payload))
             continue
+        latest = dict(payload)
+        latest["mirrors"] = [
+            {"name": m["name"], "url": f"{m['page']}/tag/v{latest['version']}"}
+            for m in UPDATE_MIRRORS
+        ]
         result = {
             "ok": True,
             "current_version": current,
             "has_update": _version_newer(str(payload["version"]), current),
             "source": source["name"],
             "checked_at": int(now),
-            "latest": payload,
+            "latest": latest,
         }
         _update_cache.clear()
         _update_cache.update({"ts": now, "data": result})

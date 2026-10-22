@@ -484,6 +484,84 @@ test("宿主主题：缓存失效或宿主不可用时清缓存并回退系统�
   assert.strictEqual(standalone.root.dataset.theme, "dark");
 });
 
+/* 升级弹窗：GitHub / Gitee 双下载源（2026-10-22 用户需求） */
+test("升级弹窗：mirrors 双源渲染，Gitee 按钮默认隐藏、有源时展示", async () => {
+  reset();
+  enqueue("/app/fnmusic-ext/api/update-check", {
+    ok: true,
+    has_update: true,
+    current_version: "3.5.0",
+    source: "github",
+    latest: {
+      version: "3.5.1",
+      name: "v3.5.1",
+      published_at: "2026-10-22T00:00:00Z",
+      changelog: "- 顺序播放本地歌曲",
+      html_url: "https://github.com/superxyline/fnos_music_ext/releases/tag/v3.5.1",
+      mirrors: [
+        { name: "GitHub", url: "https://github.com/superxyline/fnos_music_ext/releases/tag/v3.5.1" },
+        { name: "Gitee", url: "https://gitee.com/superxyline/fnos_music_ext/releases/tag/v3.5.1" },
+      ],
+    },
+  });
+  await global.loadUpdateCheck();
+  global.openUpdateModal();
+  assert.strictEqual(
+    els.get("#update-go").href,
+    "https://github.com/superxyline/fnos_music_ext/releases/tag/v3.5.1");
+  assert.strictEqual(els.get("#update-go").textContent, "GitHub 下载");
+  assert.strictEqual(els.get("#update-go-gitee").hidden, false, "有 Gitee 源必须展示");
+  assert.strictEqual(
+    els.get("#update-go-gitee").href,
+    "https://gitee.com/superxyline/fnos_music_ext/releases/tag/v3.5.1");
+  assert.ok(els.get("#update-log").textContent.includes("顺序播放本地歌曲"));
+});
+
+test("升级弹窗：mirrors 缺失时退回主源单链接，Gitee 按钮保持隐藏", async () => {
+  reset();
+  enqueue("/app/fnmusic-ext/api/update-check", {
+    ok: true,
+    has_update: true,
+    current_version: "3.4.2",
+    source: "gitee",
+    latest: {
+      version: "3.5.1",
+      changelog: "",
+      html_url: "https://gitee.com/superxyline/fnos_music_ext/releases/tag/v3.5.1",
+    },
+  });
+  await global.loadUpdateCheck();
+  global.openUpdateModal();
+  assert.strictEqual(
+    els.get("#update-go").href,
+    "https://gitee.com/superxyline/fnos_music_ext/releases/tag/v3.5.1",
+    "退回主源 html_url");
+  assert.strictEqual(els.get("#update-go-gitee").hidden, true);
+});
+
+/* 关于页：项目仓库双平台链接 */
+test("关于页：项目仓库/问题反馈同时列 GitHub 与 Gitee", async () => {
+  reset();
+  enqueue("/app/fnmusic-ext/api/about", {
+    ok: true,
+    version: "3.5.1",
+    deploy_mode: "docker",
+    author: "superxyline",
+    author_url: "https://github.com/superxyline",
+    repo_url: "https://github.com/superxyline/fnos_music_ext",
+    repo_url_gitee: "https://gitee.com/superxyline/fnos_music_ext",
+    issues_url: "https://github.com/superxyline/fnos_music_ext/issues",
+    issues_url_gitee: "https://gitee.com/superxyline/fnos_music_ext/issues",
+  });
+  await global.loadAbout();
+  const html = els.get("#about-links").innerHTML;
+  assert.ok(html.includes("项目仓库 · GitHub"), "GitHub 仓库入口");
+  assert.ok(html.includes("项目仓库 · Gitee"), "Gitee 仓库入口");
+  assert.ok(html.includes("问题反馈 · Gitee"), "Gitee 反馈入口");
+  assert.ok(html.includes("https://gitee.com/superxyline/fnos_music_ext"), "Gitee 链接地址");
+  assert.strictEqual(els.get("#about-version").textContent, "v3.5.1");
+});
+
 /* ------------------------------------------------ 运行 --------------------- */
 (async () => {
   let failed = 0;

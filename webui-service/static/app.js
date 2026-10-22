@@ -1307,8 +1307,23 @@ function openUpdateModal() {
   $("#update-meta").textContent = meta.join(" · ");
   // changelog 由后端清洗成纯文本，这里用 textContent 注入，天然防 XSS
   $("#update-log").textContent = latest.changelog || "（该发行版未填写说明）";
+  // 下载源自选（2026-10-22 用户需求）：GitHub / Gitee 两个 Release 页，
+  // tag 路径两平台一致；mirrors 缺失时退回主源 html_url 单链接
+  const mirrors = Array.isArray(latest.mirrors) && latest.mirrors.length
+    ? latest.mirrors : [{ name: "GitHub", url: latest.html_url || "#" }];
   const go = $("#update-go");
-  go.href = latest.html_url || "#";
+  const goGitee = $("#update-go-gitee");
+  const gh = mirrors.find((m) => /github/i.test(m.name || "")) || mirrors[0];
+  const gitee = mirrors.find((m) => /gitee/i.test(m.name || ""));
+  go.href = gh.url || "#";
+  go.textContent = `${gh.name || "GitHub"} 下载`;
+  if (gitee && gitee.url) {
+    goGitee.href = gitee.url;
+    goGitee.textContent = `${gitee.name || "Gitee"} 下载`;
+    goGitee.hidden = false;
+  } else {
+    goGitee.hidden = true;
+  }
   $("#update-modal").hidden = false;
 }
 
@@ -1339,8 +1354,10 @@ async function loadAbout() {
     $("#about-version").textContent = `v${about.version}`;
     $("#about-deploy").textContent = `部署形态：${about.deploy_mode === "native" ? "原生（systemd）" : "Docker"}`;
     const links = [
-      ["项目仓库", about.repo_url],
-      ["问题反馈", about.issues_url],
+      ["项目仓库 · GitHub", about.repo_url],
+      ["项目仓库 · Gitee", about.repo_url_gitee],
+      ["问题反馈 · GitHub", about.issues_url],
+      ["问题反馈 · Gitee", about.issues_url_gitee],
       ["作者", about.author_url],
     ].filter(([, url]) => url);
     $("#about-links").innerHTML = links.map(([label, url]) =>

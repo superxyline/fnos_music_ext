@@ -4595,30 +4595,105 @@ def _register_favorite_download(request: Request, guid: str, info_hint: dict | N
             except Exception as e:
                 logger.warning("Repair unknown filename failed for %s: %s", guid, type(e).__name__)
             return False
-        # 只在滚动缓存（关边听边存时的播放缓存）：定名挪进曲库，不重新下载。
-        # 定不了名（快照与 ID3 双空）时继续走后台下载，避免歌卡在缓存里被淘汰。
-        try:
-            if _promote_rolling_cache_to_library(guid, hint):
-                _schedule_library_scan(copy_incoming_headers(request))
-                return False
-        except Exception as e:
-            logger.warning("Promote rolling cache failed for %s: %s", guid, type(e).__name__)
+        # 只在滚动缓存（关边听边存时的播放缓存）：先转存进曲库再绑定（issue #82）。
+        # 官方扫描不进 cache 目录——命中缓存≠已入库，直接绑定只会空等超时。
+        _schedule_rolling_promote(request, guid, hint, user_guid)
+        return False
     return _schedule_full_fetch(
         request, guid, require_tee_enabled=False,
         info_hint=hint or None, favorite_context={"user_guid": user_guid} if user_guid else None,
     )
 
 
-def _promote_rolling_cache_to_library(guid: str, hint: dict) -> bool:
+# 滚动缓存转存在途集合（issue #82）：同 guid 并发触发（重复收藏/列表自愈）只搬一次
+_rolling_promote_active: "set[str]" = set()
+
+
+def _schedule_rolling_promote(request: "Request | None", guid: str, hint: dict, user_guid: str) -> None:
+    """滚动缓存→曲库转存调度：同 guid 在途去重；文件搬运走线程池不阻塞事件 loop。
+
+    无运行中的事件循环时（同步上下文）退化为原地转存，行为不丢。
+    """
+    if guid in _rolling_promote_active:
+        return
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # 无事件循环（同步上下文）：原地转存 + 同步后续（歌词/轮询跳过，
+        # 条目已登记待关联，由收藏列表请求的对账拾起）；转存不了回退后台下载
+        dest = _promote_rolling_cache_to_library(guid, hint)
+        if dest:
+            headers = copy_incoming_headers(request) if request is not None else {}
+            _schedule_library_scan(headers)
+            _after_rolling_promote(guid, dest, hint, user_guid, headers)
+        elif request is not None:
+            _schedule_full_fetch(
+                request, guid, require_tee_enabled=False,
+                info_hint=hint or None,
+                favorite_context={"user_guid": user_guid} if user_guid else None,
+            )
+        return
+    _rolling_promote_active.add(guid)
+    asyncio.create_task(_rolling_promote_task(request, guid, hint, user_guid))
+
+
+async def _rolling_promote_task(request: "Request | None", guid: str, hint: dict, user_guid: str) -> None:
+    """转存任务体：搬文件（线程池）→ 补歌词 → 通知官方扫描 → 登记待关联起轮询。
+
+    歌词补齐排在扫描之前：官方扫描入库时 .lrc 已落在音频旁，入库即带歌词
+    （FNMUSIC_LYRIC_AUTO_DL 开启时；未开启时 _auto_lyric_after_finalize 直接返回）。
+    元数据缺失转存不了（快照与 ID3 双空）时回退后台整轨下载：用下载会话的新鲜
+    元数据定名落库，避免歌卡在滚动缓存里被淘汰。
+    """
+    try:
+        dest = await asyncio.to_thread(_promote_rolling_cache_to_library, guid, hint)
+        if not dest:
+            _schedule_full_fetch(
+                request, guid, require_tee_enabled=False,
+                info_hint=hint or None,
+                favorite_context={"user_guid": user_guid} if user_guid else None,
+            )
+            return
+        headers = copy_incoming_headers(request) if request is not None else {}
+        try:
+            await _auto_lyric_after_finalize(
+                _synth_request(headers or {}), guid, {"dest": dest, "title": hint.get("title") or ""})
+        except Exception as e:
+            logger.info("auto lyric after promote failed for %s: %s", guid, type(e).__name__)
+        _schedule_library_scan(headers)
+        _after_rolling_promote(guid, dest, hint, user_guid, headers)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning("Promote rolling cache failed for %s: %s", guid, type(e).__name__)
+    finally:
+        _rolling_promote_active.discard(guid)
+
+
+def _after_rolling_promote(guid: str, dest: str, hint: dict, user_guid: str, headers: dict) -> None:
+    """转存成功后续链（同步部分）：登记待关联 + 起轮询，官方扫描入库后自动转官方红心。
+
+    与 _seed_pending_from_favorites 的列表自愈互补——这里是收藏/自愈动作即时
+    触发，不必等下一次收藏列表请求。
+    """
+    if not user_guid:
+        return
+    _register_pending_official_link(user_guid, guid, hint)
+    _spawn_link_poller(guid, hint, headers, user_guid)
+    logger.info("Rolling cache promoted for %s -> %s; favorite link registered", guid, os.path.basename(dest))
+
+
+def _promote_rolling_cache_to_library(guid: str, hint: dict) -> "str | None":
     """把滚动缓存音频定名挪进曲库（红心触发，复用已下载的文件不重复拉流）。
 
     定名优先级：收藏快照 > 文件自带 ID3。移动含 .lrc 随迁、写路径 ref、写标签。
     两边可能不在同一文件系统，用 shutil.move 兜底跨设备。快照与 ID3 都拿不到
-    歌名时返回 False，让调用方照常走后台下载。
+    歌名时返回 None（保持缓存形态，交由调用方回退后台下载/列表自愈重试），
+    绝不以 unknown 定名入库。返回落库路径。
     """
     cached = find_cache_file(guid)
     if not cached:
-        return False
+        return None
     title = str(hint.get("title") or "").strip()
     artist = str(hint.get("artist") or "").strip()
     album = str(hint.get("album") or "").strip()
@@ -4628,7 +4703,7 @@ def _promote_rolling_cache_to_library(guid: str, hint: dict) -> bool:
         artist = artist or a2
         album = album or al2
     if not title:
-        return False
+        return None
     lib = tee_save_dir()
     os.makedirs(lib, exist_ok=True)
     ext = os.path.splitext(cached)[1].lstrip(".") or "mp3"
@@ -4648,7 +4723,7 @@ def _promote_rolling_cache_to_library(guid: str, hint: dict) -> bool:
                 pass
     write_audio_tags(dest, title, artist, album)
     logger.info("Promoted rolling cache for %s -> %s", guid, os.path.basename(dest))
-    return True
+    return dest
 
 
 def _repair_unknown_cached(guid: str, title: str, artist: str, album: str) -> bool:
@@ -4886,7 +4961,7 @@ async def _full_fetch_download(
         if favorite_context:
             user_guid = str(favorite_context.get("user_guid") or "")
             if user_guid:
-                asyncio.create_task(_link_official_favorite(guid, info or hint, cred_headers, user_guid))
+                _spawn_link_poller(guid, info or hint, cred_headers, user_guid)
     except asyncio.CancelledError:
         raise
     except Exception as e:
@@ -4914,6 +4989,45 @@ _PENDING_LINK_TRY_S = 10.0
 # 待关联条目：key = f"{user_guid}:{online_guid}"。仅在内存，重启后由
 # _seed_pending_from_favorites 按已下载文件自愈重建，无需持久化。
 _pending_official_links: "dict[str, dict]" = {}
+
+# 官方绑定轮询任务：key 同 _pending_official_links。同 key 在途不重复起轮询
+# （重复收藏/重复落盘/转存与下载完成并发触发时，避免多轮询并发打官方搜索）。
+_link_poll_tasks: "dict[str, asyncio.Task]" = {}
+
+
+def _spawn_link_poller(online_guid: str, info: dict | None, cred_headers: dict, user_guid: str) -> None:
+    """同 (user,guid) 在途轮询去重后起官方绑定轮询；无事件循环时跳过（列表对账兜底）。"""
+    key = f"{user_guid}:{online_guid}"
+    task = _link_poll_tasks.get(key)
+    if task is not None and not task.done():
+        return
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    async def _runner() -> None:
+        try:
+            await _link_official_favorite(online_guid, info, cred_headers, user_guid)
+        finally:
+            # 只清理自己的登记：被更新任务顶替时不动新任务的条目
+            if _link_poll_tasks.get(key) is asyncio.current_task():
+                _link_poll_tasks.pop(key, None)
+
+    _link_poll_tasks[key] = asyncio.create_task(_runner())
+
+
+# per-user 对账锁：同用户的对账串行执行，条目处理（搜索→建红心→撤在线收藏）
+# 不会有两个任务交叉跑，杜绝重复建官方红心与重复搜索（issue #82 对齐）。
+_reconcile_locks: "dict[str, asyncio.Lock]" = {}
+
+
+def _reconcile_lock_for(user_guid: str) -> asyncio.Lock:
+    lock = _reconcile_locks.get(user_guid)
+    if lock is None:
+        lock = asyncio.Lock()
+        _reconcile_locks[user_guid] = lock
+    return lock
 
 
 _tee_handoff_active: "set[str]" = set()
@@ -5182,7 +5296,10 @@ def _seed_pending_from_favorites(user_guid: str, items: list) -> None:
     """把"已下载落盘但还没转成官方红心"的在线收藏补进待关联集合（自愈入口）。
 
     升级/重启丢失内存态、或下载完成后迟迟未被索引的条目，都靠这里在每次收藏
-    列表请求时重新拾起。find_cache_file 命中即代表该在线曲目已有本地文件。
+    列表请求时重新拾起。**只认曲库内的文件**：官方扫描不索引 cache 目录，滚动
+    缓存（关边听边存时的播放缓存）形态的条目进了待关联集合也永远匹配不上，
+    只会每轮列表请求反复打官方搜索（issue #82 对齐）。滚动缓存由列表自愈循环
+    先转存进曲库，下一次列表请求再经这里拾起。
     """
     for it in items:
         guid = str(it.get("guid") or "")
@@ -5191,7 +5308,8 @@ def _seed_pending_from_favorites(user_guid: str, items: list) -> None:
         key = f"{user_guid}:{guid}"
         if key in _pending_official_links:
             continue
-        if not find_cache_file(guid):
+        cached = find_cache_file(guid)
+        if not cached or _is_rolling_cache_stem(cached, guid):
             continue
         snapshot = it.get("track") if isinstance(it.get("track"), dict) else None
         _register_pending_official_link(user_guid, guid, _snapshot_to_info(snapshot) if snapshot else None)
@@ -5366,92 +5484,96 @@ async def _reconcile_official_links_for_user(cred_headers: dict, user_guid: str)
 
     只处理当前用户自己的条目（收藏操作必须以该用户身份发起）；每条目 10 秒
     节流，避免收藏列表频繁刷新时反复打官方搜索。返回本轮是否发生转换。
+
+    同用户并发对账串行（per-user 锁）：收藏列表请求与轮询任务并发触发时，
+    避免重复官方搜索与重复建官方红心（issue #82 对齐：在途去重）。
     """
-    converted = False
-    now = time.monotonic()
-    headers = dict(cred_headers or {})
-    client = get_upstream_client(app)
-    for key, entry in list(_pending_official_links.items()):
-        if entry.get("userGuid") != user_guid:
-            continue
-        if now - float(entry.get("lastTry") or 0) < _PENDING_LINK_TRY_S:
-            continue
-        title = str(entry.get("title") or "")
-        if not title:
-            _pending_official_links.pop(key, None)
-            continue
-        entry["lastTry"] = now
-        try:
-            # 官方搜索只认 q 参数（keyword 返回 100002 invalid arguments，
-            # data 恒为空导致对账永远匹配不上——历史 unknown 转收藏失败的根源）
-            req = client.build_request(
-                "GET", "/music/api/v1/search/track",
-                params={"q": title, "page": 1, "size": 50}, headers=headers,
-            )
-            resp = await client.send(req)
-            if resp.status_code != 200:
+    async with _reconcile_lock_for(user_guid):
+        converted = False
+        now = time.monotonic()
+        headers = dict(cred_headers or {})
+        client = get_upstream_client(app)
+        for key, entry in list(_pending_official_links.items()):
+            if entry.get("userGuid") != user_guid:
                 continue
+            if now - float(entry.get("lastTry") or 0) < _PENDING_LINK_TRY_S:
+                continue
+            title = str(entry.get("title") or "")
+            if not title:
+                _pending_official_links.pop(key, None)
+                continue
+            entry["lastTry"] = now
             try:
-                payload = resp.json() or {}
-            except Exception:
-                continue
-            if payload.get("code") != 0:
-                logger.warning(
-                    "Favorite link search rejected for %s: code=%s msg=%s",
-                    entry["guid"], payload.get("code"), str(payload.get("msg"))[:80],
+                # 官方搜索只认 q 参数（keyword 返回 100002 invalid arguments，
+                # data 恒为空导致对账永远匹配不上——历史 unknown 转收藏失败的根源）
+                req = client.build_request(
+                    "GET", "/music/api/v1/search/track",
+                    params={"q": title, "page": 1, "size": 50}, headers=headers,
                 )
-                continue
-            data = payload.get("data")
-            tracks = data.get("list") if isinstance(data, dict) else None
-            if not isinstance(tracks, list):
-                continue
-            target = _match_local_track(tracks, title, str(entry.get("artist") or ""))
-            if not target:
-                # 匹配失败不再静默：每条目只打一次（对账每 10s 一轮，防刷屏）
-                if not entry.get("loggedNoMatch") and tracks:
-                    first = tracks[0] if isinstance(tracks[0], dict) else {}
-                    logger.info(
-                        "Favorite link no match %s: local=%r/%r first=%r/%r candidates=%d",
-                        entry["guid"], title, str(entry.get("artist") or "")[:40],
-                        title_from_track(first),
-                        str(artist_from_track(first))[:40], len(tracks),
-                    )
-                    entry["loggedNoMatch"] = True
-                continue
-            official_guid = str(target.get("guid") or "")
-            if not official_guid or is_online_guid(official_guid):
-                continue
-            # 老曲库"文件名整段入库"行：用快照权威元数据补写，收藏/列表显示刮削形态
-            await asyncio.to_thread(
-                _repair_filename_track_metadata, official_guid, title, str(entry.get("artist") or ""))
-            req = client.build_request(
-                "POST", "/music/api/v1/favorite-track/create",
-                headers=headers, json={"trackGUID": official_guid},
-            )
-            resp = await client.send(req)
-            if resp.status_code != 200:
-                logger.warning(
-                    "Official favorite create failed for %s (%s): %s; will retry",
-                    official_guid, entry["guid"], resp.status_code,
-                )
-                continue
-            async with _FAV_LOCK:
+                resp = await client.send(req)
+                if resp.status_code != 200:
+                    continue
                 try:
-                    items = load_online_favorites(user_guid)
-                    kept = [it for it in items if str(it.get("guid") or "") != entry["guid"]]
-                    if len(kept) != len(items):
-                        save_online_favorites(user_guid, kept)
-                except Exception as e:
-                    logger.warning("Failed to drop online favorite %s for %s: %s", entry["guid"], user_guid, e)
-            _record_bind(user_guid, entry["guid"], official_guid)
-            _pending_official_links.pop(key, None)
-            converted = True
-            logger.info("Favorite download linked to official track %s (was %s)", official_guid, entry["guid"])
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.warning("Favorite link reconcile failed for %s: %s", entry["guid"], type(e).__name__)
-    return converted
+                    payload = resp.json() or {}
+                except Exception:
+                    continue
+                if payload.get("code") != 0:
+                    logger.warning(
+                        "Favorite link search rejected for %s: code=%s msg=%s",
+                        entry["guid"], payload.get("code"), str(payload.get("msg"))[:80],
+                    )
+                    continue
+                data = payload.get("data")
+                tracks = data.get("list") if isinstance(data, dict) else None
+                if not isinstance(tracks, list):
+                    continue
+                target = _match_local_track(tracks, title, str(entry.get("artist") or ""))
+                if not target:
+                    # 匹配失败不再静默：每条目只打一次（对账每 10s 一轮，防刷屏）
+                    if not entry.get("loggedNoMatch") and tracks:
+                        first = tracks[0] if isinstance(tracks[0], dict) else {}
+                        logger.info(
+                            "Favorite link no match %s: local=%r/%r first=%r/%r candidates=%d",
+                            entry["guid"], title, str(entry.get("artist") or "")[:40],
+                            title_from_track(first),
+                            str(artist_from_track(first))[:40], len(tracks),
+                        )
+                        entry["loggedNoMatch"] = True
+                    continue
+                official_guid = str(target.get("guid") or "")
+                if not official_guid or is_online_guid(official_guid):
+                    continue
+                # 老曲库"文件名整段入库"行：用快照权威元数据补写，收藏/列表显示刮削形态
+                await asyncio.to_thread(
+                    _repair_filename_track_metadata, official_guid, title, str(entry.get("artist") or ""))
+                req = client.build_request(
+                    "POST", "/music/api/v1/favorite-track/create",
+                    headers=headers, json={"trackGUID": official_guid},
+                )
+                resp = await client.send(req)
+                if resp.status_code != 200:
+                    logger.warning(
+                        "Official favorite create failed for %s (%s): %s; will retry",
+                        official_guid, entry["guid"], resp.status_code,
+                    )
+                    continue
+                async with _FAV_LOCK:
+                    try:
+                        items = load_online_favorites(user_guid)
+                        kept = [it for it in items if str(it.get("guid") or "") != entry["guid"]]
+                        if len(kept) != len(items):
+                            save_online_favorites(user_guid, kept)
+                    except Exception as e:
+                        logger.warning("Failed to drop online favorite %s for %s: %s", entry["guid"], user_guid, e)
+                _record_bind(user_guid, entry["guid"], official_guid)
+                _pending_official_links.pop(key, None)
+                converted = True
+                logger.info("Favorite download linked to official track %s (was %s)", official_guid, entry["guid"])
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("Favorite link reconcile failed for %s: %s", entry["guid"], type(e).__name__)
+        return converted
 
 
 async def _link_official_favorite(online_guid: str, info: dict | None, cred_headers: dict, user_guid: str) -> None:
@@ -6790,21 +6912,26 @@ async def favorite_track_list(request: Request):
                 current_favs = load_online_favorites(user_guid)
             before = len(_pending_official_links)
             _seed_pending_from_favorites(user_guid, current_favs)
-            # 自愈：在线收藏但本地文件缺失（下载失败/从未完成）→ 补触发后台下载。
+            # 自愈：在线收藏但本地文件缺失（下载失败/从未完成）→ 补触发后台下载；
+            # 只有滚动缓存（官方扫描不索引 cache 目录）→ 先转存进曲库再绑定（#82）。
             # 列表场景把 30 分钟失败冷却缩短为 2 分钟节流——下载失败不再永久卡死。
             for it in current_favs:
                 g = str(it.get("guid") or "")
-                if not is_online_guid(g) or find_cache_file(g):
+                if not is_online_guid(g):
                     continue
-                task = _full_fetch_tasks.get(g)
-                if task is not None and not task.done():
-                    continue
-                failed_at = _full_fetch_failed.get(g)
-                if failed_at is not None and time.monotonic() - failed_at < 120.0:
-                    continue
-                _full_fetch_failed.pop(g, None)
+                cached = find_cache_file(g)
+                if cached and not _is_rolling_cache_stem(cached, g):
+                    continue  # 已在曲库：对待关联集合无需动作（seed 负责拾起）
+                if not cached:
+                    task = _full_fetch_tasks.get(g)
+                    if task is not None and not task.done():
+                        continue
+                    failed_at = _full_fetch_failed.get(g)
+                    if failed_at is not None and time.monotonic() - failed_at < 120.0:
+                        continue
+                    _full_fetch_failed.pop(g, None)
                 snap = it.get("track") if isinstance(it.get("track"), dict) else None
-                logger.info("Favorite link redl retry for %s", g)
+                logger.info("Favorite link self-heal for %s (rolling=%s)", g, bool(cached))
                 _register_favorite_download(
                     request, g,
                     info_hint=_snapshot_to_info(snap) if snap else None,

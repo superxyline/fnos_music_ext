@@ -646,6 +646,11 @@ test("音源测试：全部模式一个平台都没出歌才标红；空范围�
 test("音源测试：全部模式分批限流，>8 个平台拆成多批请求", async () => {
   reset();
   global.setMusicdlTestScope("all");
+  // 批间有 300ms 等待：桩把 timer unref 了，await 的 Promise 会永不 resolve
+  // 导致进程静默退出（测试"消失"）。本用例临时换成真实 timer。
+  const stubbed = global.setTimeout;
+  global.setTimeout = realSetTimeout;
+  try {
   const registered = Array.from({ length: 10 }, (_, i) => `P${i}MusicClient`);
   enqueue("/app/fnmusic-ext/api/platforms", { ok: true, enabled: [], registered });
   await global.loadPlatforms(false);
@@ -668,6 +673,55 @@ test("音源测试：全部模式分批限流，>8 个平台拆成多批请求",
   const html = els.get("#musicdl-test-result").innerHTML;
   assert.ok(html.includes("出歌 2 个"), "两批结果合并统计");
   assert.ok(html.includes("P9MusicClient"), "第二批平台也在报告里");
+  } finally {
+    global.setTimeout = stubbed;
+  }
+});
+
+test("音源测试：平台多时先确认，取消则不发任何请求", async () => {
+  reset();
+  global.setMusicdlTestScope("all");
+  // 57 个平台 = 8 批 × 单源 25s 上限，慢网下要好几分钟且会拖慢点歌：
+  // 点下去之前必须让用户知道代价，能反悔。
+  const registered = Array.from({ length: 57 }, (_, i) => `P${i}MusicClient`);
+  enqueue("/app/fnmusic-ext/api/platforms", { ok: true, enabled: [], registered });
+  await global.loadPlatforms(false);
+  document.querySelector("#musicdl-test-q").value = "晴天";
+
+  const asked = [];
+  global.window = global.window || {};
+  const savedConfirm = global.window.confirm;
+  global.window.confirm = (msg) => { asked.push(msg); return false; };
+  try {
+    await global.musicdlTest();
+  } finally {
+    global.window.confirm = savedConfirm;
+  }
+
+  assert.strictEqual(asked.length, 1, "平台多时必须弹确认");
+  assert.ok(/57/.test(asked[0]) && /分钟/.test(asked[0]), "确认文案要给出平台数与预估耗时");
+  assert.strictEqual(fetchLog.filter((e) => e.path.endsWith("/api/musicdl/test")).length, 0,
+    "取消后不得发测试请求");
+});
+
+test("音源测试：有源超时会提示熔断自愈时间", async () => {
+  reset();
+  global.setMusicdlTestScope("enabled");
+  enqueue("/app/fnmusic-ext/api/platforms", { ok: true, enabled: ["kw", "mg"], registered: ["kw", "mg"] });
+  await global.loadPlatforms(false);
+  document.querySelector("#musicdl-test-q").value = "晴天";
+  enqueue("/app/fnmusic-ext/api/musicdl/test", {
+    ok: true, tookMs: 26000,
+    platforms: [
+      { source: "kw", count: 3, samples: [] },
+      { source: "mg", count: 0, error: "timeout after 25s" },
+    ],
+  });
+  await global.musicdlTest();
+  const html = els.get("#musicdl-test-result").innerHTML;
+  // 不说清楚的话，用户会以为「测完点歌就坏了」（熔断期间点歌确实搜不到）
+  assert.ok(html.includes("超时/熔断"), "超时源要有解释");
+  assert.ok(html.includes("2 分钟"), "给出自愈时间");
 });
 
 /* ------------------------------------------------ 运行 --------------------- */

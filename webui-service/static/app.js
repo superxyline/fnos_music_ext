@@ -475,6 +475,15 @@ async function musicdlTest() {
   if (!sources.length) {
     return toast(scopeAll ? "平台列表还没加载，请先点刷新列表" : "没有勾选任何平台", "fail");
   }
+  // 全部平台是一次重活（几十个源 × 每个都要解析直链）：慢网下要 2-4 分钟，
+  // 期间共享探活池被占满，App 里点歌/收藏会跟着变慢。平台多时先确认。
+  if (scopeAll && sources.length > 20 && typeof window.confirm === "function") {
+    const mins = Math.max(1, Math.round((sources.length / 8) * 25 / 60));
+    if (!window.confirm(
+      `测全部 ${sources.length} 个平台约需 ${mins} 分钟，期间点歌/收藏可能变慢，` +
+      `部分源还会被熔断（约 2 分钟自愈）。\n\n只想确认常用源能否出歌，用「已勾选」更快。继续吗？`
+    )) return;
+  }
   box.hidden = false;
   box.className = "report";
   const scopeLabel = scopeAll ? "全部平台" : "已勾选";
@@ -504,6 +513,9 @@ async function musicdlTest() {
       });
       tested.push(...(body.platforms || []));
       tookMs += body.tookMs || 0;
+      // 批间喘口气：上一批的连接/探活任务还没释放完，紧接着打下一批会互相抢
+      // 共享探活池（8 worker），让每批都更容易撞超时。
+      if (i < chunks.length - 1) await new Promise((r) => setTimeout(r, 300));
     }
     const rows = tested.map((p) => {
       const ok = p.count > 0;
@@ -512,7 +524,14 @@ async function musicdlTest() {
     });
     const hit = tested.filter((p) => p.count > 0).length;
     const secs = tookMs ? `，耗时 ${(tookMs / 1000).toFixed(1)}s` : "";
-    const summary = `<div class="kv muted">范围：${scopeLabel} ${sources.length} 个 · 出歌 ${hit} 个${secs}</div>`;
+    // 测完有源超时/熔断时提示自愈时间：这些源在接下来 2 分钟内点歌会被跳过，
+    // 不说清楚用户会以为「测了一下结果点歌坏了」。
+    const sick = tested.filter((p) => !p.count && /超时|timeout|busy|熔断|circuit/i.test(String(p.error || ""))).length;
+    const summary =
+      `<div class="kv muted">范围：${scopeLabel} ${sources.length} 个 · 出歌 ${hit} 个${secs}</div>` +
+      (sick
+        ? `<div class="kv muted">其中 ${sick} 个源超时/熔断，约 2 分钟后自动恢复；期间点歌若搜不到歌，稍等再试。</div>`
+        : "");
     box.innerHTML = summary + (rows.join("") || '<div class="kv muted">没有可测的平台</div>');
     // 判定：已勾选模式全部出歌才算 ok（历史行为）；全部模式只要有平台出歌即 ok
     // （57 个平台里个别没有某首歌是正常的，不能把整页标红）

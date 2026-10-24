@@ -70,6 +70,12 @@ class NativeCore:
         self.playlist_seq_name = ""
         # 睡眠定时任务：did → asyncio.Task（到点 stop，重复口令先撤销旧的）
         self._sleep_timers: dict = {}
+        # 口令收藏：桥接 /play 最后取流的 guid（音箱开播哪首就来取哪首的流）；
+        # bridge 由 app.create_native 装配（State：fn 客户端 + favorites 快照）
+        self.last_played_guid = ""
+        self.last_played_title = ""
+        self.last_played_at = 0.0
+        self.bridge = None
 
         # 组件装配（顺序照搬 XiaoMusic.__init__ 中与本方案相关的部分）
         self.device_manager = DeviceManager(config=cfg, log=log, xiaomusic=self)
@@ -279,6 +285,52 @@ class NativeCore:
             await self.do_tts(did, "已取消睡眠定时")
         else:
             await self.do_tts(did, "当前没有睡眠定时")
+
+    async def fav_current(self, did="", arg1="", **kwargs):
+        """口令:收藏这首歌——收藏当前播放歌曲到飞牛音乐账号。
+
+        guid 来自桥接 /play（或点歌在线下载）记录的"最后取流"。官方 guid
+        直接建官方红心；在线 guid 走代理的红心自动下载链路（整轨落库→官方
+        收录→转官方红心，音质门槛自动生效）。已在收藏中则不重复写。"""
+        guid = str(getattr(self, "last_played_guid", "") or "")
+        title = str(getattr(self, "last_played_title", "") or "")
+        if not guid:
+            await self.do_tts(did, "没有正在播放的歌曲，先点首歌吧")
+            return
+        bridge = getattr(self, "bridge", None)
+        fn = getattr(bridge, "fn", None) if bridge is not None else None
+        if fn is None:
+            self.log.warning("[native] 收藏当前歌曲失败：桥接客户端未就绪")
+            await self.do_tts(did, "收藏服务还没就绪，稍后再试")
+            return
+        label = f"《{title}》" if title else "这首歌"
+        # 已收藏判断：官方 guid 才有精确快照；在线 guid 无快照，直接走收藏
+        # →代理自动下载转正（重复收藏由代理的绑定/去重机制兜底）
+        favs = {
+            str(t.get("guid") or "")
+            for t in (getattr(bridge, "favorites", None) or [])
+            if isinstance(t, dict)
+        }
+        if guid in favs:
+            self.log.info("[native] 收藏口令：%s 已在收藏中", guid[:24])
+            await self.do_tts(did, f"{label}已经在收藏里啦")
+            return
+        try:
+            await fn.add_favorite(guid)
+        except Exception as e:  # noqa: BLE001
+            self.log.warning("[native] 收藏当前歌曲失败 guid=%s: %s", guid[:24], e)
+            await self.do_tts(did, f"收藏{label}失败了，请稍后再试")
+            return
+        self.log.info("[native] 收藏当前歌曲成功 guid=%s", guid[:24])
+        # 快照即时补一条：紧跟的重复口令不误判；官方同步循环稍后全量校正
+        try:
+            bridge.favorites = list(bridge.favorites or []) + [{"guid": guid}]
+        except Exception:  # noqa: BLE001
+            pass
+        if guid.startswith("online:"):
+            await self.do_tts(did, f"好的，正在收藏{label}，下载完成后自动加入收藏")
+        else:
+            await self.do_tts(did, f"好的，已收藏{label}")
 
     async def play_music_list_index(self, did="", arg1="", **kwargs):
         """口令:播放列表第几个xx（移植自 XiaoMusic.play_music_list_index）"""

@@ -78,6 +78,7 @@ NATIVE_COMMAND_SURFACE = [
     "play_favorites_seq",    # 顺序播放本地歌曲（保序歌单 + SEQ 模式）
     "sleep_timer",           # 半小时后停止播放（睡眠定时）
     "cancel_sleep_timer",    # 取消定时
+    "fav_current",           # 收藏这首歌（当前播放 → 飞牛收藏）
 ]
 
 
@@ -613,6 +614,31 @@ def test_dispatch_sleep_timer_upstream_guanji_untouched():
     _stub_sleep_actions(core)
     asyncio.run(_run_dispatch(core, "30分钟后关机"))
     assert core.calls == [("stop_after_minute", "30")], core.calls
+
+
+def _stub_fav_current(core):
+    async def _fav(did="", arg1="", **kw):
+        core.calls.append(("fav_current", ""))
+
+    core.fav_current = _fav
+
+
+def test_dispatch_fav_current_variants():
+    """收藏当前歌曲口令族命中 fav_current；不带限定的「收藏」不误触发。"""
+    import asyncio
+
+    for query in ("收藏这首歌", "收藏一下这首歌", "收藏当前歌曲", "把这首歌收藏",
+                  "正在播放的这首收藏一下"):
+        core = _FakeCore()
+        _stub_fav_current(core)
+        asyncio.run(_run_dispatch(core, query))
+        assert core.calls == [("fav_current", "")], f"{query!r}: {core.calls}"
+    # 「播放收藏」歌单口令等不得误触发
+    for query in ("播放收藏", "播放本地收藏"):
+        core = _FakeCore()
+        _stub_fav_current(core)
+        asyncio.run(_run_dispatch(core, query))
+        assert all(c[0] != "fav_current" for c in core.calls), f"{query!r}: {core.calls}"
 
 
 def test_dispatch_cancel_sleep_timer():

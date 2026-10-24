@@ -157,6 +157,7 @@ def create_native():
         settings=settings,
     )
     XM = NativeCore(cfg, log)
+    XM.bridge = STATE  # 口令收藏：/play 记录当前播放 + favorites 快照判断
 
 
 app = FastAPI(title="小爱音箱·飞牛音乐")
@@ -563,6 +564,12 @@ async def _resolve_song(name: str):
     if online_track is not None:
         ok = await _download_online_track(online_track)
         if ok:
+            # 播的是下载后的本地 mp3（不经 /play），记录在线 guid 供「收藏这首歌」
+            # 走代理红心链路：整轨无损落库 + 转官方收藏（音质门槛自动生效）
+            if XM is not None:
+                XM.last_played_guid = online_track.get("guid") or ""
+                XM.last_played_title = (online_track.get("title") or "").strip()
+                XM.last_played_at = time.time()
             return "downloaded", _full_name(online_track)
     log.info("[play] 搜索「%s」无可用结果", name)
     return None, None
@@ -834,6 +841,11 @@ async def play(request: Request, guid: str):
     """带认证请求飞牛音乐取流，跟随 302，流式回传（支持 Range）"""
     if not CFG.get("wizard_done"):
         return JSONResponse({"error": "尚未完成安装向导"}, status_code=503)
+    # 口令收藏（fav_current）：音箱开播哪首就来取哪首的流，这里即"当前播放"
+    if XM is not None:
+        XM.last_played_guid = guid
+        XM.last_played_at = time.time()
+        log.info("[play] 记录当前播放 guid=%s", guid[:40])
     STATE.fn = STATE.fn or new_fn_client()
     range_header = request.headers.get("range")
     try:

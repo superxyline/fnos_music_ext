@@ -27,6 +27,7 @@ from .keywords import (
     FAV_SEQ_HINT_RE,
     SLEEP_TIMER_HINT_RE,
     SLEEP_CANCEL_RE,
+    FAV_CURRENT_HINT_RE,
 )
 
 # 点歌意图词：Query 含这些词说明"要放歌"。与停止口令冲突时按位置判：
@@ -198,6 +199,12 @@ class CommandDispatcher:
         if self._fav_seq_intent(query):
             self.log.info(f"[native] 匹配到顺序播放本地收藏口令. query:{query}")
             return "play_favorites_seq", ""
+
+        # 0.6) 收藏当前播放歌曲：显式优先（正则强制带「这首/当前/正在」限定，
+        #      与「播放收藏」歌单口令天然不冲突）
+        if FAV_CURRENT_HINT_RE.search(query):
+            self.log.info(f"[native] 匹配到收藏当前歌曲口令. query:{query}")
+            return "fav_current", ""
 
         # 1) 多匹配待选态：「第几个」类回复优先（移植自 command_handler.match_cmd）
         if getattr(device, "_pending_selection", None):

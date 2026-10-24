@@ -5,6 +5,13 @@
 
 > 以下 v2.3.1 起为本仓库（superxyline 二次开发版）的增量变更；v2.3.0 及之前为上游 javycoder/fnos_music_ext 的变更。
 
+## [3.6.1] - 2026-10-24
+
+### 修复
+
+- **【热修】重启 NAS 后小爱音箱桥接不可达**：飞牛应用中心在开机时会按仓库 docker-compose **重建镜像与容器**，而旧 Dockerfile 只拷贝桥接的 `app.py + fnmusic_client.py`，缺 `audio_id_resolver.py` 与 `native/` 目录——平时靠热部署 docker cp 打补丁掩盖，容器一重建 xiaomusic 即 `ModuleNotFoundError` 连崩 5 次 FATAL（8775 不可达）。修复：Dockerfile 补齐依赖文件并重建镜像，重启/容器重建不再依赖补丁；镜像内容与仓库保持一致。
+- **管理台左侧菜单无法滚动**：侧栏为 100vh 固定布局，菜单项超出视口（3.6.0 新增两页后暴露）时无法滚动到——导航区改为自身可滚动（细滚动条），底部版本信息保持钉底。
+
 ## [3.6.0] - 2026-10-24
 
 ### 新增

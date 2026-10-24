@@ -38,6 +38,7 @@ try:
     from . import recommend as dailyrec
     from . import nmplaylists as nmpl
     from . import publicplaylists as pubpl
+    from . import history_playlist as histpl
     from .cache_gc import purge_rolling, sweep_orphan_lyrics
     from .env_merge import parse_env_file
     from .version import get_version
@@ -46,6 +47,7 @@ except ImportError:  # uvicorn --app-dir proxy
     import recommend as dailyrec  # type: ignore
     import nmplaylists as nmpl  # type: ignore
     import publicplaylists as pubpl  # type: ignore
+    import history_playlist as histpl  # type: ignore
     from cache_gc import purge_rolling, sweep_orphan_lyrics  # type: ignore
     from env_merge import parse_env_file  # type: ignore
     from version import get_version  # type: ignore
@@ -135,6 +137,9 @@ CONF = {
     "library_name_pattern": os.environ.get("FNMUSIC_LIBRARY_NAME_PATTERN", "{artist} - {title}"),
     # 收藏自动下载：对在线歌曲点红心即后台整轨下载原文件落盘（独立于边听边存开关）
     "favorite_download_enabled": os.environ.get("FNMUSIC_FAVORITE_DOWNLOAD_ENABLED", "true").lower() in ("true", "1", "yes"),
+    # 收藏下载音质门槛：any=不限制；320=至少 256kbps 或无损；lossless=只收无损。
+    # 不达门槛先换源一次，仍不达则拒绝入库（宁可不下也不低质污染曲库）
+    "download_min_quality": (os.environ.get("FNMUSIC_DOWNLOAD_MIN_QUALITY") or "any").strip().lower(),
     # 在线取流 Range 探针：记录每条在线 /track/stream 的 Range 形态与落盘资格，
     # 用于真机确认手机播放器是否按定长窗口取流（那样边听边存永不触发）
     "stream_probe": os.environ.get("FNMUSIC_STREAM_PROBE", "true").lower() in ("true", "1", "yes"),
@@ -187,6 +192,8 @@ CONF = {
     # {"provider":"musicbox","source":"netease","kind":"chart","id":"3778678"}
     "public_playlists_enabled": os.environ.get("FNMUSIC_PUBLIC_PLAYLISTS_ENABLED", "false").lower() in ("true", "1", "yes"),
     "public_playlists_selection": os.environ.get("FNMUSIC_PUBLIC_PLAYLISTS_SELECTION", ""),
+    # 最近常听：播放历史驱动的只读虚拟歌单（数据全在本地，默认开）
+    "history_playlist_enabled": os.environ.get("FNMUSIC_HISTORY_PLAYLIST_ENABLED", "true").lower() in ("true", "1", "yes"),
     # 收藏/关注的他人歌单也注入（v2.4.2）：默认开；仅在 netease_my_playlists 开启时生效。
     # musicbox 拉取的账号歌单本就含自建+收藏，此前一律过滤 owner!=uid 的收藏歌单
     "netease_subscribed": os.environ.get("FNMUSIC_NETEASE_SUBSCRIBED", "true").lower() in ("true", "1", "yes"),
@@ -509,6 +516,7 @@ _ENV_WATCH_KEYS: dict[str, tuple[str, str]] = {
     # 曲库文件命名模板（issue #47）：占位符 {artist}/{title}/{source}，热重载
     "FNMUSIC_LIBRARY_NAME_PATTERN": ("library_name_pattern", "str"),
     "FNMUSIC_FAVORITE_DOWNLOAD_ENABLED": ("favorite_download_enabled", "bool"),
+    "FNMUSIC_DOWNLOAD_MIN_QUALITY": ("download_min_quality", "download_quality"),
     "FNMUSIC_LIBRARY_SCAN_PATH": ("library_scan_path", "str"),
     "FNMUSIC_RECOMMEND_HOT": ("recommend_hot", "bool"),
     "FNMUSIC_RECOMMEND_DAILY": ("recommend_daily", "bool"),
@@ -519,6 +527,8 @@ _ENV_WATCH_KEYS: dict[str, tuple[str, str]] = {
     "FNMUSIC_PUBLIC_PLAYLISTS_ENABLED": ("public_playlists_enabled", "bool"),
     # 选择串是 JSON 数组原文：整体替换即可，不进 _env_tri 那套布尔解析
     "FNMUSIC_PUBLIC_PLAYLISTS_SELECTION": ("public_playlists_selection", "str"),
+    "FNMUSIC_HISTORY_PLAYLIST_ENABLED": ("history_playlist_enabled", "bool"),
+    "FNMUSIC_HISTORY_PLAYLIST_SIZE": ("", "str"),  # histpl.playlist_size() 动态读 env
     "FNMUSIC_COVER_DIR": ("cover_dir", "str"),
     "FNMUSIC_COVER_ENRICH": ("cover_enrich", "bool"),
     "FNMUSIC_COVER_MODE": ("cover_mode", "str"),
@@ -568,6 +578,8 @@ def _env_watch_parse(raw: str, kind: str):
             return None
     if kind == "quality_mode":
         return raw.lower() if raw.lower() in ("high", "balanced", "smooth") else None
+    if kind == "download_quality":
+        return raw.lower() if raw.lower() in ("any", "320", "lossless") else None
     if kind == "lx_sources":
         return _normalize_lx_sources(raw)
     if kind == "llm_url":
@@ -3253,7 +3265,8 @@ def ensure_registry_warm() -> None:
                       dailyrec.play_history_dir(),
                       dailyrec.recommend_cache_dir(),
                       nmpl.cache_dir(),
-                      pubpl.cache_dir()):
+                      pubpl.cache_dir(),
+                      histpl.cache_dir()):
         for path in _iter_registry_jsons(directory):
             try:
                 with open(path, "r", encoding="utf-8") as f:
@@ -4021,7 +4034,8 @@ def _lookup_playlist_cache_track(guid: str) -> dict | None:
     """
     if not guid:
         return None
-    for root in (dailyrec.recommend_cache_dir(), nmpl.cache_dir(), pubpl.cache_dir()):
+    for root in (dailyrec.recommend_cache_dir(), nmpl.cache_dir(), pubpl.cache_dir(),
+                 histpl.cache_dir()):
         for path in _iter_registry_jsons(root):
             try:
                 with open(path, encoding="utf-8") as f:
@@ -4840,10 +4854,13 @@ def _sniff_audio_ext(path: str) -> "str | None":
     return None
 
 
-async def _find_alt_full_version(request: Request, title: str, artist: str) -> "dict | None":
-    """网易仅给试听片段时，从 musicdl 源（kuwo/migu/bili）找同名完整版。
+async def _find_alt_full_version(
+    request: Request, title: str, artist: str, min_tier: int = 2,
+) -> "dict | None":
+    """网易仅给试听片段（或音质不达标）时，从 musicdl 源找同名可用完整版。
 
-    返回可播在线曲目条目（含 guid）；找不到返回 None。
+    min_tier 为音质门槛（0=无损 1>=256k 2=不限），候选按元数据分档过滤后
+    取最好的一档；返回可播在线曲目条目（含 guid），找不到返回 None。
     """
     keyword = f"{title} {artist}".strip()
     if not keyword:
@@ -4860,6 +4877,8 @@ async def _find_alt_full_version(request: Request, title: str, artist: str) -> "
 
     def norm(v: object) -> str:
         return re.sub(r"[\s\-_·・.,，。!！?？'\"“”‘’:：;；、()\[\]【】&+/]+", "", str(v or "").lower())
+    best = None
+    best_tier = 3
     for it in items:
         if not isinstance(it, dict):
             continue
@@ -4871,8 +4890,34 @@ async def _find_alt_full_version(request: Request, title: str, artist: str) -> "
         a_tokens = [norm(t) for t in re.split(r"[&/,、\s]+", str(artist or "")) if norm(t)]
         if a_tokens and cand_artist and not any(t in cand_artist for t in a_tokens):
             continue
-        return it
-    return None
+        tier = _quality_tier_of(it.get("ext"), it.get("file_size"), it.get("duration_s"))
+        if tier > min_tier or tier >= best_tier:
+            continue
+        best, best_tier = it, tier
+    return best
+
+
+_LOSSLESS_DL_EXTS = ("flac", "ape", "wav", "aiff", "alac")
+
+
+def _quality_tier_of(ext: object, size: object, duration_s: object) -> int:
+    """音质分档（小值优）：0=无损，1=≥256kbps，2=低码率/未知。"""
+    e = str(ext or "").strip().lower()
+    if e in _LOSSLESS_DL_EXTS:
+        return 0
+    try:
+        size_i = int(size or 0)
+        dur_f = float(duration_s or 0)
+    except (TypeError, ValueError):
+        return 2
+    if size_i > 0 and dur_f > 0:
+        return 1 if size_i * 8 / dur_f >= 256_000 else 2
+    return 2
+
+
+def _download_min_tier() -> int:
+    """收藏下载音质门槛 → 允许的最差档位（any=2 / 320=1 / lossless=0）。"""
+    return {"lossless": 0, "320": 1}.get(str(CONF.get("download_min_quality") or "any").lower(), 2)
 
 
 async def _full_fetch_download(
@@ -4933,7 +4978,8 @@ async def _full_fetch_download(
                 alt = await _find_alt_full_version(
                     fake_request,
                     str((info or {}).get("title") or hint.get("title") or ""),
-                    str((info or {}).get("artist") or hint.get("artist") or ""))
+                    str((info or {}).get("artist") or hint.get("artist") or ""),
+                    _download_min_tier())
                 if alt:
                     alt_guid = online_guid_from_item(alt)
                     _remove_quiet(part)
@@ -4951,6 +4997,33 @@ async def _full_fetch_download(
         if sniffed and sniffed != ext:
             logger.info("ext sniff corrected for %s: %s -> %s", guid, ext, sniffed)
             ext = sniffed
+        # 收藏下载音质门槛：不达标先换源一次，仍不达标拒绝入库（宁缺毋滥）。
+        # 用真实字节数+实测时长估码率，比搜索元数据可靠。
+        min_tier = _download_min_tier()
+        tier = _quality_tier_of(ext, written, actual_s or nominal_s)
+        if tier > min_tier:
+            logger.info(
+                "download quality gate for %s: tier=%d (%s) > min=%d",
+                guid, tier, ext, min_tier)
+            if _fetch_depth == 0:
+                alt = await _find_alt_full_version(
+                    fake_request,
+                    str((info or {}).get("title") or hint.get("title") or ""),
+                    str((info or {}).get("artist") or hint.get("artist") or ""),
+                    min_tier)
+                if alt:
+                    alt_guid = online_guid_from_item(alt)
+                    _remove_quiet(part)
+                    part = None
+                    with suppress(Exception):
+                        await resp.aclose()
+                    logger.info("quality-gate alt source %s -> %s (%s)", guid, alt_guid,
+                                str(alt.get("ext"))[:12])
+                    return await _full_fetch_download(
+                        alt_guid, cred_headers, {**(info or {}), **hint},
+                        favorite_context, _fetch_depth=1)
+            raise RuntimeError(
+                f"quality gate: tier={tier} ext={ext} below min={min_tier}")
         info = await _info_for_background_save(fake_request, guid, info)
         ext = ext or (info or {}).get("ext") or "mp3"
         meta = await asyncio.to_thread(_tee_finalize, part, guid, ext, info or {}, True)
@@ -7331,6 +7404,9 @@ async def playlist_add_track(request: Request):
     if nmpl.is_nm_playlist_guid(playlist_guid):
         # 网易账号歌单只读（不回写网易）：同样吸收请求
         return JSONResponse(content={"code": 0, "msg": "", "data": None})
+    if histpl.is_history_playlist_guid(playlist_guid):
+        # 最近常听是播放历史衍生的只读歌单：吸收请求
+        return JSONResponse(content={"code": 0, "msg": "", "data": None})
 
     online = [g for g in (resolve_real_guid(g) for g in track_guids) if is_online_guid(g)]
     if not online:
@@ -7385,6 +7461,9 @@ async def playlist_remove_track(request: Request):
         return JSONResponse(content={"code": 0, "msg": "", "data": None})
     if nmpl.is_nm_playlist_guid(playlist_guid):
         return JSONResponse(content={"code": 0, "msg": "", "data": None})
+    if histpl.is_history_playlist_guid(playlist_guid):
+        # 最近常听只读：吸收移歌请求
+        return JSONResponse(content={"code": 0, "msg": "", "data": None})
 
     online = [g for g in (resolve_real_guid(g) for g in track_guids) if is_online_guid(g)]
     if not online:
@@ -7432,6 +7511,9 @@ async def playlist_delete(request: Request):
         return JSONResponse(content={"code": 0, "msg": "ok", "data": None})
     if nmpl.is_nm_playlist_guid(resolve_real_guid(_pl_guid)):
         # 网易账号歌单只读：吸收删除（不透传官方必被拒的假 id），下次刷新卡片仍在
+        return JSONResponse(content={"code": 0, "msg": "ok", "data": None})
+    if histpl.is_history_playlist_guid(_pl_guid) or histpl.is_history_playlist_guid(resolve_real_guid(_pl_guid)):
+        # 最近常听只读：吸收删除，下次刷新卡片仍在
         return JSONResponse(content={"code": 0, "msg": "ok", "data": None})
     envelope = await fetch_upstream_envelope(request, upstream_client)
     if isinstance(envelope, Response):
@@ -7504,8 +7586,10 @@ async def playlist_list(request: Request):
     nm_on = _netease_resident_enabled()
     # 公共歌单（issue #55）：管理页预选的网易榜单/推荐/分类歌单，同样实例级只读
     public_on = bool(CONF.get("public_playlists_enabled"))
-    if not kinds and not nm_on and not public_on:
-        # 两个推荐开关全关（或 shared 会话无任何可注入类型）且账号歌单/公共歌单关闭：不注入
+    # 最近常听：播放历史驱动，数据全本地，默认开
+    history_on = bool(CONF.get("history_playlist_enabled"))
+    if not kinds and not nm_on and not public_on and not history_on:
+        # 两个推荐开关全关（或 shared 会话无任何可注入类型）且账号歌单/公共歌单/最近常听关闭：不注入
         return JSONResponse(content=envelope, headers=headers)
 
     data = envelope.get("data")
@@ -7571,11 +7655,20 @@ async def playlist_list(request: Request):
         it for it in official
         if not (isinstance(it, dict) and dailyrec.is_recommend_playlist_guid(str(it.get("guid") or "")))
     ]
-    data["list"] = recs + public_cards + nm_cards + official
+    history_cards: list[dict] = []
+    if history_on:
+        try:
+            card = histpl.card_for(user_guid, fake_fn=fake_official_guid)
+            if card.get("coverId"):
+                history_cards = [card]
+        except Exception as e:
+            logger.warning("history playlist inject failed: %s", e)
+            history_cards = []
+    data["list"] = recs + history_cards + public_cards + nm_cards + official
     total = data.get("total")
     data["total"] = (
         (total if isinstance(total, int) else len(official))
-        + len(recs) + len(public_cards) + len(nm_cards)
+        + len(recs) + len(history_cards) + len(public_cards) + len(nm_cards)
     )
     return JSONResponse(content=envelope, headers=headers)
 
@@ -7583,6 +7676,19 @@ async def playlist_list(request: Request):
 @app.get("/music/api/v1/playlist/detail")
 async def playlist_detail(request: Request):
     guid = str(request.query_params.get("guid") or "").strip()
+    if histpl.is_history_playlist_guid(guid):
+        # 最近常听：只读虚拟歌单，卡片取自播放历史缓存
+        upstream_client = get_upstream_client(request.app)
+        is_authed, user_guid, auth_resp = await _probe_upstream_auth(request, upstream_client)
+        if not is_authed:
+            return auth_resp or JSONResponse(
+                content={"code": -1, "msg": "unauthorized", "data": None}, status_code=401
+            )
+        card = histpl.card_for(user_guid, fake_fn=fake_official_guid)
+        tracks = histpl.cached_tracks(user_guid)
+        if tracks is not None:
+            card = {**card, "trackCount": len(tracks)}
+        return JSONResponse(content={"code": 0, "msg": "ok", "data": card})
     public_entry = pubpl.entry_from_guid(guid) or pubpl.entry_from_guid(resolve_real_guid(guid))
     if public_entry:
         # 公共歌单：只读虚拟歌单。与官方歌单一致，先过飞牛登录态（未登录不出内容）
@@ -7654,6 +7760,7 @@ async def playlist_batch_detail(request: Request):
     raw = request.query_params.get("guids") or request.query_params.get("guid") or ""
     guids = [g.strip() for g in raw.split(",") if g.strip()]
     recommend_ids = [g for g in guids if dailyrec.is_recommend_playlist_guid(g)]
+    history_ids = [g for g in guids if histpl.is_history_playlist_guid(g)]
     public_ids = [resolve_real_guid(g) for g in guids if pubpl.is_public_playlist_guid(resolve_real_guid(g))]
     nm_ids = [
         pid for pid in (
@@ -7661,13 +7768,14 @@ async def playlist_batch_detail(request: Request):
             for g in guids
         ) if pid
     ]
-    if not recommend_ids and not public_ids and not nm_ids and not plt_dir_has_data():
+    if not recommend_ids and not history_ids and not public_ids and not nm_ids and not plt_dir_has_data():
         return await forward_to_upstream(request, get_upstream_client(request.app))
 
     upstream_client = get_upstream_client(request.app)
     rest = [
         g for g in guids
         if not dailyrec.is_recommend_playlist_guid(g)
+        and not histpl.is_history_playlist_guid(g)
         and not pubpl.is_public_playlist_guid(resolve_real_guid(g))
         and not nmpl.is_nm_playlist_guid(resolve_real_guid(g))
     ]
@@ -7711,6 +7819,13 @@ async def playlist_batch_detail(request: Request):
         rec = _playlist_public_fields(bundle.get("playlist") or {}, bundle.get("tracks") or [])
         rec["trackCount"] = len(bundle.get("tracks") or [])
         recs.append(rec)
+    for g in history_ids:
+        # 最近常听卡片：曲目从缓存取不到时 trackCount 显示 0，详情/曲目端点会现算
+        card = histpl.card_for(user_guid, fake_fn=fake_official_guid)
+        tracks = histpl.cached_tracks(user_guid)
+        if tracks is not None:
+            card = {**card, "trackCount": len(tracks)}
+        recs.append(card)
     for pid in nm_ids:
         card = nmpl.card_for(pid)
         if card is not None:
@@ -7743,6 +7858,40 @@ async def playlist_track_list(request: Request):
         or ""
     ).strip()
     kind = dailyrec.online_playlist_kind(guid)
+    if histpl.is_history_playlist_guid(guid) or histpl.is_history_playlist_guid(resolve_real_guid(guid)):
+        # 最近常听曲目：官方本地曲目 + 在线曲目混合 VO，分页语义与公共歌单一致
+        upstream_client = get_upstream_client(request.app)
+        is_authed, user_guid, auth_resp = await _probe_upstream_auth(request, upstream_client)
+        if not is_authed and auth_resp is not None:
+            return auth_resp
+        try:
+            tracks = await histpl.load_tracks(
+                user_guid, lambda g, info, created_at=None:
+                    build_favorite_track_obj(g, info, created_at=created_at))
+        except Exception as e:
+            logger.warning("history playlist track list failed (%s): %s", guid, e)
+            return JSONResponse(content={"code": -1, "msg": "history playlist load failed", "data": None})
+        try:
+            page = max(int(request.query_params.get("page") or 1), 1)
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            size = int(request.query_params.get("size") or 50)
+        except (TypeError, ValueError):
+            size = 50
+        if size == -1:
+            size = max(len(tracks), 1)
+        if size < 1:
+            size = 50
+        start = (page - 1) * size
+        page_tracks = tracks[start:start + size]
+        return JSONResponse(
+            content=disguise_client_json({
+                "code": 0,
+                "msg": "ok",
+                "data": {"list": page_tracks, "total": len(tracks), "sort": request.query_params.get("sort") or ""},
+            })
+        )
     public_entry = pubpl.entry_from_guid(guid) or pubpl.entry_from_guid(resolve_real_guid(guid))
     if public_entry:
         # 公共歌单曲目：与账号歌单同款 VO 分页语义（size=-1 全量）

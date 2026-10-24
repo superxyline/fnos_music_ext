@@ -22,7 +22,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -113,8 +113,10 @@ SCHEMA: dict[str, dict] = {
     "FNMUSIC_QUALITY_MODE": {"kind": "enum", "values": ["high", "balanced", "smooth"], "default": "high", "group": "quality", "reload": "hot", "label": "音质偏好"},
     "FNMUSIC_RECOMMEND_HOT": {"kind": "bool", "default": "true", "group": "recommend", "reload": "hot", "label": "热门榜单推荐"},
     "FNMUSIC_RECOMMEND_DAILY": {"kind": "bool", "default": "true", "group": "recommend", "reload": "hot", "label": "每日推荐"},
+    "FNMUSIC_HISTORY_PLAYLIST_ENABLED": {"kind": "bool", "default": "true", "group": "recommend", "reload": "hot", "label": "最近常听歌单"},
     "FNMUSIC_TEE_SAVE_ENABLED": {"kind": "bool", "default": "true", "group": "tee", "reload": "hot", "label": "边听边存"},
     "FNMUSIC_FAVORITE_DOWNLOAD_ENABLED": {"kind": "bool", "default": "true", "group": "tee", "reload": "hot", "label": "收藏自动下载"},
+    "FNMUSIC_DOWNLOAD_MIN_QUALITY": {"kind": "enum", "values": ["any", "320", "lossless"], "default": "any", "group": "tee", "reload": "hot", "label": "收藏下载音质门槛"},
     "FNMUSIC_TEE_SAVE_DIR": {"kind": "str", "default": "", "group": "tee", "reload": "hot", "label": "保存路径（留空自动探测）"},
     "FNMUSIC_TEE_CACHE_MAX": {"kind": "int", "default": "2", "min": 1, "max": 100, "group": "tee", "reload": "hot", "label": "关闭时滚动缓存数"},
     "FNMUSIC_AUTO_COVER": {"kind": "bool", "default": "true", "group": "tee", "reload": "hot", "label": "自动下载封面"},
@@ -135,6 +137,7 @@ SCHEMA: dict[str, dict] = {
     "FNMUSIC_PUBLIC_PLAYLISTS_ENABLED": {"kind": "bool", "default": "false", "group": "recommend", "reload": "hot", "label": "公共歌单"},
     "FNMUSIC_PUBLIC_PLAYLISTS_SELECTION": {"kind": "str", "default": "", "group": "recommend", "reload": "hot", "label": "公共歌单选择"},
     "FNMUSIC_XIAOMUSIC_ENABLED": {"kind": "bool", "default": "false", "group": "xiaomusic", "reload": "process", "label": "小爱音箱接管"},
+    "FNMUSIC_DIRECT_TOKEN": {"kind": "secret", "default": "", "group": "direct", "reload": "hot", "label": "直链访问令牌"},
 }
 
 _PROVIDER_KEYS = set(PROVIDERS.values())
@@ -1132,6 +1135,104 @@ async def api_musicdl_test(body: MusicdlTestBody, request: Request):
         "tookMs": int((time.monotonic() - started) * 1000),
         "platforms": _summarize_musicdl_search(data),
     }
+
+
+# ------------------------------------------------- 在线歌曲 302 直链（外部播放器） --
+
+def _check_direct_token(token: str) -> None:
+    """直链端点的轻量门禁：未配置令牌=功能关闭，配置后比对 query token。"""
+    expect = (read_env().get("FNMUSIC_DIRECT_TOKEN") or "").strip()
+    if not expect:
+        raise HTTPException(status_code=403,
+                            detail="直链功能未启用：请在管理台「直链输出」页设置访问令牌")
+    if not token or token != expect:
+        raise HTTPException(status_code=403, detail="token 无效")
+
+
+@app.get("/direct/search")
+async def direct_search(request: Request, keyword: str = Query(..., min_length=1),
+                        token: str = "", limit: int = Query(20, ge=1, le=30)):
+    """按歌名搜在线曲库，返回可直接用于 /direct 的曲目 id 列表（JSON）。"""
+    _check_direct_token(token)
+    client = get_http(request)
+    resp = await client.get(f"{CONF['musicdl_url']}/search",
+                            params={"keyword": keyword, "limit": limit}, timeout=30)
+    data = _resp_json(resp)
+    if not isinstance(data, dict) or not data.get("ok"):
+        raise HTTPException(status_code=502, detail="musicdl 搜索失败")
+    items = []
+    for it in data.get("items") or []:
+        if not isinstance(it, dict):
+            continue
+        items.append({
+            "id": it.get("id"), "source": it.get("source"), "title": it.get("title"),
+            "artist": it.get("artist"), "album": it.get("album"), "ext": it.get("ext"),
+        })
+    return {"ok": True, "keyword": keyword, "items": items, "errors": data.get("errors") or {}}
+
+
+@app.get("/direct")
+async def direct(request: Request, id: str = Query(..., min_length=1),
+                 token: str = "", quality: str = ""):
+    """在线歌曲 302 直链：外部播放器（车机/电视/手机播放器）直接播 NAS 在线曲库。
+
+    id 形态："kuwo:123"（musicdl 平台）、"netease:123"、"lx:kg:xxx"，
+    均兼容 "online:" 前缀。返回 302 到源站 CDN 直链（有时效签名，天然限泄漏窗口）。
+    """
+    _check_direct_token(token)
+    sid = id.strip()
+    if sid.startswith("online:"):
+        sid = sid[len("online:"):]
+    src, _, rest = sid.partition(":")
+    src = src.strip().lower()
+    rest = rest.strip()
+    client = get_http(request)
+    try:
+        if src == "netease":
+            if not rest.isdigit():
+                raise HTTPException(status_code=400, detail=f"invalid netease id {rest!r}")
+            params = {"quality": quality} if quality else {}
+            resp = await client.get(f"{CONF['musicbox_url']}/api/v1/song/{rest}/url",
+                                    params=params, timeout=25)
+            data = _resp_json(resp)
+            url = str(((data or {}).get("data") or {}).get("url") or "")
+            if not url:
+                raise HTTPException(status_code=404, detail="netease 无可播直链")
+            return RedirectResponse(url, status_code=302)
+        if src == "lx":
+            params = {"id": sid}
+            if quality:
+                params["quality"] = quality
+            resp = await client.get(f"{CONF['lx_url']}/api/v1/track/url",
+                                    params=params, timeout=30)
+            data = _resp_json(resp)
+            url = str(((data or {}).get("data") or {}).get("url") or "")
+            if not url:
+                raise HTTPException(status_code=404,
+                                    detail=str((data or {}).get("error") or "lx 无可播直链"))
+            return RedirectResponse(url, status_code=302)
+        # musicdl 平台（kuwo/migu/bilibili 及其他注册平台）
+        params = {"id": sid}
+        if quality:
+            params["quality"] = quality
+        resp = await client.get(f"{CONF['musicdl_url']}/stream", params=params,
+                                follow_redirects=False, timeout=30)
+        if resp.status_code in (301, 302, 307, 308):
+            location = resp.headers.get("location") or ""
+            if location:
+                return RedirectResponse(location, status_code=302)
+        detail = "musicdl 未返回直链"
+        try:
+            body = resp.json()
+            if isinstance(body, dict) and body.get("detail"):
+                detail = str(body["detail"])[:200]
+        except Exception:  # noqa: BLE001
+            pass
+        raise HTTPException(status_code=502, detail=detail)
+    except HTTPException:
+        raise
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"音源服务不可达: {exc}") from exc
 
 
 # ------------------------------------------------- 公共歌单发现（反代 musicbox） --

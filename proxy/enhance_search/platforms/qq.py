@@ -419,3 +419,47 @@ def get_lyrics(song, timeout=None):
                 "romanization": [],
             }
     return {"original": []}
+
+
+def get_playlist(disstid, timeout=None):
+    """QQ 音乐歌单详情（musicu.fcg 公开接口，无需登录）。
+
+    返回 {"name": 歌单名, "tracks": [_map_song 形状]}；失败返回 None。
+    """
+    try:
+        disstid_i = int(str(disstid).strip())
+    except (TypeError, ValueError):
+        return None
+    body = {
+        "comm": dict(COMM),
+        "req_1": {
+            "module": "music.srfPlaylist.detail",
+            "method": "get_playlist_detail",
+            "param": {"disstid": disstid_i},
+        },
+    }
+    data = net.post_json_parsed(MUSICU_URL, json_body=body, headers=HEADERS, timeout=timeout)
+    if not isinstance(data, dict):
+        return None
+    module = data.get("req_1")
+    if not isinstance(module, dict):
+        return None
+    payload = module.get("data") or {}
+    if isinstance(payload, dict) and payload.get("code") not in (0, None):
+        return None
+    dirinfo = payload.get("dirinfo") if isinstance(payload, dict) else {}
+    songs = payload.get("songlist") if isinstance(payload, dict) else None
+    if not isinstance(songs, list):
+        return None
+    tracks = []
+    for item in songs:
+        if not isinstance(item, dict):
+            continue
+        song = item.get("song") if isinstance(item.get("song"), dict) else item
+        tracks.append(_map_song(song))
+    name = ""
+    if isinstance(dirinfo, dict):
+        name = str(dirinfo.get("title") or dirinfo.get("diss_name") or "")
+    if not name:
+        name = str(disstid)
+    return {"name": name, "tracks": tracks}

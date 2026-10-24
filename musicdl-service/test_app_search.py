@@ -50,17 +50,18 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 
 class _FakeSong:
-    def __init__(self, sid: int, source: str):
+    def __init__(self, sid: int, source: str, ext: str = "mp3",
+                 file_size_bytes: int = 4096, duration_s: int = 200):
         self.identifier = str(sid)
         self.source = source
         self.song_name = f"Song {sid}"
         self.singers = "Artist"
         self.album = "Album"
-        self.duration_s = 200
-        self.ext = "mp3"
-        self.file_size_bytes = 4096
+        self.duration_s = duration_s
+        self.ext = ext
+        self.file_size_bytes = file_size_bytes
         self.cover_url = ""
-        self.download_url = f"http://example.com/{sid}.mp3"
+        self.download_url = f"http://example.com/{sid}.{ext}"
         self.default_download_headers = {}
         self.lyric = ""
 
@@ -105,7 +106,11 @@ def _fake_search_factory(calls: dict, plan: dict):
         if cfg.get("sleep"):
             _interruptible_sleep(cfg["sleep"])
         short = app_module._source_short(source)
-        return [_FakeSong(cfg["start"] + i, source) for i in range(cfg.get("count", 0))]
+        return [_FakeSong(cfg["start"] + i, source,
+                          ext=cfg.get("ext", "mp3"),
+                          file_size_bytes=cfg.get("file_size", 4096),
+                          duration_s=cfg.get("duration_s", 200))
+                for i in range(cfg.get("count", 0))]
 
     return _fake
 
@@ -121,7 +126,10 @@ def test_normalize_startup_sources():
 
 
 def test_fast_return_when_enough_results(clean_state, monkeypatch):
-    """快源返回足够结果后立即返回，不被慢源拖到全局超时。"""
+    """已拿到最好音质（无损）后，快源立即返回，不被慢源拖到全局超时。
+
+    kuwo 交出无损（delivered_best=0）后，同为无损源的 migu 不再受保护，
+    fast-return 放行。"""
     calls: dict = {}
     monkeypatch.setattr(
         app_module,
@@ -129,7 +137,7 @@ def test_fast_return_when_enough_results(clean_state, monkeypatch):
         _fake_search_factory(
             calls,
             {
-                "KuwoMusicClient": {"count": 5, "start": 1},
+                "KuwoMusicClient": {"count": 5, "start": 1, "ext": "flac"},
                 "MiguMusicClient": {"count": 5, "start": 100, "sleep": 30},
             },
         ),
@@ -153,6 +161,102 @@ def test_fast_return_when_enough_results(clean_state, monkeypatch):
     assert elapsed < 10
     assert calls["KuwoMusicClient"] == 1
     assert len(app_module.SEARCH_CACHE) == 0
+
+
+def test_fast_return_spares_lossless_capable_slow_source(clean_state, monkeypatch):
+    """快源只有有损结果时，不得截断能出无损的慢源（fast-return 门槛）。
+
+    kuwo（无损源）慢 30s，migu 交出的只是 mp3（tier 2）——门槛不满足，
+    不允许 fast-return，等 slow_grace 后超时返回 partial。"""
+    monkeypatch.setattr(
+        app_module,
+        "_search_one_source",
+        _fake_search_factory(
+            {},
+            {
+                "KuwoMusicClient": {"count": 5, "start": 1, "sleep": 30},
+                "MiguMusicClient": {"count": 5, "start": 100},
+            },
+        ),
+    )
+
+    with TestClient(app_module.app) as client:
+        t0 = time.monotonic()
+        resp = client.get("/search", params={"keyword": "spare", "limit": 5})
+        elapsed = time.monotonic() - t0
+
+    assert resp.status_code == 200
+    data = resp.json()
+    # migu 的 5 条保留，kuwo 超时被裁但不是 fast return
+    assert len(data["items"]) == 5
+    assert all(item["id"].startswith("migu:") for item in data["items"])
+    assert "timeout after" in data["errors"]["KuwoMusicClient"]
+    # 只多等了 slow_grace（1s），远小于 kuwo 的 30s / 全局 4s
+    assert elapsed < 3.5
+
+
+def test_quality_tier_orders_lossless_first(clean_state, monkeypatch):
+    """合并结果按音质分档：无损在前，同档保持源优先级（配置顺序）。"""
+    monkeypatch.setattr(
+        app_module,
+        "_search_one_source",
+        _fake_search_factory(
+            {},
+            {
+                # kuwo 只有 mp3（tier 2），migu 给 flac（tier 0）
+                "KuwoMusicClient": {"count": 3, "start": 1},
+                "MiguMusicClient": {"count": 3, "start": 100, "ext": "flac"},
+            },
+        ),
+    )
+
+    with TestClient(app_module.app) as client:
+        resp = client.get("/search", params={"keyword": "quality", "limit": 5})
+
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    # 无损（migu flac）整体排在低码率（kuwo mp3）前；单源内部顺序由探活
+    # 完成序决定（既有行为），只做分组断言
+    assert {item["id"] for item in items[:3]} == {"migu:100", "migu:101", "migu:102"}
+    assert {item["id"] for item in items[3:]} == {"kuwo:1", "kuwo:2", "kuwo:3"}
+
+
+def test_same_tier_keeps_source_priority_over_completion_order(clean_state, monkeypatch):
+    """同音质档时按配置的源顺序排，而非完成顺序；migu 先回也不截断 kuwo。"""
+    monkeypatch.setattr(
+        app_module,
+        "_search_one_source",
+        _fake_search_factory(
+            {},
+            {
+                # kuwo 慢 0.3s（仍在超时内）但优先级在前
+                "KuwoMusicClient": {"count": 3, "start": 1, "sleep": 0.3},
+                "MiguMusicClient": {"count": 3, "start": 100},
+            },
+        ),
+    )
+
+    with TestClient(app_module.app) as client:
+        resp = client.get("/search", params={"keyword": "priority", "limit": 5})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["errors"] == {}
+    items = resp.json()["items"]
+    # 同档（都是 mp3）时配置顺序优先：kuwo 整块在前，migu 不得抢跑截断
+    assert {item["id"] for item in items[:3]} == {"kuwo:1", "kuwo:2", "kuwo:3"}
+    assert {item["id"] for item in items[3:]} == {"migu:100", "migu:101", "migu:102"}
+
+
+def test_quality_tier_unit():
+    """_quality_tier：无损=0，B 站 m4a 无大小=1，低码率 mp3=2。"""
+    assert app_module._quality_tier({"ext": "flac"}) == 0
+    assert app_module._quality_tier({"ext": "APE"}) == 0
+    assert app_module._quality_tier({"ext": "m4a", "file_size": 0}) == 1
+    # 320kbps：320s 内 12.8MB
+    assert app_module._quality_tier({"ext": "mp3", "file_size": 12_800_000, "duration_s": 320}) == 1
+    # 128kbps
+    assert app_module._quality_tier({"ext": "mp3", "file_size": 5_120_000, "duration_s": 320}) == 2
 
 
 def test_slow_grace_returns_partial_results(clean_state, monkeypatch):

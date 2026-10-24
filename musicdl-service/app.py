@@ -125,6 +125,39 @@ def _source_short(client_name: str) -> str:
     return (client_name or "").replace("MusicClient", "").lower()
 
 
+_LOSSLESS_EXTS = {"flac", "ape", "wav", "aiff"}
+
+
+def _quality_tier(item: dict) -> int:
+    """音质分档（小值优先）：0=无损，1=有损高码率，2=低码率。
+
+    ext 直判无损；有大小和时长按估码率 256kbps 分界；缺失（如 B 站 DASH
+    m4a 不给大小）按有损高码率档处理。只用于搜索结果排序，不代表播放时
+    实际档位（无损坏流降级发生在 /stream）。"""
+    ext = str(item.get("ext") or "").strip().lower()
+    if ext in _LOSSLESS_EXTS:
+        return 0
+    size = int(item.get("file_size") or 0)
+    dur = int(item.get("duration_s") or 0)
+    if size > 0 and dur > 0:
+        return 1 if size * 8 / dur >= 256_000 else 2
+    return 1
+
+
+# 各音源"能给出的最好音质"（与 _quality_tier 同标度）：能出无损=0，只有
+# 有损=1；未收录的源默认按能出无损对待。fast-return 门槛用：快源抢跑
+# （如 bilibili 只有 m4a 有损）不得截断可能给出更高音质的源（kuwo/migu）。
+_SOURCE_CAP_TIER = {
+    "kuwo": 0,
+    "migu": 0,
+    "bilibili": 1,
+}
+
+
+def _source_cap_tier(source_full: str) -> int:
+    return _SOURCE_CAP_TIER.get(_source_short(source_full), 0)
+
+
 def _source_mapping() -> dict:
     """Resolve names without guessing capitalization (HTQYY/FiveSing/MyFreeMP3)."""
     names = set(CONF["sources"])
@@ -793,6 +826,7 @@ async def search(
 
         results: list = []
         pending = {asyncio.create_task(one(s), name=s): s for s in active_src_list}
+        source_rank = {s: i for i, s in enumerate(raw_src_list)}
         overall = max(float(CONF["search_timeout"]), 4.0)
         deadline = time.monotonic() + overall
         skipped_fast_return = False
@@ -813,10 +847,16 @@ async def search(
             if not pending:
                 break
             total_items = sum(len(items) for _, items, _ in results)
-            # 结果已足够优质：不再等待慢源，立即返回
+            # 结果已足够优质：裁掉还没回来的源。但只有当这些源不可能给出
+            # 比已拿到的更好的音质时才裁——快源抢跑（bilibili 只有 m4a 有损）
+            # 不能截断能出无损的源（kuwo/migu），否则整页只剩快源的结果。
+            # 门槛不满足时不 break，交给 slow_grace / 全局超时兜底。
             if total_items >= CONF["fast_return_items"]:
-                skipped_fast_return = True
-                break
+                delivered_best = min(_quality_tier(item)
+                                     for _, items, _ in results for item in items)
+                if all(_source_cap_tier(s) >= delivered_best for s in pending.values()):
+                    skipped_fast_return = True
+                    break
             # 已有任意源出结果：再给其余源最多 slow_grace_s 秒，避免慢源拖死整页
             if total_items > 0:
                 deadline = min(deadline, time.monotonic() + CONF["slow_grace_s"])
@@ -833,6 +873,10 @@ async def search(
                     ADAPTIVE.record_failure(src)
                     SOURCE_BREAKER.record_failure(src)
 
+        # 归并顺序与完成顺序解耦：先按配置的源优先级（MUSICDL_SOURCES 顺序）
+        # 排稳，再做音质分档稳定排序——无损永远在有损前，同档内保持源优先级
+        # 与各源内部顺序。音质好的源没结果时其条目自然缺席，低档自动顶上。
+        results.sort(key=lambda r: source_rank.get(r[0], len(source_rank)))
         all_items = []
         seen_ids = set()
         for _, items, _ in results:
@@ -840,6 +884,7 @@ async def search(
                 if item["id"] not in seen_ids:
                     seen_ids.add(item["id"])
                     all_items.append(item)
+        all_items.sort(key=_quality_tier)
 
         errors = {src: err for src, _, err in results if err}
         for s in raw_src_list:

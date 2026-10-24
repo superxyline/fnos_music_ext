@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
 
 from fastapi import FastAPI, Query, Request
@@ -25,6 +26,7 @@ from fastapi.responses import JSONResponse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import match_core  # noqa: E402
+import playlist_import  # noqa: E402  歌单导入引擎（复用同款 .env 加载）
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("fnmusic_match_gw")
@@ -136,6 +138,77 @@ async def dedup(request: Request):
                             "error": str(e) or type(e).__name__})
     ok_n = sum(1 for r in results if r.get("ok"))
     return {"code": 0, "msg": "", "data": {"total": len(results), "ok": ok_n, "results": results}}
+
+
+# ------------------------------------------------ 歌单导入（网易云/QQ） --
+
+@app.get("/api/import/preview")
+async def import_preview(request: Request, input: str = Query(..., alias="input"),
+                         platform: str = Query("auto")):
+    """解析歌单链接/ID，返回歌单名与曲目列表预览（不下载）。"""
+    try:
+        platform_, pid = playlist_import.parse_input(input, platform)
+        data = await playlist_import.fetch_playlist_tracks(platform_, pid)
+        return {"code": 0, "msg": "", "data": {"platform": platform_, "id": pid, **data}}
+    except ValueError as e:
+        return _err(str(e))
+    except Exception as e:
+        logger.exception("import preview failed")
+        return _err(f"预览失败: {e}", 502)
+
+
+@app.get("/api/import/playlists")
+async def import_playlists():
+    """官方歌单列表（目标歌单下拉）：借小爱向导的飞牛凭据。"""
+    client = playlist_import._official_client()
+    if client is None:
+        return _err("缺少飞牛凭据（设 FNMUSIC_IMPORT_USERNAME/PASSWORD 或完成小爱向导第三步）", 400)
+    try:
+        await client.login()
+        data = await client.api_call("GET", "/playlist/list", query={"page": 1, "size": 200})
+        rows = data.get("list") if isinstance(data, dict) else None
+        out = []
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            guid = str(row.get("guid") or "")
+            # 代理会往 /playlist/list 注入虚拟歌单（推荐/公共/最近常听），
+            # 它们的 add-track 被吸收，不能当导入目标——只留官方 32-hex 歌单
+            if not re.fullmatch(r"[0-9a-f]{32}", guid):
+                continue
+            out.append({"guid": guid,
+                        "name": str(row.get("name") or ""),
+                        "trackCount": int(row.get("trackCount") or 0)})
+        return {"code": 0, "msg": "", "data": out}
+    except Exception as e:
+        return _err(f"官方歌单拉取失败: {e}", 502)
+
+
+@app.post("/api/import/run")
+async def import_run(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        task_id = await playlist_import.start_import(
+            str(body.get("input") or ""), str(body.get("platform") or "auto"),
+            str(body.get("targetGuid") or ""), str(body.get("targetNew") or ""),
+            int(body.get("limit") or 0))
+        return {"code": 0, "msg": "", "data": {"taskId": task_id}}
+    except RuntimeError as e:
+        return _err(str(e))
+    except Exception as e:
+        logger.exception("import run failed")
+        return _err(f"启动失败: {e}", 500)
+
+
+@app.get("/api/import/task/{task_id}")
+async def import_task(task_id: str):
+    t = playlist_import.get_task(task_id)
+    if not t:
+        return _err("任务不存在", 404)
+    return {"code": 0, "msg": "", "data": t}
 
 
 if __name__ == "__main__":

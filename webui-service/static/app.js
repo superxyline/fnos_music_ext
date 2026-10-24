@@ -219,6 +219,7 @@ function applyConfigToForm() {
   $$("input[name=quality]").forEach((el) => { el.checked = el.value === quality; });
   $("#recommend-hot").checked = v.FNMUSIC_RECOMMEND_HOT === "true";
   $("#recommend-daily").checked = v.FNMUSIC_RECOMMEND_DAILY === "true";
+  $("#history-playlist").checked = v.FNMUSIC_HISTORY_PLAYLIST_ENABLED !== "false";
   // 公共歌单：选择串只存 {provider,source,kind,id}，_name/_cover_url 为展示用临时字段
   $("#public-playlists-enabled").checked = v.FNMUSIC_PUBLIC_PLAYLISTS_ENABLED === "true";
   $("#xm-enabled").checked = v.FNMUSIC_XIAOMUSIC_ENABLED === "true";
@@ -236,6 +237,8 @@ function applyConfigToForm() {
   renderPublicSelected();
   $("#tee-enabled").checked = v.FNMUSIC_TEE_SAVE_ENABLED === "true";
   $("#fav-download-enabled").checked = v.FNMUSIC_FAVORITE_DOWNLOAD_ENABLED !== "false";
+  $("#fav-download-quality").value = ["any", "320", "lossless"].includes(v.FNMUSIC_DOWNLOAD_MIN_QUALITY) ? v.FNMUSIC_DOWNLOAD_MIN_QUALITY : "any";
+  $("#direct-token").value = v.FNMUSIC_DIRECT_TOKEN || "";
   $("#auto-cover").checked = v.FNMUSIC_AUTO_COVER !== "false";
   $("#lyric-auto-dl").checked = v.FNMUSIC_LYRIC_AUTO_DL === "true";
   $("#tee-dir").value = v.FNMUSIC_TEE_SAVE_DIR || "";
@@ -275,8 +278,11 @@ function collectConfig() {
     FNMUSIC_QUALITY_MODE: ($$("input[name=quality]").find((el) => el.checked) || {}).value || "high",
     FNMUSIC_RECOMMEND_HOT: $("#recommend-hot").checked,
     FNMUSIC_RECOMMEND_DAILY: $("#recommend-daily").checked,
+    FNMUSIC_HISTORY_PLAYLIST_ENABLED: $("#history-playlist").checked,
     FNMUSIC_TEE_SAVE_ENABLED: $("#tee-enabled").checked,
     FNMUSIC_FAVORITE_DOWNLOAD_ENABLED: $("#fav-download-enabled").checked,
+    FNMUSIC_DOWNLOAD_MIN_QUALITY: $("#fav-download-quality").value || "any",
+    FNMUSIC_DIRECT_TOKEN: $("#direct-token").value.trim(),
     FNMUSIC_AUTO_COVER: $("#auto-cover").checked,
     FNMUSIC_LYRIC_AUTO_DL: $("#lyric-auto-dl").checked,
     FNMUSIC_TEE_SAVE_DIR: $("#tee-dir").value.trim(),
@@ -1210,6 +1216,15 @@ $$('[data-page="match"]').forEach((btn) => btn.addEventListener("click", () => {
 $("#match-refresh").addEventListener("click", () => { matchState.page = 1; matchLoad(); });
 $("#match-q").addEventListener("keydown", (e) => { if (e.key === "Enter") { matchState.page = 1; matchLoad(); } });
 $("#match-filter").addEventListener("change", () => { matchState.page = 1; matchLoad(); });
+// 直链示例 URL：进页面时按当前地址与令牌实时生成
+$$('[data-page="direct"]').forEach((btn) => btn.addEventListener("click", () => {
+  const base = `${location.protocol}//${location.host}`;
+  const token = encodeURIComponent($("#direct-token").value.trim() || "<你的令牌>");
+  const play = $("#direct-url-play");
+  const search = $("#direct-url-search");
+  if (play) play.textContent = `${base}/direct?id=kuwo:123&token=${token}`;
+  if (search) search.textContent = `${base}/direct/search?keyword=晴天&token=${token}`;
+}));
 $("#match-prev").addEventListener("click", () => { if (matchState.page > 1) { matchState.page--; matchLoad(); } });
 $("#match-next").addEventListener("click", () => {
   if (matchState.page * matchState.size < matchState.total) { matchState.page++; matchLoad(); }
@@ -1327,7 +1342,7 @@ $("#dedup-run").addEventListener("click", async () => {
 ["#tee-dir", "#tee-max", "#llm-base", "#llm-key", "#llm-model", "#lx-url", "#search-timeout", "#bind-timeout", "#handoff-max", "#scan-path"].forEach((sel) =>
   $(sel).addEventListener("input", () => markDirty()));
 $$("input[name=quality]").forEach((el) => el.addEventListener("change", () => markDirty("音质偏好需保存后生效")));
-["#recommend-hot", "#recommend-daily", "#public-playlists-enabled", "#search-probe", "#app-v2-search", "#search-log-query", "#tee-enabled", "#fav-download-enabled", "#auto-cover", "#lyric-auto-dl", "#netease-my-playlists", "#netease-subscribed", "#netease-resident"].forEach((sel) =>
+["#recommend-hot", "#recommend-daily", "#history-playlist", "#public-playlists-enabled", "#search-probe", "#app-v2-search", "#search-log-query", "#tee-enabled", "#fav-download-enabled", "#auto-cover", "#lyric-auto-dl", "#netease-my-playlists", "#netease-subscribed", "#netease-resident"].forEach((sel) =>
   $(sel).addEventListener("change", () => markDirty()));
 
 // 常驻开关可用态：账号歌单，或「公共歌单已开且选了网易歌单」任一成立即可勾选；
@@ -1932,3 +1947,95 @@ async function xmResetWizard() {
   setInterval(loadStatus, 15000);
   loadUpdateCheck();           // 进管理页查一次（后端 6h 缓存，不轮询、不烧限额）
 })();
+
+// ---------------- 歌单导入（网易云/QQ → 本地曲库 + 官方歌单） ----------------
+const piState = { data: null, taskId: "", timer: null };
+
+async function piApi(path, opts) {
+  const resp = await fetch(`/api/match/${path}`, {
+    headers: { "Content-Type": "application/json" }, ...opts,
+  });
+  return resp.json();
+}
+
+function piRenderProgress(t) {
+  if (!t) return;
+  const pct = t.total ? Math.round((t.done / t.total) * 100) : 0;
+  $("#pi-progress").textContent = `[${t.state}] ${t.done}/${t.total} 成功 ${t.ok} · 跳过 ${t.skipped} · 失败 ${(t.failed || []).length} ${t.current ? "· " + t.current : ""} (${pct}%)`;
+  $("#pi-errors").textContent = (t.failed || []).slice(0, 8)
+    .map((f) => `${f.title} - ${f.artist}: ${f.reason}`).join("；") || "";
+  $("#pi-refresh").disabled = t.state !== "running";
+  if (t.state === "running") {
+    piState.timer = setTimeout(() => piPoll(), 2000);
+  } else {
+    piState.timer = null;
+  }
+}
+
+async function piPoll() {
+  if (!piState.taskId) return;
+  try {
+    const data = await piApi(`import/task/${piState.taskId}`);
+    if (data.code === 0) piRenderProgress(data.data);
+  } catch (_) { /* 网关短暂不可达，等下一轮 */ }
+}
+
+$("#pi-preview").addEventListener("click", async () => {
+  const input = $("#pi-input").value.trim();
+  if (!input) { $("#pi-summary").textContent = "请先输入歌单链接或 ID"; return; }
+  $("#pi-summary").textContent = "解析中…";
+  const platform = $("#pi-platform").value;
+  try {
+    const data = await piApi(`import/preview?input=${encodeURIComponent(input)}&platform=${platform}`);
+    if (data.code !== 0) { $("#pi-summary").textContent = data.msg || "解析失败"; return; }
+    piState.data = data.data;
+    $("#pi-summary").textContent = `歌单「${data.data.name}」（${data.data.platform}）共 ${data.data.tracks.length} 首：` +
+      data.data.tracks.slice(0, 5).map((t) => `${t.title} - ${t.artist}`).join("；") + "…";
+    $("#pi-run").disabled = false;
+  } catch (e) {
+    $("#pi-summary").textContent = `解析失败: ${e}`;
+  }
+});
+
+async function piLoadTargets() {
+  const data = await piApi("import/playlists");
+  const sel = $("#pi-target");
+  sel.innerHTML = '<option value="">— 选择目标歌单 —</option>';
+  if (data.code !== 0) {
+    const opt = document.createElement("option");
+    opt.textContent = data.msg || "拉取失败";
+    sel.appendChild(opt);
+    return;
+  }
+  for (const p of data.data || []) {
+    const opt = document.createElement("option");
+    opt.value = p.guid;
+    opt.textContent = `${p.name} (${p.trackCount}首)`;
+    sel.appendChild(opt);
+  }
+}
+
+$("#pi-reload-target").addEventListener("click", piLoadTargets);
+$$('[data-page="pimport"]').forEach((btn) => btn.addEventListener("click", piLoadTargets));
+
+$("#pi-run").addEventListener("click", async () => {
+  const target = $("#pi-target").value;
+  if (!piState.data) { $("#pi-progress").textContent = "请先预览歌单"; return; }
+  if (!target && !($("#pi-new-name").value || "").trim()) { $("#pi-progress").textContent = "请选择目标歌单或填写新建歌单名称"; return; }
+  $("#pi-run").disabled = true;
+  $("#pi-progress").textContent = "启动导入…";
+  const platform = $("#pi-platform").value;
+  const resp = await fetch("/api/match/import/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ input: $("#pi-input").value.trim(), platform,
+    targetGuid: target, targetNew: ($("#pi-new-name").value || "").trim() }),
+  });
+  const data = await resp.json();
+  if (data.code !== 0) { $("#pi-progress").textContent = data.msg || "启动失败"; $("#pi-run").disabled = false; return; }
+  piState.taskId = data.data.taskId;
+  $("#pi-refresh").disabled = false;
+  piPoll();
+});
+
+$("#pi-refresh").addEventListener("click", () => { if (piState.timer) return; piPoll(); });

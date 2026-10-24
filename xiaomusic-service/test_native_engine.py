@@ -76,6 +76,8 @@ NATIVE_COMMAND_SURFACE = [
     "gen_music_list",        # 刷新列表
     "select_index",          # 多匹配待选态「第几个」
     "play_favorites_seq",    # 顺序播放本地歌曲（保序歌单 + SEQ 模式）
+    "sleep_timer",           # 半小时后停止播放（睡眠定时）
+    "cancel_sleep_timer",    # 取消定时
 ]
 
 
@@ -559,6 +561,69 @@ def test_dispatch_play_intent_not_hijacked():
     core = _FakeCore()
     asyncio.run(_run_dispatch(core, "播放安静"))
     assert core.calls == [("play", "安静")], core.calls
+
+
+def _stub_sleep_actions(core):
+    """给 _FakeCore 挂上 async 的睡眠定时动作桩（dispatcher await 调用）。"""
+    async def _sleep(did="", arg1=None, **kw):
+        core.calls.append(("sleep_timer", arg1))
+
+    async def _cancel(did="", arg1="", **kw):
+        core.calls.append(("cancel_sleep_timer", ""))
+
+    core.sleep_timer = _sleep
+    core.cancel_sleep_timer = _cancel
+
+
+def test_dispatch_sleep_timer_variants():
+    """睡眠定时口令族：中文时长/阿拉伯数字/定时前缀都能命中 sleep_timer。"""
+    import asyncio
+
+    cases = {
+        "半小时后停止播放": 30,
+        "一个小时后停止播放": 60,
+        "一个半小时后停止播放": 90,
+        "30分钟后停止播放": 30,
+        "定时45分钟": 45,
+        "定时半小时": 30,
+        "两小时后停止": 120,
+    }
+    for query, minutes in cases.items():
+        core = _FakeCore()
+        _stub_sleep_actions(core)
+        asyncio.run(_run_dispatch(core, query))
+        assert core.calls == [("sleep_timer", minutes)], f"{query!r}: {core.calls}"
+
+
+def test_dispatch_sleep_timer_not_stopped_immediately():
+    """「半小时后停止播放」含停止词，不得被停止口令立即执行。"""
+    import asyncio
+
+    core = _FakeCore()
+    _stub_sleep_actions(core)
+    asyncio.run(_run_dispatch(core, "半小时后停止播放"))
+    assert core.calls == [("sleep_timer", 30)], core.calls
+
+
+def test_dispatch_sleep_timer_upstream_guanji_untouched():
+    """「30分钟后关机」仍走上游 stop_after_minute，睡眠定时口令不接。"""
+    import asyncio
+
+    core = _FakeCore()
+    _stub_sleep_actions(core)
+    asyncio.run(_run_dispatch(core, "30分钟后关机"))
+    assert core.calls == [("stop_after_minute", "30")], core.calls
+
+
+def test_dispatch_cancel_sleep_timer():
+    """「取消睡眠定时」「取消定时」命中 cancel_sleep_timer。"""
+    import asyncio
+
+    for query in ("取消睡眠定时", "取消定时", "不定时了"):
+        core = _FakeCore()
+        _stub_sleep_actions(core)
+        asyncio.run(_run_dispatch(core, query))
+        assert core.calls == [("cancel_sleep_timer", "")], f"{query!r}: {core.calls}"
 
 
 def test_dispatch_stop_fallback_cancels_timer():

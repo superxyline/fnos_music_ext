@@ -6,7 +6,7 @@
   <title>fnmusic-ext 管理台</title>
   <!-- 先定主题再加载样式，深色模式下避免首屏白闪 -->
   <script src="/app/fnmusic-ext/static/theme-boot.js"></script>
-  <link rel="stylesheet" href="/app/fnmusic-ext/static/style.css?v=3.5.2">
+  <link rel="stylesheet" href="/app/fnmusic-ext/static/style.css?v=3.6.0">
   <link rel="icon" type="image/png" href="/app/fnmusic-ext/static/icon.png">
 </head>
 <body>
@@ -25,7 +25,9 @@
         <button class="nav-item" data-page="quality">播放与推荐</button>
         <button class="nav-item" data-page="search">搜索</button>
         <button class="nav-item" data-page="tee">边听边存</button>
+        <button class="nav-item" data-page="direct">直链输出</button>
         <button class="nav-item" data-page="match">歌曲匹配</button>
+        <button class="nav-item" data-page="pimport">歌单导入</button>
         <button class="nav-item" data-page="xiaomusic">小爱音箱</button>
         <button class="nav-item" data-page="llm">高级 · 大模型</button>
         <button class="nav-item" data-page="settings">设置</button>
@@ -159,6 +161,7 @@
           <div class="card-title">推荐</div>
           <label class="switch-row"><span>热门榜单推荐<div class="sub">独立「热门推荐」歌单：热歌榜/飙升榜原味</div></span><input type="checkbox" id="recommend-hot"></label>
           <label class="switch-row"><span>每日推荐<div class="sub">独立「每日推荐」歌单；其他音源在配置大模型后生效</div></span><input type="checkbox" id="recommend-daily"></label>
+          <label class="switch-row"><span>最近常听<div class="sub">根据播放历史自动生成「最近常听」歌单（次数+新鲜度打分，数据全在本地），注入音乐页</div></span><input type="checkbox" id="history-playlist"></label>
           <label class="switch-row"><span>公共歌单<div class="sub">浏览网易官方的排行榜、推荐歌单与分类歌单，勾选后作为独立只读歌单显示在音乐页「热门推荐」下方。只读：在音乐页加歌、移歌或删除都不会写回网易。需要网易云音乐盒子运行（会按需常驻，匿名即可，不必登录）。默认关闭。</div></span><input type="checkbox" id="public-playlists-enabled"></label>
           <div id="public-playlists-browser" class="stack" hidden>
             <div class="btn-row">
@@ -211,6 +214,14 @@
         <div class="card">
           <label class="switch-row"><span>边听边存<div class="sub">完整试听在线歌后自动保存到本地曲库</div></span><input type="checkbox" id="tee-enabled"></label>
           <label class="switch-row"><span>收藏自动下载<div class="sub">对在线歌曲点红心后自动下载原文件到本地曲库并加入收藏</div></span><input type="checkbox" id="fav-download-enabled"></label>
+          <label class="field"><span>收藏下载音质门槛</span>
+            <select class="input" id="fav-download-quality">
+              <option value="any">不限（有什么存什么）</option>
+              <option value="320">至少 320k（≥256kbps 或无损）</option>
+              <option value="lossless">仅无损（flac/ape/wav）</option>
+            </select>
+          </label>
+          <p class="hint">红心下载的音质低于门槛时，先自动换源找更好音质；仍不达标则拒绝入库（收藏保持在线形态，后续可重试）。默认不限。</p>
           <label class="switch-row"><span>自动下载封面<div class="sub">自动保存到本地的歌曲会顺带把封面一起下回来，直接嵌进音频文件里；飞牛音乐认的就是内嵌封面，这样官方 App 里下载的歌就有图。歌曲保存成功后才会去下封面，不会出现只有封面没有歌的垃圾文件。默认开启。</div></span><input type="checkbox" id="auto-cover"></label>
           <label class="switch-row"><span>自动下载歌词<div class="sub">自动保存到本地的歌曲在完整下载成功后，自动下载同名 .lrc 歌词放到歌曲同一个文件夹，官方 App 扫描入库后播放就能显示歌词。歌曲下载成功后才会去下歌词，不会出现只有歌词没有歌的垃圾文件。酷我源的歌词接口已失效，暂无歌词。默认关闭。</div></span><input type="checkbox" id="lyric-auto-dl"></label>
           <label class="field"><span>保存路径</span>
@@ -233,6 +244,55 @@
             <input class="input" id="scan-path" placeholder="留空=官方自动扫描入库">
           </label>
           <p class="hint">听歌切歌不中断下载，未下完的自动转后台断点续传（并行数 0=关闭续传）。重扫接口无公开文档，可从 FNMUSIC_TRACE_FORWARD=detail 取证日志捕获后填入以加速官方入库。</p>
+        </div>
+      </section>
+
+      <!-- 直链输出 -->
+      <section class="page" id="page-direct">
+        <h2>直链输出</h2>
+        <p class="hint">把 NAS 在线曲库以 302 直链形式开放给外部播放器（车机、电视 App、BubbleUPnP 等任何支持网络 URL 的播放器）。设好令牌后即可用下面的 URL 形态播放/搜索，令牌留空 = 功能关闭。</p>
+        <div class="card">
+          <label class="field"><span>访问令牌</span>
+            <input class="input" id="direct-token" placeholder="留空关闭直链功能；设置后所有 /direct 请求必须带它">
+          </label>
+          <p class="hint">令牌会写入 .env（FNMUSIC_DIRECT_TOKEN），热生效。直链 302 目标是源站带签名的 CDN 地址，有时效，泄露窗口天然有限。</p>
+        </div>
+        <div class="card">
+          <p class="hint">播放：<code id="direct-url-play">—</code></p>
+          <p class="hint">搜索（拿曲目 id）：<code id="direct-url-search">—</code></p>
+          <p class="hint">id 形态：<code>kuwo:123</code> / <code>migu:456</code> / <code>bilibili:789</code> / <code>netease:123</code> / <code>lx:kg:xxx</code>；可选参数 <code>&amp;quality=mp3</code>（酷我坏流时跳过无损档）。</p>
+        </div>
+      </section>
+
+
+      <!-- 歌单导入 -->
+      <section class="page" id="page-pimport">
+        <h2>歌单导入</h2>
+        <p class="hint">把<b>网易云 / QQ 音乐</b>歌单导入本地曲库并加入官方歌单：粘贴歌单链接（或选平台后填纯数字 ID）→ 预览 → 选目标歌单 → 开始导入。逐首经在线音源匹配下载（带试听探针与音质门槛），下载完成自动写标签、内嵌封面并等官方收录后加歌。<b>先在飞牛音乐 App 里建好目标歌单</b>。</p>
+        <div class="card">
+          <div class="btn-row">
+            <select class="input" id="pi-platform" style="max-width:120px">
+              <option value="auto">自动识别</option>
+              <option value="netease">网易云</option>
+              <option value="qq">QQ 音乐</option>
+            </select>
+            <input class="input grow" id="pi-input" placeholder="歌单链接或纯数字 ID（如 https://music.163.com/playlist?id=123）">
+            <button class="btn" id="pi-preview">预览</button>
+          </div>
+          <div class="btn-row">
+            <select class="input grow" id="pi-target"><option value="">— 选择已有目标歌单 —</option></select>
+            <button class="btn" id="pi-reload-target">刷新歌单</button>
+          </div>
+          <label class="field"><span>或新建歌单（二选一）</span>
+            <input class="input" id="pi-new-name" placeholder="留空则用上面选中的歌单；填写则自动新建">
+          </label>
+          <p class="hint" id="pi-summary"></p>
+          <div class="btn-row">
+            <button class="btn" id="pi-run" disabled>开始导入</button>
+            <button class="btn" id="pi-refresh" disabled>刷新进度</button>
+          </div>
+          <p class="hint" id="pi-progress"></p>
+          <p class="hint" id="pi-errors"></p>
         </div>
       </section>
 
@@ -392,6 +452,6 @@
 
   <div class="toast" id="toast" hidden></div>
 
-  <script src="/app/fnmusic-ext/static/app.js?v=3.5.2"></script>
+  <script src="/app/fnmusic-ext/static/app.js?v=3.6.0"></script>
 </body>
 </html>

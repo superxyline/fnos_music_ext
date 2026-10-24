@@ -15,10 +15,19 @@ import re
 
 try:
     from xiaomusic.config import KEY_WORD_ARG_BEFORE_DICT
+    from xiaomusic.utils.text_utils import chinese_to_number
 except ImportError:  # 无 xiaomusic 环境（本地测试）：字面量兜底，与上游一致
     KEY_WORD_ARG_BEFORE_DICT = {"分钟后关机": True}
+    chinese_to_number = None
 
-from .keywords import KEYWORDS_STOP_DEFAULT, STOP_HINT_RE, KEYWORDS_FAV_SEQ_DEFAULT, FAV_SEQ_HINT_RE
+from .keywords import (
+    KEYWORDS_STOP_DEFAULT,
+    STOP_HINT_RE,
+    KEYWORDS_FAV_SEQ_DEFAULT,
+    FAV_SEQ_HINT_RE,
+    SLEEP_TIMER_HINT_RE,
+    SLEEP_CANCEL_RE,
+)
 
 # 点歌意图词：Query 含这些词说明"要放歌"。与停止口令冲突时按位置判：
 # 「停止播放音乐」停止词在前 → 停止；「播放安静」点歌词在前 → 点歌
@@ -27,6 +36,62 @@ _PLAY_INTENT_RE = re.compile(r"播放|放首|放几首|来几首|来首|随便�
 
 # 定时关机（N分钟后关机）含"关机"，不能被停止口令抢走
 _TIMED_STOP_RE = re.compile(r"分钟.*关机|关机.*分钟")
+
+# 睡眠定时口令的中文数字（阿拉伯数字直接 int）
+_SLEEP_NUM_RE = r"[0-9零一二三四五六七八九十百两]+"
+
+# 「N分钟后关机」保持上游 stop_after_minute 行为，睡眠定时口令不接
+def _sleep_timer_minutes(query) -> "int | None":
+    """解析睡眠定时时长（分钟）；非睡眠定时口令返回 None。
+
+    「30分钟后关机」走上游定时关机，这里让路；「取消定时」由调用方先判。
+    """
+    if _TIMED_STOP_RE.search(query):
+        return None
+    if not SLEEP_TIMER_HINT_RE.search(query):
+        return None
+    m = re.search(rf"({_SLEEP_NUM_RE})\s*个半小时", query)
+    if m:
+        n = _sleep_num(m.group(1))
+        return n * 60 + 30 if n else None
+    m = re.search(rf"({_SLEEP_NUM_RE})\s*个?小时", query)
+    if m:
+        n = _sleep_num(m.group(1))
+        return n * 60 if n else None
+    m = re.search(r"半小时", query)
+    if m:
+        return 30
+    m = re.search(rf"({_SLEEP_NUM_RE})\s*分钟?", query)
+    if m:
+        n = _sleep_num(m.group(1))
+        return n if n else None
+    return None
+
+
+def _sleep_num(text) -> "int | None":
+    """时长里的数字：阿拉伯直接转；中文优先上游 chinese_to_number，
+    无上游环境（本地测试/静态检查）时用够用的本地解析（十位以内组合）。"""
+    text = (text or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    if chinese_to_number is not None:
+        try:
+            return int(chinese_to_number(text))
+        except Exception:  # noqa: BLE001
+            pass
+    text = text.replace("两", "二")
+    digits = {"零": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+              "六": 6, "七": 7, "八": 8, "九": 9}
+    if "十" in text:
+        head, _, tail = text.partition("十")
+        tens = digits.get(head, 1) if head else 1
+        ones = digits.get(tail, 0) if tail else 0
+        if tens and (not tail or tail in digits):
+            return tens * 10 + ones
+        return None
+    return digits.get(text)
 
 
 class CommandDispatcher:
@@ -111,6 +176,17 @@ class CommandDispatcher:
 
     def match_cmd(self, device, query, ctrl_panel):
         """返回 (动作名, 参数)，未匹配返回 (None, None)。"""
+        # -1) 睡眠定时：必须先于停止口令——「半小时后停止播放」含停止词，
+        #     走到这里就立刻停了，定时无从谈起。取消口令先判（「取消定时」
+        #     含「定时」二字，先到先得）。
+        if SLEEP_CANCEL_RE.search(query):
+            self.log.info(f"[native] 匹配到取消睡眠定时口令. query:{query}")
+            return "cancel_sleep_timer", ""
+        minutes = _sleep_timer_minutes(query)
+        if minutes is not None:
+            self.log.info(f"[native] 匹配到睡眠定时口令 {minutes}min. query:{query}")
+            return "sleep_timer", minutes
+
         # 0) 停止口令优先：必须先于点歌模糊匹配，否则「停止播放音乐」会先被
         #    「播放」抢走变成点歌（arg=音乐）。「N分钟后关机」是定时关机除外。
         if self._stop_intent(query):

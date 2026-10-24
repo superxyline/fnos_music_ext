@@ -20,6 +20,7 @@ analytics / js_plugin_manager / do_tts / handle_fatal_error / add_singer_song
 - 与 xiaomusic 引擎共用 /data/xiaomusic/conf（auth.json/setting.json），
   切换引擎不丢登录态与设备选择
 """
+import asyncio
 import logging
 import re
 from pathlib import Path
@@ -67,6 +68,8 @@ class NativeCore:
         # 保序歌单名（桥接 push_config 下发）：顺序播放本地歌曲专用，
         # 内容与「本地收藏」相同但按收藏进入的先后排列、不乱序
         self.playlist_seq_name = ""
+        # 睡眠定时任务：did → asyncio.Task（到点 stop，重复口令先撤销旧的）
+        self._sleep_timers: dict = {}
 
         # 组件装配（顺序照搬 XiaoMusic.__init__ 中与本方案相关的部分）
         self.device_manager = DeviceManager(config=cfg, log=log, xiaomusic=self)
@@ -228,6 +231,55 @@ class NativeCore:
             minute = chinese_to_number(str(arg1))
         return await self.device_manager.devices[did].stop_after_minute(minute)
 
+    async def sleep_timer(self, did="", arg1=None, **kwargs):
+        """口令:半小时后停止播放/定时30分钟——到点自动停止播放。
+
+        与上游 stop_after_minute（N分钟后关机）并存：这里是 native 侧实现，
+        支持「半小时」等中文时长；重复口令先撤销旧定时。用户中途点歌不取消
+        （睡前听歌场景，定时是绝对到期）；只有「取消定时」口令撤销。
+        """
+        try:
+            minutes = int(arg1)
+        except (TypeError, ValueError):
+            minutes = 0
+        if minutes <= 0:
+            minutes = 30
+        old = self._sleep_timers.pop(did, None)
+        if old is not None:
+            old.cancel()
+
+        async def _do_stop():
+            await asyncio.sleep(minutes * 60)
+            self._sleep_timers.pop(did, None)
+            self.log.info("[native] 睡眠定时到点，停止播放 did=%s", did)
+            try:
+                await self.stop(did=did, arg1="notts")
+            except Exception as e:  # noqa: BLE001
+                self.log.warning("[native] 睡眠定时停止失败: %s", e)
+
+        task = asyncio.create_task(_do_stop())
+        self._sleep_timers[did] = task
+        if minutes >= 60:
+            desc = f"{minutes // 60}小时" if minutes % 60 == 0 else f"{minutes}分钟"
+        else:
+            desc = f"{minutes}分钟"
+        self.log.info("[native] 睡眠定时 %d 分钟 did=%s", minutes, did)
+        await self.do_tts(did, f"好，{desc}后停止播放")
+
+    async def cancel_sleep_timer(self, did="", arg1="", **kwargs):
+        """口令:取消定时——撤销未触发的睡眠定时（顺带撤上游的定时关机）。"""
+        task = self._sleep_timers.pop(did, None)
+        dev = self.device_manager.devices.get(did)
+        upstream = getattr(dev, "_stop_timer", None)
+        if upstream is not None:
+            upstream.cancel()
+            dev._stop_timer = None
+        if task is not None or upstream is not None:
+            self.log.info("[native] 已取消睡眠定时 did=%s", did)
+            await self.do_tts(did, "已取消睡眠定时")
+        else:
+            await self.do_tts(did, "当前没有睡眠定时")
+
     async def play_music_list_index(self, did="", arg1="", **kwargs):
         """口令:播放列表第几个xx（移植自 XiaoMusic.play_music_list_index）"""
         patternarg = r"^([零一二三四五六七八九十百千万亿]+)个(.*)"
@@ -291,6 +343,9 @@ class NativeCore:
         for t in list(self.running_task):
             t.cancel()
         self.running_task.clear()
+        for t in list(self._sleep_timers.values()):
+            t.cancel()
+        self._sleep_timers.clear()
         # AuthManager.__init__ 建了 mi_session（aiohttp），关闭时释放
         session = getattr(self.auth_manager, "mi_session", None)
         if session is not None and not session.closed:

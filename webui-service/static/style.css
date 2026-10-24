@@ -92,10 +92,20 @@ body {
 .brand-name { font-weight: 700; }
 .brand-sub { font-size: 12px; color: var(--muted); }
 
-.nav { display: flex; flex-direction: column; gap: 4px; }
+.nav {
+  display: flex; flex-direction: column; gap: 4px;
+  /* 菜单项超出视口时导航区自身滚动（sidebar 是 100vh sticky，页面滚动够不到它） */
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: thin; scrollbar-color: var(--line) transparent;
+  padding-right: 2px;
+}
+.nav::-webkit-scrollbar { width: 6px; }
+.nav::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
 .nav-item {
   text-align: left; padding: 10px 12px; border: 0; border-radius: 8px;
   background: transparent; color: var(--text); font-size: 15px; cursor: pointer;
+  flex: none;
 }
 .nav-item:hover { background: var(--accent-soft); }
 .nav-item.active { background: var(--accent); color: var(--on-accent); }

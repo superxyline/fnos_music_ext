@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import random
+import re
 import secrets
 import subprocess
 import sys
@@ -443,8 +444,9 @@ def patch_playlist_behavior():
     使 _play_internal 走 check_play_next→_play_next→get_next_music 分支，
     从洗牌后的新列表第一首开始播放。
     另：随机歌单播放前把设备切回随机模式——「顺序播放本地歌曲」会把设备切到
-    顺序模式（保序歌单不被洗牌），若不切回，之后的「播放收藏」在顺序模式下
-    直接取推送时 baked 的乱序、不再每次重洗，"重新打乱"的承诺就丢了。
+    整张循环模式（PLAY_TYPE_ALL，保序歌单不被洗牌），若不切回，之后的
+    「播放收藏」在循环模式下直接取推送时 baked 的乱序、不再每次重洗，
+    "重新打乱"的承诺就丢了。
     """
     if XM is None:
         return
@@ -834,6 +836,104 @@ def patch_audio_id_resolver():
     log.info("[audio_id] 屏幕音频ID解析已生效（缓存 %s）", AUDIO_ID_CACHE.stats())
 
 
+# ---------------- 当前播放（管理台「小爱音箱」页展示） ----------------
+# 歌单条目 URL 形如 /play?guid=<guid>；在线源 guid 为 online:<源>:<id>，
+# 走自定义音源（lx）时多一层平台段 online:lx:<平台>:<id>（kw/kg/tx/wy/mg）。
+# 非 online: 前缀一律视为本地曲库（飞牛音乐里的收藏/曲库歌）。
+ONLINE_SOURCE_LABELS = {
+    "kuwo": "酷我", "kw": "酷我",
+    "kugou": "酷狗", "kg": "酷狗",
+    "migu": "咪咕", "mg": "咪咕",
+    "qq": "QQ音乐", "tx": "QQ音乐",
+    "netease": "网易云音乐", "wy": "网易云音乐",
+    "bilibili": "哔哩哔哩", "bili": "哔哩哔哩",
+    "joox": "JOOX", "youtube": "YouTube", "yt": "YouTube",
+}
+LOCAL_SOURCE_KEY = "local"
+LOCAL_SOURCE_LABEL = "本地曲库"
+
+
+def _source_label(key: str) -> str:
+    """在线源键 → 展示名（未知源回退成大写键名，绝不吞掉信息）。"""
+    key = (key or "").strip()
+    if not key:
+        return "在线音源"
+    return ONLINE_SOURCE_LABELS.get(key.lower(), key.upper())
+
+
+def _guid_source(guid: str):
+    """guid → (来源键, 展示名)。返回给管理台做「本地歌曲 / 哪个在线源」标注。"""
+    guid = (guid or "").strip()
+    if not guid.startswith("online:"):
+        return LOCAL_SOURCE_KEY, LOCAL_SOURCE_LABEL
+    parts = guid.split(":")
+    if len(parts) >= 4 and parts[1] == "lx":
+        return parts[2].lower(), f"在线 · {_source_label(parts[2])}"
+    if len(parts) >= 3:
+        return parts[1].lower(), f"在线 · {_source_label(parts[1])}"
+    return "online", "在线音源"
+
+
+def _favorite_display_name(guid: str) -> str:
+    """收藏快照里按 guid 反查「艺术家 - 歌名」，找不到返回空串。"""
+    for t in STATE.favorites:
+        if str(t.get("guid") or "") == (guid or "").strip():
+            artists = " / ".join(
+                (a.get("name") or "").strip() for a in (t.get("artists") or [])
+                if a.get("name")
+            )
+            title = (t.get("title") or "").strip()
+            return f"{artists} - {title}" if artists else title
+    return ""
+
+
+def _now_playing() -> dict:
+    """当前播放快照：歌名 + 来源（本地曲库 / 具体在线源）。
+
+    歌名优先级：
+    1. 设备当前曲（上游 _playmusic 写入的 device.cur_music）——最贴近"音箱正在放"；
+    2. 该曲在 all_music 里的取流 URL 里带的 guid（收藏/注入曲目都走 /play）；
+    3. /play 最近一次取流的 guid（在线源下载后播本地文件时 URL 是文件路径，只能靠它）。
+    来源一律由 guid 判定，与歌名解耦，避免"下载到本地就算本地歌"的误标。
+    """
+    snap = {"name": "", "source": LOCAL_SOURCE_KEY, "source_label": "",
+            "is_playing": False, "device": "", "at": 0}
+    try:
+        devices = getattr(getattr(XM, "device_manager", None), "devices", {}) or {}
+        dev = None
+        for cand in devices.values():
+            if getattr(cand, "is_playing", False):
+                dev = cand
+                break
+        if dev is None and devices:
+            dev = next(iter(devices.values()))
+        dev_info = getattr(dev, "device", None)
+        snap["is_playing"] = bool(getattr(dev, "is_playing", False))
+        snap["device"] = (getattr(dev_info, "name", "") or
+                          getattr(dev_info, "did", "") or "")
+        name = (getattr(dev_info, "cur_music", "") or "").strip()
+        guid = ""
+        all_music = getattr(getattr(XM, "music_library", None), "all_music", {}) or {}
+        url = all_music.get(name, "") if name else ""
+        m = re.search(r"[?&]guid=([^&]+)", url or "")
+        if m:
+            guid = urllib.parse.unquote(m.group(1))
+        last_guid = (getattr(XM, "last_played_guid", "") or "").strip()
+        last_title = (getattr(XM, "last_played_title", "") or "").strip()
+        if not guid and last_guid and (not name or not last_title or last_title == name):
+            guid = last_guid
+        key, label = _guid_source(guid)
+        snap.update(
+            name=name or _favorite_display_name(guid) or last_title,
+            source=key,
+            source_label=label,
+            at=getattr(XM, "last_played_at", 0) or 0,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.debug("[health] 读取当前播放失败: %s", e)
+    return snap
+
+
 # ---------------- 音频流代理（桥接 → 飞牛） ----------------
 @app.get("/play")
 @app.head("/play")
@@ -844,6 +944,8 @@ async def play(request: Request, guid: str):
     # 口令收藏（fav_current）：音箱开播哪首就来取哪首的流，这里即"当前播放"
     if XM is not None:
         XM.last_played_guid = guid
+        # 顺带反查歌名（收藏快照命中才有值）；在线源流拿不到名字，靠设备当前曲兜底
+        XM.last_played_title = _favorite_display_name(guid) or ""
         XM.last_played_at = time.time()
         log.info("[play] 记录当前播放 guid=%s", guid[:40])
     STATE.fn = STATE.fn or new_fn_client()
@@ -1174,6 +1276,8 @@ async def health():
         "pull_ask_sec": (getattr(XM.config, "pull_ask_sec", None) if XM else None),
         # 带屏设备 audio_id 缓存：resolved=已匹配曲库ID，negative=查过没有
         "audio_id_cache": AUDIO_ID_CACHE.stats(),
+        # 当前播放（管理台「小爱音箱」页）：歌名 + 来源（本地曲库 / 具体在线源）
+        "now_playing": _now_playing(),
     }
 
 

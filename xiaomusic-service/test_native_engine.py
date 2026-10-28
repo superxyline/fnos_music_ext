@@ -75,7 +75,8 @@ NATIVE_COMMAND_SURFACE = [
     "stop_after_minute",     # 分钟后关机
     "gen_music_list",        # 刷新列表
     "select_index",          # 多匹配待选态「第几个」
-    "play_favorites_seq",    # 顺序播放本地歌曲（保序歌单 + SEQ 模式）
+    "play_favorites_seq",    # 顺序播放本地歌曲（保序歌单 + 整张循环）
+    "play_singer_favorites", # 播放X的本地收藏歌曲（歌手合辑随机播放）
     "sleep_timer",           # 半小时后停止播放（睡眠定时）
     "cancel_sleep_timer",    # 取消定时
     "fav_current",           # 收藏这首歌（当前播放 → 飞牛收藏）
@@ -770,7 +771,7 @@ def test_fav_seq_action_plays_first_song_in_order(tmp_path):
     import types
 
     from native.core import NativeCore
-    from xiaomusic.const import PLAY_TYPE_SEQ
+    from xiaomusic.const import PLAY_TYPE_ALL
 
     core = NativeCore.__new__(NativeCore)
     core.log = logging.getLogger("test-fav-seq-action")
@@ -797,7 +798,8 @@ def test_fav_seq_action_plays_first_song_in_order(tmp_path):
     })
     asyncio.run(core.play_favorites_seq(did="d1"))
 
-    assert calls["play_type"] == (PLAY_TYPE_SEQ, False), "顺序模式且不播报切换"
+    # ALL（播放全部）而非 SEQ：SEQ 触底即停，ALL 触底回卷成整张循环
+    assert calls["play_type"] == (PLAY_TYPE_ALL, False), "整张循环模式且不播报切换"
     assert calls["play"] == ("本地收藏（顺序）", "第一首 - 甲"), "从第一首开始"
     assert "tts" not in calls, "正常路径不播报"
 
@@ -832,6 +834,178 @@ def test_fav_seq_action_warns_when_playlist_missing(tmp_path):
 
     assert "play_type" not in calls and "play" not in calls
     assert "还没准备好" in (calls.get("tts") or ""), "缺歌单要明确播报"
+
+
+# ---------------- 保序歌单保护（v3.6.2 修「顺序播放从心痛2009开始」） ----------------
+
+def test_seq_order_guard_installed_before_first_playlist_gen():
+    """guard 必须装在首次 gen_all_music_list 之前：入库那一刻上游就在排序。"""
+    install = CORE.index("_install_seq_playlist_order_guard()")
+    first_gen = CORE.index("self.music_library.gen_all_music_list()")
+    assert install < first_gen, "guard 晚于首次歌单生成，收藏顺序已经丢了"
+
+
+def test_seq_order_guard_skips_upstream_name_sort():
+    """保序歌单必须躲开上游两处按歌名的字典序重排。
+
+    2026-10-28 实测：282 首收藏按 Unicode 码位排序后第 0 位是
+    「欢子 - 心痛2009」，与用户听到的「顺序播放从心痛2009开始」完全吻合——
+    收藏顺序在入库那一刻就被覆盖，顺序播放等于没生效。
+    上游两处排序（music_library.py:181 入库、device_player.py:245 取下一曲）
+    都以 is_online_music() 为开关，guard 因此把保序歌单视为网络歌单。
+    """
+    pytest.importorskip("xiaomusic", reason="需要 xiaomusic 环境（容器内/开发 venv）")
+    import logging
+
+    from native.core import NativeCore
+
+    core = NativeCore.__new__(NativeCore)
+    core.log = logging.getLogger("test-seq-guard")
+    core.playlist_seq_name = "本地收藏（顺序）"
+
+    class _ML:
+        musics = {
+            "本地收藏（顺序）": ["贺一航 - 请先说你好", "欢子 - 心痛2009"],
+            "本地收藏": ["乱序B", "乱序A"],
+        }
+
+        def is_online_music(self, name):
+            return name.startswith("_online_")
+
+    ml = _ML()
+    core.music_library = ml
+    core._install_seq_playlist_order_guard()
+
+    def upstream_sort(list_name):
+        """复刻上游两处的排序条件与效果（custom_sort_key 即字典序）。"""
+        if not ml.is_online_music(list_name):
+            ml.musics[list_name].sort()
+        return ml.musics[list_name]
+
+    assert upstream_sort("本地收藏（顺序）") == [
+        "贺一航 - 请先说你好", "欢子 - 心痛2009"
+    ], "收藏顺序被上游按歌名重排覆盖"
+    # 其它歌单行为保持不变（乱序歌单仍按名字排序，不误伤历史行为）
+    assert upstream_sort("本地收藏") == ["乱序A", "乱序B"]
+    # 真正的网络歌单判定不受影响
+    assert ml.is_online_music("_online_iwp_love") is True
+    # 歌手合辑临时歌单同样要保住打乱顺序（同一 guard 集合）
+    core._order_guard_names.add("__singer__周杰伦")
+    assert ml.is_online_music("__singer__周杰伦") is True
+    # 歌单名未下发时（playlist_seq_name 为空）不做任何特殊对待
+    core.playlist_seq_name = ""
+    assert ml.is_online_music("本地收藏（顺序）") is False
+    assert ml.is_online_music("__singer__周杰伦") is True, "临时歌单不依赖 seq_name"
+
+
+# ---------------- 按歌手播本地收藏（2026-10-28） ----------------
+
+def test_singer_fav_dispatch_extracts_singer():
+    """「播放X的本地收藏歌曲」类口令：命中 play_singer_favorites 且歌手名正确。"""
+    d = _fav_seq_dispatcher()
+    cases = {
+        "播放周杰伦的本地收藏歌曲": "周杰伦",
+        "播放周杰伦的本地收藏": "周杰伦",
+        "播放周杰伦本地收藏": "周杰伦",
+        "来点五月天的收藏": "五月天",
+        "放几首林俊杰本地歌": "林俊杰",
+        "帮我播放陈奕迅的收藏歌曲": "陈奕迅",
+        "想听王菲的本地音乐": "王菲",
+        "放一下张学友的本地歌曲": "张学友",
+    }
+    for q, singer in cases.items():
+        assert d.match_cmd(_SeqDevStub(), q, True) == ("play_singer_favorites", singer), q
+
+
+def test_singer_fav_does_not_steal_other_commands():
+    """不带歌手的歌单口令、泛指词、点歌、顺序播放都不能被这条口令抢走。"""
+    d = _fav_seq_dispatcher()
+    for q in ("播放本地收藏歌曲", "播放本地歌曲", "播放收藏", "播放本地音乐"):
+        assert d.match_cmd(_SeqDevStub(), q, True)[0] != "play_singer_favorites", q
+    for q in ("播放全部收藏", "播放我的本地收藏", "播放所有本地歌曲"):
+        assert d.match_cmd(_SeqDevStub(), q, True)[0] != "play_singer_favorites", q
+    assert d.match_cmd(_SeqDevStub(), "播放周杰伦的晴天", True) == ("play", "周杰伦的晴天")
+    assert d.match_cmd(_SeqDevStub(), "顺序播放本地收藏", True) == ("play_favorites_seq", "")
+
+
+def test_singer_fav_action_shuffles_only_that_singer():
+    """歌手合辑：只收该歌手的收藏、随机打乱进临时歌单、整张循环播放。"""
+    pytest.importorskip("xiaomusic", reason="需要 xiaomusic 环境（容器内/开发 venv）")
+    import asyncio
+    import logging
+    import types
+
+    from native.core import SINGER_PLAYLIST_PREFIX, NativeCore
+    from xiaomusic.const import PLAY_TYPE_ALL
+
+    core = NativeCore.__new__(NativeCore)
+    core.log = logging.getLogger("test-singer-fav")
+    core.playlist_seq_name = "本地收藏（顺序）"
+    core._order_guard_names = set()
+    calls: dict = {}
+
+    class _Dev:
+        async def set_play_type(self, play_type, dotts=True):
+            calls["play_type"] = (play_type, dotts)
+
+        async def play_music_list(self, list_name, music_name=""):
+            calls["play"] = (list_name, music_name)
+
+        async def do_tts(self, value):
+            calls["tts"] = value
+
+    core.device_manager = types.SimpleNamespace(devices={"d1": _Dev()})
+    hits = ["周杰伦 - 晴天", "周杰伦 - 稻香", "周杰伦 - 七里香"]
+    lib = types.SimpleNamespace(music_list={
+        "本地收藏（顺序）": ["周杰伦 - 晴天", "五月天 - 倔强", "周杰伦 - 稻香",
+                             "周杰伦 - 七里香", "陈奕迅 - 十年"],
+    })
+    core.music_library = lib
+    asyncio.run(core.play_singer_favorites(did="d1", arg1="周杰伦"))
+
+    list_name = f"{SINGER_PLAYLIST_PREFIX}周杰伦"
+    assert list_name in lib.music_list, "要建临时歌单（只含该歌手）"
+    assert sorted(lib.music_list[list_name]) == sorted(hits), "别人的歌不能混进来"
+    assert list_name in core._order_guard_names, "临时歌单必须登记进保序集合"
+    assert calls["play_type"] == (PLAY_TYPE_ALL, False), "整张循环且不播报切换"
+    assert calls["play"] == (list_name, lib.music_list[list_name][0]), "从打乱后的第一首开播"
+    assert "tts" not in calls, "正常路径不播报"
+
+
+def test_singer_fav_action_tts_when_singer_absent():
+    """收藏里没有这个歌手：明确播报，不切模式也不开播。"""
+    pytest.importorskip("xiaomusic", reason="需要 xiaomusic 环境（容器内/开发 venv）")
+    import asyncio
+    import logging
+    import types
+
+    from native.core import NativeCore
+
+    core = NativeCore.__new__(NativeCore)
+    core.log = logging.getLogger("test-singer-fav-miss")
+    core.playlist_seq_name = "本地收藏（顺序）"
+    core._order_guard_names = set()
+    calls: dict = {}
+
+    class _Dev:
+        async def set_play_type(self, play_type, dotts=True):
+            calls["play_type"] = True
+
+        async def play_music_list(self, list_name, music_name=""):
+            calls["play"] = True
+
+        async def do_tts(self, value):
+            calls["tts"] = value
+
+    core.device_manager = types.SimpleNamespace(devices={"d1": _Dev()})
+    core.music_library = types.SimpleNamespace(music_list={
+        "本地收藏（顺序）": ["周杰伦 - 晴天"],
+    })
+    asyncio.run(core.play_singer_favorites(did="d1", arg1="张信哲"))
+
+    assert "play_type" not in calls and "play" not in calls
+    assert "没有张信哲" in (calls.get("tts") or "")
+
 
 
 def test_build_playlist_emits_shuffled_and_ordered_lists(tmp_path, monkeypatch):

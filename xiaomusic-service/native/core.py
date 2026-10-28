@@ -22,6 +22,7 @@ analytics / js_plugin_manager / do_tts / handle_fatal_error / add_singer_song
 """
 import asyncio
 import logging
+import random
 import re
 from pathlib import Path
 
@@ -42,6 +43,10 @@ from xiaomusic.utils.text_utils import chinese_to_number
 
 from .dispatch import CommandDispatcher
 from .qrlogin import QRLogin
+
+
+# 歌手合辑临时歌单名前缀（下划线开头：不会被用户口令/歌单模糊匹配命中）
+SINGER_PLAYLIST_PREFIX = "__singer__"
 
 
 class _AnalyticsStub:
@@ -68,6 +73,9 @@ class NativeCore:
         # 保序歌单名（桥接 push_config 下发）：顺序播放本地歌曲专用，
         # 内容与「本地收藏」相同但按收藏进入的先后排列、不乱序
         self.playlist_seq_name = ""
+        # 需要「保持给定顺序」的歌单名（保序收藏 + 歌手合辑临时歌单）：
+        # 上游入库/取下一曲时会按歌名重排，这些歌单的顺序必须原样保留
+        self._order_guard_names: set = set()
         # 睡眠定时任务：did → asyncio.Task（到点 stop，重复口令先撤销旧的）
         self._sleep_timers: dict = {}
         # 口令收藏：桥接 /play 最后取流的 guid（音箱开播哪首就来取哪首的流）；
@@ -85,6 +93,8 @@ class NativeCore:
         self.music_library = MusicLibrary(
             config=cfg, log=log, event_bus=self.event_bus
         )
+        # 必须在首次 gen_all_music_list 之前装：入库时上游就会排序
+        self._install_seq_playlist_order_guard()
         self.music_library.gen_all_music_list()
         self.conversation_poller = ConversationPoller(
             config=cfg,
@@ -95,6 +105,39 @@ class NativeCore:
         self.dispatcher = CommandDispatcher(self)
         self.qrlogin = QRLogin(cfg.conf_path)
         log.info("[native] 引擎装配完成（登录/设备/轮询/歌单/播放均复用上游组件）")
+
+    # ---------------- 保序歌单保护（顺序播放本地歌曲） ----------------
+
+    def _install_seq_playlist_order_guard(self):
+        """让保序歌单躲开上游按歌名的字典序重排。
+
+        上游有两处会把「非网络歌单」按歌名重排（都是 `sort(custom_sort_key)`）：
+        1. MusicLibrary.gen_all_music_list 入库时（music_library.py:181）；
+        2. XiaoMusicDevice.update_playlist 的顺序/循环分支（device_player.py:245），
+           get_music（每一首下一曲）都会调它。
+        两处的开关都是 `is_online_music(歌单名)`（上游只认 `_online_` 前缀）。
+        于是「本地收藏（顺序）」推送时的收藏顺序，在入库那一刻就被歌名字典序
+        覆盖——2026-10-28 实测：口令「顺序播放本地收藏」从「欢子 - 心痛2009」
+        开始（该名字正是 282 首按 Unicode 码位排序后的第一位），而不是最新
+        收藏的那首。收藏顺序丢失，顺序播放形同虚设。
+
+        这里把保序歌单视为「网络歌单」以跳过这两处排序。安全性：上游对
+        is_online_music 只有三处调用——上述两处，加 auto_add_song（native
+        里 js_plugin_manager=None，永不执行）；取流走 is_web_music(name)
+        （按 all_music 的 URL 判定），与歌单名无关，故不影响播放。
+        """
+        ml = self.music_library
+        original = ml.is_online_music
+
+        def is_online_music(cur_playlist):
+            seq_name = self.playlist_seq_name
+            if seq_name and cur_playlist == seq_name:
+                return True
+            if cur_playlist in self._order_guard_names:
+                return True
+            return original(cur_playlist)
+
+        ml.is_online_music = is_online_music
 
     # ---------------- shim 方法（XiaoMusicDevice/DevicePlayer 会调用） ----------------
 
@@ -142,11 +185,16 @@ class NativeCore:
 
         与「播放收藏」（乱序）的差别在两点，缺一不可：
         1. 歌单内容是桥接另推的保序歌单（同名两份：一份乱序一份保序）；
-        2. 设备临时切顺序模式（PLAY_TYPE_SEQ）：上游 update_playlist 在随机
-           模式下会 force_reshuffle，保序歌单也会被洗乱；顺序模式下
-           _play_list 直接取歌单原序，且播完触底即停（不循环）。
+        2. 设备临时切「播放全部」模式（PLAY_TYPE_ALL，即整张循环）：
+           上游 update_playlist 在随机模式下会 force_reshuffle，保序歌单
+           也会被洗乱；ALL/SEQ 分支才按歌单原序取曲。
+        为什么用 ALL 而不是 SEQ：SEQ 触底返回空串即停（get_music 里
+        显式判断 "顺序播放结束"），而用户要的是**整张收藏放完再从头来**
+        （2026-10-28 需求）；ALL 触底 new_index=0 回卷到第一首，循环。
         第一首显式点名播放（上游 _play_next 恒取"下一首"，空位置会跳过第一首）。
         之后的「播放收藏」由桥接 patch 负责把设备切回随机模式。
+        歌单顺序由 _install_seq_playlist_order_guard 保住（上游默认会按
+        歌名重排，收藏顺序在入库时就丢了）。
         """
         dev = self.device_manager.devices.get(did)
         if dev is None:
@@ -166,13 +214,63 @@ class NativeCore:
         # 就是"跳过第一首收藏"，与需求直接相悖。
         first = ordered[0]
         try:
-            # 顺序模式 + 不播报模式切换（dotts=False）：与歌单播放保持一致安静
-            await dev.set_play_type(PLAY_TYPE_SEQ, False)
+            # 整张循环 + 不播报模式切换（dotts=False）：与歌单播放保持一致安静
+            await dev.set_play_type(PLAY_TYPE_ALL, False)
         except Exception as e:  # noqa: BLE001
-            self.log.warning("[native] 顺序模式切换失败: %s", e)
+            self.log.warning("[native] 整张循环模式切换失败: %s", e)
             return
-        self.log.info("[native] 顺序播放歌单 %s（收藏顺序，从第一首 %r 起）", list_name, first)
+        self.log.info("[native] 顺序播放歌单 %s（收藏顺序循环，从第一首 %r 起）", list_name, first)
         await dev.play_music_list(list_name, first)
+
+    async def play_singer_favorites(self, did="", arg1="", **kwargs):
+        """口令:播放X的本地收藏歌曲——收藏里该歌手的歌随机打乱成一张临时歌单。
+
+        与点歌（play）的区别：点歌只播一首（收藏命中播那首、否则搜在线源下载）；
+        这里是「这个歌手的全部收藏，随机顺序连着放」。
+
+        顺序为什么能保住：临时歌单名登记进 _order_guard_names，guard 让上游
+        is_online_music() 返回 True → 入库与 update_playlist 都不按歌名重排，
+        否则我们打乱的顺序会被字典序抹平（和「顺序播放本地收藏」同一个坑）。
+        播放模式用 ALL（整张循环）：这批歌放完回到第一首继续，适合当背景音。
+        """
+        singer = (arg1 or "").strip()
+        dev = self.device_manager.devices.get(did)
+        if dev is None:
+            self.log.warning("[native] 歌手合辑：设备 %s 不在列表", did)
+            return
+        if not singer:
+            await self.do_tts(did, "没听清要放哪位歌手的歌")
+            return
+        lib = self.music_library
+        # 收藏全集：优先保序歌单（内容就是全部收藏），拿不到再退到第一个业务歌单
+        source_name = self.playlist_seq_name
+        if source_name not in lib.music_list:
+            source_name = next(
+                (n for n in lib.music_list if n not in ("全部", "所有歌曲")), ""
+            )
+        pool = lib.music_list.get(source_name) or []
+        names = [n for n in pool if singer in (n or "")]
+        if not names:
+            self.log.info(
+                "[native] 收藏里没有 %r 的歌（歌单 %s，共 %d 首）", singer, source_name, len(pool)
+            )
+            await self.do_tts(did, f"收藏里没有{singer}的歌")
+            return
+        random.shuffle(names)
+        list_name = f"{SINGER_PLAYLIST_PREFIX}{singer}"
+        lib.music_list[list_name] = names
+        self._order_guard_names.add(list_name)
+        try:
+            # 整张循环 + 不播报模式切换（dotts=False）：口令播放保持安静
+            await dev.set_play_type(PLAY_TYPE_ALL, False)
+        except Exception as e:  # noqa: BLE001
+            self.log.warning("[native] 歌手合辑模式切换失败: %s", e)
+            return
+        self.log.info(
+            "[native] 歌手合辑 %s：%d 首随机播放（首曲 %r，歌单 %s）",
+            singer, len(names), names[0], list_name,
+        )
+        await dev.play_music_list(list_name, names[0])
 
     async def play(self, did="", arg1="", **kwargs):
         parts = (arg1 or "").split("|")

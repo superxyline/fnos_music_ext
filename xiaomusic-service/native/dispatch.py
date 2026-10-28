@@ -28,6 +28,10 @@ from .keywords import (
     SLEEP_TIMER_HINT_RE,
     SLEEP_CANCEL_RE,
     FAV_CURRENT_HINT_RE,
+    SINGER_FAV_PREFIXES,
+    SINGER_FAV_PATTERNS,
+    SINGER_FAV_STOPWORDS,
+    SINGER_FAV_STOPWORD_PARTS,
 )
 
 # 点歌意图词：Query 含这些词说明"要放歌"。与停止口令冲突时按位置判：
@@ -119,6 +123,31 @@ class CommandDispatcher:
         return any(kw in query for kw in self.fav_seq_keywords) or bool(
             FAV_SEQ_HINT_RE.search(query))
 
+    def _singer_fav_intent(self, query) -> str:
+        """「播放周杰伦的本地收藏歌曲」类口令 → 歌手名；不是这类口令返回空串。
+
+        只认带「本地/收藏」限定的说法（避免改变「播放周杰伦的歌」的上游点歌
+        语义）；泛指词（全部/所有/我的…）不当歌手。口令前缀「帮我/请/给我」
+        先削掉，ASR 常见的客气话不影响匹配。
+        """
+        q = (query or "").strip()
+        for prefix in SINGER_FAV_PREFIXES:
+            if q.startswith(prefix):
+                q = q[len(prefix):].strip()
+        if not q:
+            return ""
+        for pattern in SINGER_FAV_PATTERNS:
+            m = pattern.match(q)
+            if not m:
+                continue
+            singer = (m.group("singer") or "").strip(" 的，,。.!！")
+            if not singer or singer in SINGER_FAV_STOPWORDS:
+                continue
+            if any(part in singer for part in SINGER_FAV_STOPWORD_PARTS):
+                continue
+            return singer
+        return ""
+
     def _stop_intent(self, query) -> bool:
         """Query 是否是停止意图（位置感知：停止词必须早于点歌词）。"""
         if _TIMED_STOP_RE.search(query):
@@ -199,6 +228,13 @@ class CommandDispatcher:
         if self._fav_seq_intent(query):
             self.log.info(f"[native] 匹配到顺序播放本地收藏口令. query:{query}")
             return "play_favorites_seq", ""
+
+        # 0.55) 按歌手播本地收藏：先于「播放」模糊匹配——否则整句被上游点歌
+        #       抢走（arg=周杰伦的本地收藏歌曲，去搜一个不存在的歌名，什么都不播）
+        singer = self._singer_fav_intent(query)
+        if singer:
+            self.log.info(f"[native] 匹配到按歌手播本地收藏口令 歌手={singer!r}. query:{query}")
+            return "play_singer_favorites", singer
 
         # 0.6) 收藏当前播放歌曲：显式优先（正则强制带「这首/当前/正在」限定，
         #      与「播放收藏」歌单口令天然不冲突）

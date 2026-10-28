@@ -1631,29 +1631,48 @@ function xmDoneHtml(st) {
         <span class="dot"></span><span class="txt">小米账号：检测中…</span>
       </div>
     </div>
-    <p class="hint">现在可以对小爱音箱说「播放收藏」随机播放飞牛音乐收藏，或者说「播放晴天」直接点歌。收藏有增减时约 5 分钟自动同步。</p>
+    <p class="hint">现在可以对小爱音箱说「播放收藏」随机播放飞牛音乐收藏，说「顺序播放本地收藏」按收藏先后整张循环，或者说「播放晴天」直接点歌。收藏有增减时约 5 分钟自动同步。</p>
     <div class="xm-status-grid">
       <div class="xm-status-cell"><div class="v" id="xm-d-fav">-</div><div class="k">收藏歌曲</div></div>
       <div class="xm-status-cell"><div class="v" id="xm-d-pl">-</div><div class="k">歌单歌曲（乱序）</div></div>
       <div class="xm-status-cell"><div class="v" id="xm-d-push">-</div><div class="k">歌单推送</div></div>
       <div class="xm-status-cell"><div class="v" id="xm-d-err">-</div><div class="k">最近错误</div></div>
     </div>
-    <table class="xm-cmd-table">
-      <tr><td>播放收藏 / 播放本地</td><td>随机播放收藏（每次重新打乱）</td></tr>
-      <tr><td>播放本地收藏歌曲 / 播放本地歌曲 / 播放本地音乐</td><td>同上</td></tr>
-      <tr><td>放几首本地歌 / 放首本地歌 / 随便放几首歌 / 来几首本地歌</td><td>同上（口语说法都支持）</td></tr>
-      <tr><td>播放晴天 / 播放周杰伦的晴天</td><td><b>点歌</b>：收藏里有直接播；没有则本地曲库直接播 / 在线源<b>下载</b>到本地音乐库（<b>都不进收藏</b>）后播放</td></tr>
-      <tr><td>下一首 / 上一首 / 暂停 / 停止播放</td><td>播放控制</td></tr>
-      <tr><td>停下来吧 / 别放了 / 别播了 / 安静 / 停一下 / 闭嘴</td><td>停止播放（口语说法也行；停止后不会自动续播）</td></tr>
-      <tr><td>随机播放 / 全部循环 / 单曲循环 / 顺序播放</td><td>切换播放模式</td></tr>
-      <tr><td>刷新列表</td><td>重新加载歌单</td></tr>
-    </table>
-    <p class="hint">💡 点播的歌自然播完且没有后续指令时，会自动接播收藏随机歌单；期间说了任何新指令（下一首 / 停止 / 新点歌）则不会接管。</p>
     <div class="btn-row">
       <button class="btn" id="xm-sync">立即同步</button>
       <button class="btn" id="xm-reset">重新配置</button>
     </div>
     <div class="xm-msg" id="xm-done-msg" hidden></div>
+  </div>
+  <div class="card">
+    <div class="card-title">正在播放</div>
+    <div class="xm-now">
+      <div class="xm-now-name dim" id="xm-now-name">—</div>
+      <div class="xm-now-meta">
+        <span class="xm-now-badge" id="xm-now-src" hidden></span>
+        <span class="xm-now-dev muted" id="xm-now-dev"></span>
+      </div>
+    </div>
+    <p class="hint">接管期间音箱正在播放的歌曲与来源：<b>本地曲库</b>＝飞牛音乐里的歌，<b>在线 · XX</b>＝该在线音源。页面停留时每 5 秒自动刷新。</p>
+  </div>
+  <div class="card">
+    <div class="card-title">语音口令</div>
+    <table class="xm-cmd-table">
+      <tr><td>播放收藏 / 播放本地</td><td>随机播放收藏（每次重新打乱）</td></tr>
+      <tr><td>播放本地收藏歌曲 / 播放本地歌曲 / 播放本地音乐</td><td>同上</td></tr>
+      <tr><td>放几首本地歌 / 放首本地歌 / 随便放几首歌 / 来几首本地歌</td><td>同上（口语说法都支持）</td></tr>
+      <tr><td>顺序播放本地收藏 / 顺序播放本地歌曲 / 按顺序播放本地收藏</td><td><b>按收藏先后</b>（最近收藏的在前）从第一首顺着播，<b>整张放完再从头循环</b>；也支持「挨着播放本地歌曲」等口语说法</td></tr>
+      <tr><td>播放周杰伦的本地收藏歌曲 / 来点五月天的收藏 / 放几首林俊杰本地歌</td><td><b>歌手合辑</b>：把收藏里这位歌手的<b>所有歌随机打乱</b>连播（整张循环）；收藏里没有该歌手会明确提示。不带「本地/收藏」的「播放周杰伦的歌」仍是点歌，不受影响</td></tr>
+      <tr><td>播放晴天 / 播放周杰伦的晴天</td><td><b>点歌</b>：收藏里有直接播；没有则本地曲库直接播 / 在线源<b>下载</b>到本地音乐库（<b>都不进收藏</b>）后播放</td></tr>
+      <tr><td>收藏这首歌 / 收藏当前歌曲</td><td>把正在播的这首加进飞牛音乐收藏</td></tr>
+      <tr><td>下一首 / 上一首 / 暂停 / 停止播放</td><td>播放控制</td></tr>
+      <tr><td>停下来吧 / 别放了 / 别播了 / 安静 / 停一下 / 闭嘴</td><td>停止播放（口语说法也行；停止后不会自动续播）</td></tr>
+      <tr><td>半小时后停止播放 / 定时30分钟 / 取消定时</td><td>睡眠定时：到点自动停止</td></tr>
+      <tr><td>随机播放 / 全部循环 / 单曲循环 / 顺序播放</td><td>切换播放模式</td></tr>
+      <tr><td>刷新列表</td><td>重新加载歌单</td></tr>
+    </table>
+    <p class="hint">💡 点播的歌自然播完且没有后续指令时，会自动接播收藏随机歌单；期间说了任何新指令（下一首 / 停止 / 新点歌）则不会接管。</p>
+    <p class="hint">💡 「顺序播放本地收藏」与「播放收藏」是两条独立通道：前者按收藏时间序整张循环，后者每次随机打乱；说完顺序播放再点「播放收藏」会自动切回随机。</p>
   </div>`;
 }
 
@@ -1874,6 +1893,30 @@ function xmSetHealth(id, ok, text) {
   if (t) t.textContent = text;
 }
 
+function xmRefreshNow(st) {
+  /* 正在播放：歌名 + 来源徽标（本地曲库 / 在线 · XX）。桥接 health 的 now_playing。 */
+  const np = st.now_playing || {};
+  const nameEl = $("#xm-now-name");
+  if (!nameEl) return;
+  const name = (np.name || "").trim();
+  const playing = np.is_playing === true;
+  nameEl.textContent = name || (playing ? "（曲目信息获取中…）" : "当前未在播放");
+  nameEl.classList.toggle("dim", !name);
+
+  const badge = $("#xm-now-src");
+  if (badge) {
+    const label = (np.source_label || "").trim();
+    const show = !!(name && label);
+    badge.hidden = !show;
+    if (show) {
+      badge.textContent = label;
+      badge.dataset.source = np.source || "";
+    }
+  }
+  const devEl = $("#xm-now-dev");
+  if (devEl) devEl.textContent = playing ? (np.device || "") : (name ? "已暂停" : "");
+}
+
 function xmRefreshDone(st) {
   const set = (id, v, cls) => {
     const el = $(id);
@@ -1886,6 +1929,7 @@ function xmRefreshDone(st) {
   set("#xm-d-push", st.push_ok ? "正常" : "等待", st.push_ok ? "ok" : "err");
   const err = st.last_error || "";
   set("#xm-d-err", err ? (err.length > 12 ? err.slice(0, 12) + "…" : err) : "无", err ? "err" : "ok");
+  xmRefreshNow(st);
 
   // ① 口令轮询（桥接 enable_pull_ask）：false 时 poller 空转，语音指令永远到不了桥接
   const pollOn = st.pull_ask_on;

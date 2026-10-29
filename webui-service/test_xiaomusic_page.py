@@ -304,3 +304,71 @@ def test_done_page_documents_singer_playlist_command():
     assert "随机打乱" in js
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     assert "播放周杰伦的本地收藏歌曲" in html
+
+
+def test_xiaomusic_switch_marks_dirty_so_save_bar_appears():
+    """勾选「接管小爱音箱音乐播放」必须弹出底部保存条。
+
+    2026-10-29 用户反馈（分发给他人的实例）：勾上后提示要保存，但页面上
+    找不到保存按钮——保存条只在 markDirty() 后才从底部滑出，而这个
+    checkbox 当时没绑 change 事件，所以永远不会出现。
+    """
+    import re
+
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+
+    # 直接断言这个开关接了脏标记
+    assert re.search(
+        r'\$\("#xm-enabled"\)\.addEventListener\("change".*markDirty', js
+    ), "xm-enabled 没绑定 markDirty，勾选后保存条不会出现"
+
+    # 通用防护：所有 switch-row 里的开关都必须在 markDirty 上下文里出现
+    blocks = re.findall(r'<label class="switch-row">(.*?)</label>', html, re.S)
+    ids = []
+    for block in blocks:
+        ids.extend(re.findall(r'id="([a-z0-9-]+)"', block))
+    assert ids, "index.html 里没解析到任何 switch-row 开关"
+
+    lines = js.splitlines()
+    ctx = []
+    for n, line in enumerate(lines):
+        if "markDirty" in line:
+            ctx.extend(lines[max(0, n - 3): n + 2])
+    ctx_text = "\n".join(ctx)
+    for i in ids:
+        assert f'"#{i}"' in ctx_text, f"开关 {i} 未绑定脏标记：勾选后保存条不会出现"
+
+
+def test_xiaomusic_switch_marks_dirty_so_save_bar_appears():
+    """勾选「接管小爱音箱音乐播放」必须弹出底部保存条。
+
+    2026-10-29 用户反馈（分发给他人的实例）：勾上后提示要保存，但页面上
+    找不到保存按钮——保存条只在 markDirty() 后才从底部滑出，而这个
+    checkbox 当时没绑 change 事件，所以永远不会出现。
+    """
+    import re
+
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+
+    # 直接断言这个开关接了脏标记
+    assert re.search(
+        r'\$\("#xm-enabled"\)\.addEventListener\("change".*markDirty', js
+    ), "xm-enabled 没绑定 markDirty，勾选后保存条不会出现"
+
+    # 通用防护：所有 switch-row 里的开关都必须在 markDirty 上下文里出现
+    blocks = re.findall(r'<label class="switch-row">(.*?)</label>', html, re.S)
+    ids = []
+    for block in blocks:
+        ids.extend(re.findall(r'id="([a-z0-9-]+)"', block))
+    assert ids, "index.html 里没解析到任何 switch-row 开关"
+
+    lines = js.splitlines()
+    ctx = []
+    for n, line in enumerate(lines):
+        if "markDirty" in line:
+            ctx.extend(lines[max(0, n - 3): n + 2])
+    ctx_text = "\n".join(ctx)
+    for i in ids:
+        assert f'"#{i}"' in ctx_text, f"开关 {i} 未绑定脏标记：勾选后保存条不会出现"

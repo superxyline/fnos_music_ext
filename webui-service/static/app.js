@@ -1344,6 +1344,9 @@ $("#dedup-run").addEventListener("click", async () => {
 $$("input[name=quality]").forEach((el) => el.addEventListener("change", () => markDirty("音质偏好需保存后生效")));
 ["#recommend-hot", "#recommend-daily", "#history-playlist", "#public-playlists-enabled", "#search-probe", "#app-v2-search", "#search-log-query", "#tee-enabled", "#fav-download-enabled", "#auto-cover", "#lyric-auto-dl", "#netease-my-playlists", "#netease-subscribed", "#netease-resident"].forEach((sel) =>
   $(sel).addEventListener("change", () => markDirty()));
+// 小爱音箱接管开关：2026-10-29 用户反馈「勾上后提示保存却找不到按钮」——
+// 保存条只在 markDirty() 后才从底部弹出，这个 checkbox 当时没接事件，所以永不出现。
+$("#xm-enabled").addEventListener("change", () => markDirty("小爱音箱接管需保存后生效"));
 
 // 常驻开关可用态：账号歌单，或「公共歌单已开且选了网易歌单」任一成立即可勾选；
 // 两者都无需求时置灰（已勾选状态保留，重开即恢复）

@@ -5,6 +5,17 @@
 
 > 以下 v2.3.1 起为本仓库（superxyline 二次开发版）的增量变更；v2.3.0 及之前为上游 javycoder/fnos_music_ext 的变更。
 
+## [未发布] - 2026-10-30
+
+### 改进
+
+- **明确支持 ARM64（与 x86_64 共用同一个包）**：镜像一直是目标机本地构建、架构本应无关，但从未验证或加固——ARM 设备出问题几乎没有排查线索。本次补齐三处：
+  - `container/Dockerfile`：pip 依赖安装加**编译兜底**——镜像源与官方 PyPI 都失败时（典型原因：当前架构没有该依赖的预编译 wheel），临时 `apt-get install build-essential python3-dev libffi-dev libssl-dev` 再试一次，成功后立即 purge + autoremove。正常运行路径零开销、镜像体积不变，只在真需要编译时才付代价；
+  - `ensure_base_image.sh`：选定基础镜像前校验 `.Architecture` 与宿主 `uname -m` 是否一致。部分国内镜像代理只缓存 amd64，在 ARM 上会以 `exec format error` 收场且极难定位；架构不符自动换下一个候选源，全部失败时追加 ARM 专项提示。顺带修掉候选列表混入空引用导致空跑一次 `invalid reference format` 的老问题；
+  - `install.sh`：启动时按 `uname -m` 打印架构提示（ARM 首次构建 5–15 分钟、建议内存 ≥2GB），未知架构给出反馈引导。
+- 依赖核验（2026-10-30）：17 个 pip 依赖在 `cp313 + aarch64` 上全部有现成 wheel；`python:3.13-slim` 提供 `amd64/arm64/arm/v7/riscv64` 变体；安装链路无 x86 专属二进制。
+- 真机验证：x86 上按新 Dockerfile 完整重建镜像通过（依赖齐全、可正常 import）；架构守卫做了负向测试（伪造宿主为 arm64 时正确拒绝 amd64 镜像并切换候选）。ARM 侧仍为静态验证，无真机记录。
+
 ## [3.7.1] - 2026-10-29
 
 ### 修复

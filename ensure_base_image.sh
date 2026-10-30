@@ -53,6 +53,37 @@ image_exists_local() {
     timeout 10 ${DOCKER_CMD} image inspect "${ref}" >/dev/null 2>&1
 }
 
+# 宿主架构 → docker 架构名（用于校验镜像源是否真的给了本架构的层）
+host_arch() {
+    case "$(uname -m)" in
+        x86_64|amd64) echo amd64 ;;
+        aarch64|arm64) echo arm64 ;;
+        armv7l|armv7) echo arm ;;
+        *) echo "" ;;
+    esac
+}
+HOST_ARCH="$(host_arch)"
+
+# 镜像架构是否与宿主一致。
+# 背景（2026-10-30 ARM 支持）：部分镜像代理只缓存/提供 amd64，在 arm64 设备上
+# 拉到的层只能在构建时以 "exec format error" 收场，且报错点极难定位。这里在
+# 选定镜像前先校验 .Architecture，不符就换下一个候选源。
+# 取不到架构（老 docker / 特殊引用）时放行，不制造假失败。
+image_arch_ok() {
+    local ref="$1" img
+    [ -n "${HOST_ARCH}" ] || return 0
+    # shellcheck disable=SC2086
+    img="$(timeout 10 ${DOCKER_CMD} image inspect "${ref}" --format '{{.Architecture}}' 2>/dev/null || true)"
+    case "${img}" in
+        ""|unknown) return 0 ;;
+    esac
+    if [ "${img}" != "${HOST_ARCH}" ]; then
+        log_warn "镜像 ${ref} 架构为 ${img}，与本机 ${HOST_ARCH} 不符（该源可能不提供本架构），切换下一个候选..."
+        return 1
+    fi
+    return 0
+}
+
 # 用真实 docker pull 验证（与 BuildKit 构建走同一条 daemon 链路，顺带预取镜像层）。
 # 心跳（issue #24）：--quiet 拉取大镜像长时间无输出，在 fpk 安装器里表现为
 # "卡在 55%"——后台拉取 + 每 30s 打一行已耗时，让用户知道仍在推进。
@@ -165,6 +196,13 @@ speed_rank_candidates() {
 }
 if [ -z "${MANUAL}" ] && command -v curl >/dev/null 2>&1 && [ "${#CANDIDATES[@]}" -gt 1 ]; then
     speed_rank_candidates
+    # 去空元素：mapfile 那段的 printf 在某类输入下会补一个空行，
+    # 空引用会让循环里多跑一次 "invalid reference format"（2026-10-30 实测）
+    _nonempty=()
+    for _c in "${CANDIDATES[@]}"; do
+        [ -n "${_c}" ] && _nonempty+=("${_c}")
+    done
+    CANDIDATES=("${_nonempty[@]}")
     log_info "镜像候选已按测速重排: ${CANDIDATES[*]}"
 fi
 
@@ -175,15 +213,22 @@ for ref in "${CANDIDATES[@]}"; do
     idx=$((idx + 1))
     log_info "[${idx}/${total}] ${ref}（超时 ${PULL_TIMEOUT}s，失败将自动切换下一源）"
     if image_exists_local "${ref}"; then
-        log_info "基础镜像 ${ref} 本地已存在，跳过拉取。"
-        CHOSEN="${ref}"
-        break
+        if image_arch_ok "${ref}"; then
+            log_info "基础镜像 ${ref} 本地已存在，跳过拉取。"
+            CHOSEN="${ref}"
+            break
+        fi
+        log_warn "本地已有 ${ref} 但架构不匹配（可能是此前在别的架构上拉的），尝试从该源重新拉取..."
     fi
     rc=0
     pull_ok "${ref}" || rc=$?
     if [ "${rc}" -eq 0 ]; then
-        CHOSEN="${ref}"
-        break
+        if image_arch_ok "${ref}"; then
+            CHOSEN="${ref}"
+            break
+        fi
+        log_warn "已跳过 ${ref}（架构不符），继续下一个候选..."
+        continue
     fi
     log_warn "拉取 ${ref} 失败（exit=${rc}），尝试下一个候选..."
 done
@@ -195,6 +240,10 @@ if [ -z "${CHOSEN}" ]; then
     log_err "  2) 设置 BASE_IMAGE 环境变量手动指定可用镜像引用（如 docker.m.daocloud.io/library/python:3.13-slim）；"
     log_err "  3) 通过 FNMUSIC_DOCKER_MIRRORS 自定义国内镜像候选列表；"
     log_err "  4) 检查 fnOS Docker 镜像加速器（如 docker.fnnas.com）是否可用，或改用 ./install.sh --mode host。"
+    if [ -n "${HOST_ARCH}" ]; then
+        log_err "  5) 本机架构为 ${HOST_ARCH}：部分国内镜像代理只缓存 amd64，ARM 设备请确认源提供 arm64 层，"
+        log_err "     或用 BASE_IMAGE 直接指定官方 python:3.13-slim（官方源多架构齐全）。"
+    fi
     exit 1
 fi
 

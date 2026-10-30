@@ -479,6 +479,21 @@ if ! run_docker info >/dev/null 2>&1; then
     exit 1
 fi
 
+# 架构提示（2026-10-30）：本扩展不预编译镜像，一切在目标机 `compose build`——
+# x86_64 与 arm64 用同一套 Dockerfile/依赖，架构自动跟随宿主（fpk manifest platform=all）。
+# ARM 设备（RK3399/RK3588/树莓派等）算力与内存普遍低于 x86 小主机，首次构建慢得多，
+# 提前说明避免被当成"卡死"中断安装。
+case "$(uname -m)" in
+    aarch64|arm64)
+        log_info "检测到 ARM64 设备：镜像将在本机从源码构建（首次约 5-15 分钟，建议内存 ≥2GB），构建期间请勿中断。"
+        ;;
+    x86_64|amd64)
+        ;;
+    *)
+        log_warn "未识别的 CPU 架构 $(uname -m)：按平台无关方式构建（基础镜像 python:3.13-slim），如遇问题请带上构建日志反馈。"
+        ;;
+esac
+
 
 precheck_environment() {
     log_info "==> 开始安装环境预检..."

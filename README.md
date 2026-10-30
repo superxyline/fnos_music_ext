@@ -80,6 +80,20 @@
 
 WebUI「边听边存」页：**关闭边听边存、打开收藏自动下载**——只有点红心的歌会下载进曲库，文件名恒为「歌手 - 歌名」，下载完成打开收藏页即自动加入收藏列表。
 
+## 支持的 CPU 架构
+
+**x86_64 与 arm64 通用同一个安装包**（fpk `manifest` 里 `platform = all`），不产出架构专属文件：
+
+- 镜像在目标机上 `docker compose build` 本地构建，基础镜像 `python:3.13-slim` 官方提供 `amd64 / arm64 / arm/v7 / riscv64` 等变体，架构自动跟随宿主；
+- 全部 Python 依赖在 arm64 上都有预编译 wheel（含 `curl_cffi` / `pillow` / `aiohttp` / `pycryptodome` 这些带 C 扩展的），构建不需要编译器；
+- `nodejs` / `ffmpeg` / `supervisor` 走 Debian apt，arm64 有官方包；
+- 万一将来某个依赖只发源码包，Dockerfile 会自动临时安装编译工具、装完立即卸掉（只走失败路径，正常运行零开销）；
+- 选定基础镜像前会校验 `.Architecture` 与宿主一致——部分国内镜像代理只缓存 amd64，直接构建会以 `exec format error` 收场、极难定位。
+
+已知差异（只影响首次安装体感）：ARM 设备算力与内存普遍低于 x86 小主机，首次构建约 **5–15 分钟**（建议内存 ≥2GB），安装脚本会先打印这条提示。飞牛 ARM 版要求系统 ≥ 1.2.0（ARM 公测版 1.2.0701 起满足）。
+
+> 以上为静态验证结论（依赖 wheel 可得性、基础镜像多架构、安装链路无架构专属二进制）。本项目目前**没有 ARM 真机实测记录**，如遇问题请带上 `docker compose build` 的日志反馈。
+
 ## 架构
 
 ```text

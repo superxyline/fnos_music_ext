@@ -65,6 +65,10 @@ RUN set -eu; \
 # 四个服务的 Python 依赖并集（各自 requirements 独立演进，镜像统一安装）
 # 构建容器 DNS 失败自愈同 apt 步骤（resolv.conf 改写不跨 RUN 层持久，需每步自带）；
 # 镜像源安装失败自动回退官方 PyPI 重试
+# 架构兜底（2026-10-30）：x86_64 与 arm64 共用本文件，依赖在两边都有预编译 wheel
+# （curl_cffi/pillow/aiohttp/pycryptodome 均已验证 aarch64 wheel）。但将来若某个依赖
+# 只发 sdist，arm64 上会以 "gcc: not found" 构建失败——这里在「镜像源 + 官方源」都失败时
+# 临时装编译工具再试一次，成功后立即 purge（正常运行路径零开销、镜像体积不变）。
 COPY musicdl-service/requirements.txt /srv/req.musicdl
 COPY musicbox-service/requirements.txt /srv/req.musicbox
 COPY lxmusic-service/requirements.txt /srv/req.lxmusic
@@ -79,14 +83,40 @@ RUN set -eu; \
         } > /tmp/resolv.fnmusic 2>/dev/null || true; \
         cat /tmp/resolv.fnmusic > /etc/resolv.conf 2>/dev/null || true; \
     }; \
+    swap_apt_host() { \
+        for f in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
+            [ -f "${f}" ] && sed -i -E "s#${1}#${2}#g" "${f}" || true; \
+        done; \
+    }; \
+    REQS="-r /srv/req.musicdl -r /srv/req.musicbox -r /srv/req.lxmusic -r /srv/req.webui -r /srv/req.xiaomusic -r /srv/req.xiaomusic-core"; \
+    pip_install() { \
+        _index="$1"; \
+        pip install --no-cache-dir --no-deps -i "${_index}" xiaomusic==0.6.1 \
+        && pip install --no-cache-dir -i "${_index}" ${REQS}; \
+    }; \
     fix_dns; \
-    pip install --no-cache-dir --no-deps xiaomusic==0.6.1 \
-    && pip install --no-cache-dir -r /srv/req.musicdl -r /srv/req.musicbox -r /srv/req.lxmusic -r /srv/req.webui -r /srv/req.xiaomusic -r /srv/req.xiaomusic-core \
-    || { echo "[WARN] pip 镜像源（${PIP_INDEX_URL}）安装失败，回退官方 PyPI 重试..." >&2; \
-         pip install --no-cache-dir --no-deps -i https://pypi.org/simple xiaomusic==0.6.1 \
-         && pip install --no-cache-dir -i https://pypi.org/simple \
-            -r /srv/req.musicdl -r /srv/req.musicbox -r /srv/req.lxmusic -r /srv/req.webui -r /srv/req.xiaomusic -r /srv/req.xiaomusic-core; } \
-    && rm -f /srv/req.*
+    if pip_install "${PIP_INDEX_URL}"; then \
+        echo "[pip] 依赖安装完成（${PIP_INDEX_URL}）"; \
+    else \
+        echo "[WARN] pip 镜像源（${PIP_INDEX_URL}）安装失败，回退官方 PyPI 重试..." >&2; \
+        if pip_install https://pypi.org/simple; then \
+            echo "[pip] 依赖安装完成（官方 PyPI）"; \
+        else \
+            echo "[WARN] 官方源仍失败：当前架构可能缺少预编译 wheel，安装构建工具后重试..." >&2; \
+            echo "[WARN] arch=$(dpkg --print-architecture 2>/dev/null || uname -m)" >&2; \
+            if [ -n "${APT_MIRROR}" ]; then swap_apt_host 'https?://deb\.debian\.org' "${APT_MIRROR}"; fi; \
+            fix_dns; \
+            apt-get update -o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15; \
+            apt-get install -y --no-install-recommends build-essential python3-dev libffi-dev libssl-dev; \
+            if ! pip_install "${PIP_INDEX_URL}"; then pip_install https://pypi.org/simple; fi; \
+            apt-get purge -y build-essential python3-dev libffi-dev libssl-dev || true; \
+            apt-get autoremove -y || true; \
+            if [ -n "${APT_MIRROR}" ]; then swap_apt_host "${APT_MIRROR}" 'http://deb.debian.org'; fi; \
+            rm -rf /var/lib/apt/lists/*; \
+            echo "[pip] 依赖安装完成（源码编译路径，构建工具已清理）"; \
+        fi; \
+    fi; \
+    rm -f /srv/req.*
 
 RUN useradd -m -u 1000 appuser \
     && mkdir -p /data/cache /data/config /data/lxmusic \

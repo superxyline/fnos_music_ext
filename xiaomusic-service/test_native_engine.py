@@ -376,7 +376,8 @@ def test_curated_core_dependencies():
 def test_dockerfile_installs_xiaomusic_without_deps():
     """xiaomusic 必须 --no-deps 安装，否则上游重依赖全回来。"""
     dockerfile = (HERE.parent / "container" / "Dockerfile").read_text(encoding="utf-8")
-    assert "--no-deps xiaomusic==0.6.1" in dockerfile
+    # pip_install 函数化后 no-deps 与 -i 同行（镜像源参数化）
+    assert "--no-deps" in dockerfile and "xiaomusic==0.6.1" in dockerfile
     assert "req.xiaomusic-core" in dockerfile
 
 
@@ -401,7 +402,8 @@ def test_curated_core_dependencies():
 def test_dockerfile_installs_xiaomusic_without_deps():
     """xiaomusic 必须 --no-deps 安装，否则上游重依赖全回来。"""
     dockerfile = (HERE.parent / "container" / "Dockerfile").read_text(encoding="utf-8")
-    assert "--no-deps xiaomusic==0.6.1" in dockerfile
+    # pip_install 函数化后 no-deps 与 -i 同行（镜像源参数化）
+    assert "--no-deps" in dockerfile and "xiaomusic==0.6.1" in dockerfile
     assert "req.xiaomusic-core" in dockerfile
 
 

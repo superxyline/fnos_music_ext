@@ -971,6 +971,7 @@ def source_from_online_guid(guid: str) -> str:
 _SOURCE_TAG_NETEASE = "[music box]"
 _SOURCE_TAG_MUSICDL_LEGACY = "[dl]"   # 3.3.0 之前的统称标记，仅用于剥离历史数据
 _SOURCE_TAG_LX_FALLBACK = "[lx]"
+_SOURCE_TAG_VIP = "[VIP] "   # issue #57：无 VIP 权益账号的 VIP 曲目展示标记（非来源标记）
 
 # musicdl 平台短名（与 install.sh 的 SOURCE_PLATFORM_TABLE 第 3 列同源）：
 # 用于把「来源标记前缀」渲染成具体平台名，并在写回播放历史时精确剥离。
@@ -1066,7 +1067,8 @@ def strip_source_tag(title: str, guid: str | None = None) -> str:
         elif head:
             candidates.append(f"[{head}]")
 
-    candidates.extend((_SOURCE_TAG_NETEASE, _SOURCE_TAG_MUSICDL_LEGACY, _SOURCE_TAG_LX_FALLBACK))
+    candidates.extend((_SOURCE_TAG_NETEASE, _SOURCE_TAG_MUSICDL_LEGACY,
+                       _SOURCE_TAG_LX_FALLBACK, _SOURCE_TAG_VIP))
     candidates.extend(f"[{n}]" for n in sorted(_MUSICDL_SOURCE_NAMES))
     candidates.extend(f"[{str(e.get('name') or '').strip()}]"
                       for e in _lx_source_entries() if str(e.get("name") or "").strip())
@@ -1086,6 +1088,10 @@ def build_online_track(item: dict, mark_source: bool = False) -> dict:
     guid = online_guid_from_item(item)
     src = str(item.get("source") or source_from_online_guid(guid) or "")
     title = str(item.get("title") or item.get("name") or "")
+    if item.get("needs_vip") is True and title and not title.startswith(_SOURCE_TAG_VIP):
+        # issue #57：无 VIP 权益账号的 VIP 曲目展示标记（与来源标记独立，所有出口
+        # 可见；入库/收藏命名前经 strip_source_tag 剥离，业务不受影响）
+        title = _SOURCE_TAG_VIP + title
     if mark_source:
         # 只裁两端空白：空标题/纯空白标题不加前缀，避免出现「[kuwo]」这种空壳条目
         title = title.strip()

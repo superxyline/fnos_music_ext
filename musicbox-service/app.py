@@ -14,6 +14,7 @@ from netease_ext import (
     batch_song_details,
     check_is_logged_in,
     filter_playable_song_ids,
+    mark_needs_vip,
     playlist_track_ids,
     public_playlist,
     public_playlist_categories,
@@ -266,11 +267,12 @@ def user_playlists(limit: int = Query(100, ge=1, le=100)):
 
 @app.get("/api/v1/user/playlists/{playlist_id}/tracks")
 def user_playlist_tracks(playlist_id: int = Path(..., ge=1)):
-    """网易歌单曲目：trackIds -> 批量详情 + 可播过滤（形状对齐 recommend rows）。"""
+    """网易歌单曲目：trackIds -> 批量详情 + 可播过滤（形状对齐 recommend rows）；
+    VIP 曲目按登录账号权益附 needs_vip 标记。"""
     ids = playlist_track_ids(playlist_id)
     if ids is None:
         return {"ok": False, "error": "not_logged_in", "logged_in": False}
-    return {"ok": True, "data": batch_song_details(ids[:1000])}
+    return {"ok": True, "data": mark_needs_vip(batch_song_details(ids[:1000]))}
 
 
 PUBLIC_CHANNELS = ("charts", "recommend", "account_recommend", "highquality", "playlist")
@@ -330,9 +332,9 @@ def public_playlist_api(playlist_id: int = Path(..., ge=1), kind: str = Query("p
 
 @app.get("/api/v1/public-playlists/{playlist_id}/tracks")
 def public_playlist_tracks_api(playlist_id: int = Path(..., ge=1), kind: str = Query("playlist")):
-    """公共歌单曲目（批量详情，保序去重；超过 1000 首截断并标记）。"""
+    """公共歌单曲目（批量详情，保序去重；超过 1000 首截断并标记；VIP 附 needs_vip）。"""
     try:
-        return public_playlist_tracks(playlist_id, "chart" if kind == "chart" else "playlist")
+        return mark_needs_vip(public_playlist_tracks(playlist_id, "chart" if kind == "chart" else "playlist"))
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
 

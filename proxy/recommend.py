@@ -869,6 +869,8 @@ def _musicbox_recommend_item(it: dict) -> dict:
         "duration_s": dur_ms / 1000.0,
         "ext": "flac" if (it.get("has_sq") or it.get("has_hr")) else "mp3",
         "cover_url": str(it.get("album_pic_url") or ""),
+        # issue #57：musicbox 行级 VIP 标记透传（build_online_track 渲染 [VIP] 前缀）
+        "needs_vip": it.get("needs_vip") is True,
     }
 
 

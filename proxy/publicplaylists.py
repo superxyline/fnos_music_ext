@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from urllib.parse import quote, unquote
 from uuid import uuid4
@@ -33,7 +34,7 @@ import httpx
 logger = logging.getLogger("proxy.publicplaylists")
 
 PUBLIC_GUID_PREFIX = "online:playlist:public:"
-_PROVIDERS = ("musicbox",)
+_PROVIDERS = ("musicbox", "kugou")
 _SUMMARY_TTL_S = 30 * 60.0     # 摘要内存缓存
 _DISK_TTL_S = 24 * 3600.0      # 磁盘快照有效期（回落与重启恢复窗口）
 _FAIL_COOLDOWN_S = 120.0       # 拉取失败冷却：期内直接回落磁盘，不再打 musicbox
@@ -199,6 +200,8 @@ def parse_selection(raw: object, conf: "dict | None" = None, default_provider: s
             continue
         if entry["kind"] not in ("playlist", "chart") or not entry["source"] or not entry["id"]:
             continue
+        if entry["provider"] == "kugou" and (entry["kind"] != "chart" or entry["id"] not in _KG_CHART_BY_ID):
+            continue  # 酷狗只接受内置榜单清单内的 chart 条目
         # 网易榜单与同名歌单是同一份内容：去重键统一按 playlist，避免同一榜单出现两次
         key = _entry_key({**entry, "kind": "playlist"})
         if key in seen:
@@ -218,6 +221,9 @@ def configured_selection(conf: dict) -> list:
 
 def _selection_runtime_usable(entry: dict, conf: dict) -> bool:
     """该条目当前是否有可用链路（网易取流需要 musicbox 在场）。"""
+    if entry["provider"] == "kugou":
+        # 酷狗榜单：取数走酷狗公开接口，播放/收藏走 musicdl 映射源
+        return bool(conf.get("musicdl_enabled"))
     if entry["provider"] != "musicbox":
         return False
     if conf.get("netease_enabled"):
@@ -227,6 +233,296 @@ def _selection_runtime_usable(entry: dict, conf: dict) -> bool:
     # 仅公共歌单：webui 会按需把 musicbox 常驻（见 _resident_active），
     # 只有用户显式关掉常驻时才认为不可用。
     return _tri(conf.get("netease_playlist_resident"))
+
+
+# ------------------------------------------------- 酷狗榜单（第二 provider） --
+# 参考 zouclang/fnos_music_ext 的 charts 实现（榜单清单与 m.kugou.com 公开接口），
+# 播放不依赖洛雪：曲目经 musicdl 现役源（酷我/咪咕/B站）同名映射后播放，
+# 音质门槛/红心自动下载/歌词封面全链路与普通在线曲目一致。
+
+_KG_UA = "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36"
+_KG_META_TTL_S = 4 * 3600.0          # 榜单元数据缓存（酷狗榜每日更新，4h 足够新鲜）
+_KG_MAP_DISK_MAX = 4000              # 映射磁盘缓存上限（hash -> musicdl item）
+
+# 酷狗官方榜单清单（rankid 与封面为酷狗公开素材，静态维护）
+KG_CHARTS = [
+    {"id": "8888", "name": "TOP500", "rankid": 8888, "cover": "https://imge.kugou.com/mcommon/400/20241219/20241219164209670219.png"},
+    {"id": "6666", "name": "飙升榜", "rankid": 6666, "cover": "https://imge.kugou.com/mcommon/400/20241219/20241219193628550054.png"},
+    {"id": "74534", "name": "新歌榜", "rankid": 74534, "cover": "https://imge.kugou.com/mcommon/400/20241219/20241219200509300768.png"},
+    {"id": "52144", "name": "国潮音乐榜", "rankid": 85897, "cover": "https://imge.kugou.com/mcommon/400/20241120/20241120202644296668.jpg"},
+    {"id": "100530", "name": "视频号热歌酷狗榜", "rankid": 100530, "cover": "https://imge.kugou.com/mcommon/400/20260701/20260701213145443732.jpg"},
+    {"id": "51341", "name": "民谣榜", "rankid": 51341, "cover": "https://imge.kugou.com/mcommon/400/20241211/20241211184719475668.jpg"},
+    {"id": "59900", "name": "纯音乐榜", "rankid": 59900, "cover": "https://imge.kugou.com/mcommon/400/20241211/20241211185324343605.jpg"},
+    {"id": "33160", "name": "电音榜", "rankid": 33160, "cover": "https://imge.kugou.com/mcommon/400/20241211/20241211184628349205.jpg"},
+    {"id": "82831", "name": "网络热歌榜", "rankid": 82831, "cover": "https://imge.kugou.com/mcommon/400/20241219/20241219195626644029.png"},
+    {"id": "52144b", "name": "短视频热歌榜", "rankid": 52144, "cover": "https://imge.kugou.com/mcommon/400/20260604/20260604150723458910.png"},
+    {"id": "59896", "name": "摇滚榜", "rankid": 59896, "cover": "https://imge.kugou.com/mcommon/400/20241211/20241211184944114279.jpg"},
+    {"id": "24971", "name": "DJ热歌榜", "rankid": 24971, "cover": "https://imge.kugou.com/mcommon/400/20241219/20241219194419154116.png"},
+    {"id": "80025", "name": "国乐榜", "rankid": 80025, "cover": "https://imge.kugou.com/mcommon/400/20241211/20241211184535924138.png"},
+    {"id": "85432", "name": "百万收藏榜", "rankid": 85432, "cover": "https://imge.kugou.com/mcommon/400/20241219/20241219171042182683.png"},
+    {"id": "52767", "name": "短视频收藏人气榜", "rankid": 52767, "cover": "https://imge.kugou.com/mcommon/400/20260702/20260702101133223934.png"},
+    {"id": "84235", "name": "名品堂", "rankid": 84235, "cover": "https://imge.kugou.com/mcommon/400/20241219/20241219195054422404.png"},
+    {"id": "31308", "name": "内地榜", "rankid": 31308, "cover": "https://imge.kugou.com/mcommon/400/20241211/20241211192146592398.png"},
+    {"id": "33165", "name": "粤语金曲榜", "rankid": 33165, "cover": "https://imge.kugou.com/mcommon/400/20241219/20241219200119140556.png"},
+    {"id": "31310", "name": "欧美榜", "rankid": 31310, "cover": "https://imge.kugou.com/mcommon/400/20241211/20241211192454699571.jpg"},
+    {"id": "51340", "name": "伤感榜", "rankid": 51340, "cover": "https://imge.kugou.com/mcommon/400/20241219/20241219195213930623.png"},
+]
+_KG_CHART_BY_ID = {str(c["id"]): c for c in KG_CHARTS}
+
+_kg_meta_mem: "dict[str, tuple[list, float]]" = {}       # rankid -> (rows, expire)
+_kg_meta_locks: "dict[str, asyncio.Lock]" = {}
+_kg_map_mem: "dict[str, dict]" = {}                       # hash -> musicdl item
+_kg_map_fail: "dict[str, float]" = {}                     # hash -> 失败时间（当天不再试）
+_kg_map_queue: "dict[str, dict]" = {}                     # hash -> meta row（待映射）
+_kg_map_task: "asyncio.Task | None" = None
+_kg_map_loaded = False
+
+
+def _kg_norm(v) -> str:
+    return re.sub(r"[\s\-_·・.,，。!！?？'\"“”‘’:：;；、()\[\]【】&+/]+", "", str(v or "").lower())
+
+
+def _kg_meta_disk_path() -> str:
+    return os.path.join(cache_dir(), "kg_map.json")
+
+
+def _kg_load_map_disk() -> None:
+    global _kg_map_loaded
+    if _kg_map_loaded:
+        return
+    _kg_map_loaded = True
+    try:
+        with open(_kg_meta_disk_path(), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        items = data.get("items") if isinstance(data, dict) else None
+        if isinstance(items, dict):
+            _kg_map_mem.update({k: v for k, v in items.items() if isinstance(v, dict)})
+    except Exception:
+        pass
+
+
+def _kg_save_map_disk() -> None:
+    try:
+        items = dict(list(_kg_map_mem.items())[-_KG_MAP_DISK_MAX:])
+        part = _kg_meta_disk_path() + ".part"
+        os.makedirs(os.path.dirname(_kg_meta_disk_path()) or ".", exist_ok=True)
+        with open(part, "w", encoding="utf-8") as fh:
+            json.dump({"version": 1, "savedAt": int(time.time()), "items": items},
+                      fh, ensure_ascii=False)
+        os.replace(part, _kg_meta_disk_path())
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("kg map disk save failed: %s", exc)
+
+
+async def _kg_fetch_meta(client: httpx.AsyncClient, rankid: int, limit: int = 100) -> "tuple[list, str]":
+    """酷狗榜单元数据（m.kugou.com 公开接口，自动分页拼到 limit 首）。"""
+    tracks: list = []
+    cover_url = ""
+    seen: set = set()
+    page = 1
+    while len(tracks) < limit and page <= 5:
+        params = {"rankid": rankid, "page": page, "json": "true"}
+        try:
+            resp = await client.get("http://m.kugou.com/rank/info/", params=params,
+                                    headers={"User-Agent": _KG_UA}, timeout=10.0)
+            res = resp.json() or {}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("kg rank %s page %s fetch failed: %s", rankid, page, exc)
+            break
+        rows = (res.get("songs") or {}).get("list") or []
+        if not rows and page == 1:
+            raise RuntimeError(f"kg rank {rankid} 无数据")
+        if not cover_url:
+            info = res.get("info") or {}
+            cov = str(info.get("banner_9") or info.get("banner_7") or info.get("imgurl") or "")
+            cover_url = ("https://" + cov[len("http://"):]) if cov.startswith("http://") else cov
+        added = 0
+        for it in rows:
+            if not isinstance(it, dict):
+                continue
+            fhash = str(it.get("hash") or "")
+            if not fhash or fhash in seen:
+                continue
+            seen.add(fhash)
+            singers = it.get("authors") or []
+            artist = " / ".join(
+                str(a.get("author_name") or "") for a in singers
+                if isinstance(a, dict) and a.get("author_name"))
+            title = str(it.get("songname") or it.get("filename") or "").strip()
+            title = title.replace(f"{artist} - ", "").strip()
+            if not title:
+                continue
+            cov = str(it.get("album_sizable_cover") or "").replace("{size}", "480")
+            tracks.append({
+                "hash": fhash,
+                "title": title,
+                "artist": artist,
+                "duration_s": int(it.get("duration") or 0),
+                "cover_url": ("https://" + cov[len("http://"):]) if cov.startswith("http://") else cov,
+            })
+            added += 1
+            if len(tracks) >= limit:
+                break
+        if added == 0 or len(rows) < 30:
+            break
+        page += 1
+    return tracks, cover_url
+
+
+def _kg_pick(items: list, title: str, artist: str) -> "dict | None":
+    """musicdl 搜索结果 → 同名最优候选（标题归一相等 + 歌手重叠 + 音质最好）。"""
+    t_norm = _kg_norm(title)
+    if not t_norm:
+        return None
+    a_tokens = [_kg_norm(t) for t in re.split(r"[&/,、\s]+", str(artist or "")) if _kg_norm(t)]
+    best, best_key = None, None
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        if not str(it.get("download_url") or "").startswith(("http", "/")):
+            continue
+        if _kg_norm(it.get("title")) != t_norm:
+            continue
+        cand = _kg_norm(it.get("artist"))
+        if a_tokens and cand and not any(t in cand for t in a_tokens):
+            continue
+        try:
+            size = int(it.get("file_size") or 0)
+            dur = float(it.get("duration_s") or 0)
+        except (TypeError, ValueError):
+            size, dur = 0, 0.0
+        tier = 0 if str(it.get("ext") or "").lower() in ("flac", "ape", "wav", "aiff") else (
+            1 if size > 0 and dur > 0 and size * 8 / dur >= 256_000 else 2)
+        key = (tier, str(it.get("source") or ""))
+        if best_key is None or key < best_key:
+            best, best_key = it, key
+    return best
+
+
+async def _kg_map_one(client: httpx.AsyncClient, row: dict) -> "dict | None":
+    """酷狗行 → musicdl 同名最优候选（真实源 guid，播放/收藏/下载全链路复用）。"""
+    keyword = f"{row.get('title')} {row.get('artist')}".strip()
+    try:
+        resp = await client.get(
+            f"{os.environ.get('FNMUSIC_MUSICDL_URL', 'http://127.0.0.1:8768')}/search",
+            params={"keyword": keyword, "limit": 8}, timeout=40.0)
+        data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("kg map search failed for %r: %s", keyword[:32], exc)
+        return None
+    items = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return None
+    return _kg_pick(items, str(row.get("title")), str(row.get("artist")))
+
+
+async def _kg_map_worker() -> None:
+    """后台映射队列：并发 2、单首间隔 0.6s，映射结果落缓存并重建受影响榜单。"""
+    global _kg_map_task
+    async with httpx.AsyncClient(trust_env=False) as client:
+        sem = asyncio.Semaphore(4)
+
+        async def one(fhash: str, row: dict) -> None:
+            async with sem:
+                item = await _kg_map_one(client, row)
+                if item is not None:
+                    _kg_map_mem[fhash] = item
+                    _kg_save_map_disk()
+                else:
+                    _kg_map_fail[fhash] = time.time()
+                _kg_map_queue.pop(fhash, None)
+                await asyncio.sleep(0.3)
+
+        while _kg_map_queue:
+            fhash, row = next(iter(_kg_map_queue.items()))
+            await one(fhash, row)
+            if not _kg_map_queue:
+                break
+
+
+def _kg_enqueue(rows: list) -> None:
+    """未映射行入队并确保后台任务在跑。"""
+    global _kg_map_task
+    _kg_load_map_disk()
+    fresh = False
+    for row in rows:
+        fhash = str(row.get("hash") or "")
+        if not fhash or fhash in _kg_map_mem or fhash in _kg_map_queue:
+            continue
+        if time.time() - _kg_map_fail.get(fhash, 0.0) < 6 * 3600.0:
+            continue
+        _kg_map_queue[fhash] = row
+        fresh = True
+    if fresh and (_kg_map_task is None or _kg_map_task.done()):
+        _kg_map_task = asyncio.get_running_loop().create_task(_kg_map_worker())
+
+
+def _kg_chart_meta(entry: dict) -> "dict | None":
+    if entry.get("provider") != "kugou" or entry.get("kind") != "chart":
+        return None
+    return _KG_CHART_BY_ID.get(str(entry.get("id") or ""))
+
+
+async def _kg_summary(entry: dict) -> dict:
+    meta = _kg_chart_meta(entry)
+    if meta is None:
+        raise RuntimeError(f"unknown kugou chart {entry.get('id')!r}")
+    rows = await _kg_rows_cached(str(meta["rankid"]))
+    mapped = sum(1 for r in rows if str(r.get("hash") or "") in _kg_map_mem)
+    return {"name": str(meta["name"]), "cover_url": str(meta.get("cover") or ""),
+            "track_count": mapped or len(rows)}
+
+
+async def _kg_rows_cached(rankid: str) -> list:
+    hit = _kg_meta_mem.get(rankid)
+    if hit and time.monotonic() < hit[1]:
+        return hit[0]
+    lock = _kg_meta_locks.setdefault(rankid, asyncio.Lock())
+    async with lock:
+        hit = _kg_meta_mem.get(rankid)
+        if hit and time.monotonic() < hit[1]:
+            return hit[0]
+        async with httpx.AsyncClient(trust_env=False) as client:
+            rows, _cover = await _kg_fetch_meta(client, int(rankid), limit=100)
+        _kg_meta_mem[rankid] = (rows, time.monotonic() + _KG_META_TTL_S)
+        _kg_enqueue(rows)
+        return rows
+
+
+async def _kg_load_tracks(entry: dict, build_track) -> list:
+    """酷狗榜单曲目：映射缓存命中的行 → 真实源 VO；未映射行入队后台补。"""
+    meta = _kg_chart_meta(entry)
+    if meta is None:
+        raise RuntimeError(f"unknown kugou chart {entry.get('id')!r}")
+    _kg_load_map_disk()
+    rows = await _kg_rows_cached(str(meta["rankid"]))
+    _kg_enqueue(rows)
+    tracks: list = []
+    for row in rows:
+        item = _kg_map_mem.get(str(row.get("hash") or ""))
+        if not isinstance(item, dict):
+            continue
+        info = {
+            "id": str(item.get("id") or ""),
+            "source": str(item.get("source") or ""),
+            "title": str(row.get("title") or item.get("title") or ""),
+            "artist": str(row.get("artist") or item.get("artist") or ""),
+            "album": str(item.get("album") or ""),
+            "duration_s": float(row.get("duration_s") or item.get("duration_s") or 0),
+            "ext": str(item.get("ext") or "mp3"),
+            "file_size": item.get("file_size") or 0,
+            "cover_url": str(row.get("cover_url") or item.get("cover_url") or ""),
+        }
+        if not info["id"]:
+            continue
+        try:
+            track = build_track(info)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("kg chart track build failed (%s): %s", info["id"], exc)
+            continue
+        if isinstance(track, dict) and track.get("guid"):
+            tracks.append(track)
+    return tracks
 
 
 def _provider_client(app_state, entry: dict) -> httpx.AsyncClient:
@@ -295,6 +591,10 @@ def _load_disk_summary(guid: str) -> "tuple[dict, dict] | None":
 
 async def _fetch_summary(client: httpx.AsyncClient, entry: dict) -> dict:
     guid = playlist_guid(entry)
+    if entry["provider"] == "kugou":
+        summary = await _kg_summary(entry)
+        _summary_cache[guid] = (summary, time.monotonic() + _SUMMARY_TTL_S)
+        return summary
     response = await client.get(
         f"/api/v1/public-playlists/{quote(entry['id'], safe='')}",
         params={"source": entry["source"], "kind": entry["kind"]},
@@ -403,6 +703,7 @@ def _musicbox_item(row: dict) -> dict:
         "duration_ms": row.get("duration_ms") or row.get("duration") or 0,
         "cover_url": row.get("album_pic_url") or row.get("cover_url"),
         "has_sq": row.get("has_sq"),
+        "needs_vip": row.get("needs_vip") is True,
     }
 
 
@@ -420,6 +721,16 @@ def _load_disk_tracks(guid: str) -> "list | None":
 
 async def _fetch_tracks(app_state, entry: dict, build_track) -> list:
     guid = playlist_guid(entry)
+    if entry["provider"] == "kugou":
+        tracks = await _kg_load_tracks(entry, build_track)
+        _tracks_cache[guid] = (tracks, time.monotonic() + _TRACKS_TTL_S)
+        if guid in _tracks_order:
+            _tracks_order.remove(guid)
+        _tracks_order.append(guid)
+        while len(_tracks_order) > _TRACKS_LRU_MAX:
+            _tracks_cache.pop(_tracks_order.pop(0), None)
+        _kg_save_map_disk()
+        return [dict(track) for track in tracks]
     client = _provider_client(app_state, entry)
     response = await asyncio.wait_for(client.get(
         f"/api/v1/public-playlists/{quote(entry['id'], safe='')}/tracks",
@@ -551,6 +862,9 @@ def reset_for_test() -> None:
     """清空全部进程内状态（测试隔离用）。"""
     _summary_cache.clear()
     _summary_fail_until.clear()
+    _kg_meta_mem.clear()
+    _kg_meta_locks.clear()
+    _kg_map_queue.clear()
     _tracks_cache.clear()
     _tracks_fail_until.clear()
     _tracks_order.clear()

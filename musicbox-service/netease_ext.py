@@ -105,7 +105,53 @@ def _map_song_detail(item: dict[str, Any]) -> dict[str, Any]:
         "duration_ms": duration_ms,
         "has_sq": bool(item.get("sq")),
         "has_hr": bool(item.get("hr")),
+        # issue #57：fee 收费类型（0=免费 1=VIP 4=购买专辑 8=非会员免费低音质），
+        # 供行级 needs_vip 标记——无 VIP 账号点 VIP 歌只有试听，标记让用户有预期
+        "fee": int(item.get("fee") or 0),
     }
+
+
+_vip_state: "tuple[bool, float] | None" = None
+_vip_state_lock = threading.Lock()
+_VIP_TTL_S = 300.0
+
+
+def vip_entitled() -> bool:
+    """当前登录账号是否具有 VIP 权益（profile.vipType>0）。短 TTL 缓存。
+
+    匿名/失败一律按无 VIP 处理（保守：宁可多标记，不漏标）。"""
+    global _vip_state
+    with _vip_state_lock:
+        state = _vip_state
+    if state is not None and time.monotonic() - state[1] < _VIP_TTL_S:
+        return state[0]
+    entitled = False
+    try:
+        with _api_lock:
+            api = _get_api_locked()
+            info = api.get_account_info()
+        profile = (info or {}).get("profile") or {}
+        entitled = int(profile.get("vipType") or 0) > 0
+    except Exception:
+        entitled = False
+    with _vip_state_lock:
+        _vip_state = (entitled, time.monotonic())
+    return entitled
+
+
+def mark_needs_vip(rows: "list[dict] | Any") -> "list[dict] | Any":
+    """VIP 歌曲行级标记——无 VIP 权益的账号遇到 fee==1（VIP 曲目）时附
+    needs_vip=True，代理据此在歌名前展示 [VIP] 前缀（点播前即知只有试听）。
+
+    有 VIP 权益的账号可完整播放，不打标。"""
+    if not isinstance(rows, list):
+        return rows
+    if vip_entitled():
+        return rows
+    for row in rows:
+        if isinstance(row, dict) and row.get("fee") == 1:
+            row["needs_vip"] = True
+    return rows
 
 
 def check_is_logged_in() -> bool:

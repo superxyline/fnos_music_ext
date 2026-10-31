@@ -566,6 +566,7 @@ $("#musicdl-test-q").addEventListener("keydown", (e) => { if (e.key === "Enter")
 const PUBLIC_SOURCE_LABEL = { netease: "网易", wy: "网易", kw: "酷我", kg: "酷狗", tx: "QQ", mg: "咪咕" };
 const PUBLIC_CHANNELS = [
   { id: "charts", name: "排行榜" },
+  { id: "kg_charts", name: "酷狗榜单" },
   { id: "recommend", name: "推荐歌单" },
   { id: "playlist", name: "分类歌单" },
   { id: "highquality", name: "精品歌单" },
@@ -699,13 +700,14 @@ function renderPublicPage() {
 }
 
 async function publicApi(target, params = {}, retry = true) {
-  const query = new URLSearchParams({ provider: "musicbox", ...params });
+  const provider = params.provider || "musicbox";
+  const query = new URLSearchParams({ provider, ...params });
   try {
     const data = await api(`/api/public-playlists/${target}?${query.toString()}`);
     if (data.ok === false) throw new Error(data.error || "歌单请求失败");
     return data;
   } catch (exc) {
-    if (!retry) throw exc;
+    if (!retry || provider !== "musicbox") throw exc;
     // 盒子没起来时先临时拉起预览再重试一次（与点选音源卡片的预览机制一致）
     if (!await startPreview("musicbox")) throw exc;
     return await publicApi(target, params, false);
@@ -760,6 +762,27 @@ function fillPublicCategories(data) {
 }
 
 async function loadPublicCategories() {
+  if (publicState.channel === "kg_charts") {
+    // 酷狗榜单：内置榜单清单即候选列表（无分类）；取数/映射由 proxy 侧负责
+    fillPublicCategories({ categories: [] });
+    $("#public-category").hidden = true;
+    try {
+      const data = await publicApi("categories", { channel: "kg_charts", provider: "kugou" });
+      publicState.items = (data.data || []).map((item) => ({
+        ...item, provider: "kugou", source: "kg", kind: "chart",
+      }));
+      publicState.hasMore = false;
+      publicState.total = publicState.items.length;
+      $("#public-note").textContent = `酷狗官方榜单 ${publicState.items.length} 个；曲目按现役音源（酷我/咪咕/B站）同名映射播放。`;
+    } catch (exc) {
+      publicState.items = [];
+      $("#public-note").textContent = "酷狗榜单加载失败：" + exc.message;
+    }
+    renderPublicList();
+    renderPublicPage();
+    return;
+  }
+  $("#public-category").hidden = publicState.channel === "recommend" || publicState.channel === "account_recommend";
   if (publicState.channel === "recommend" || publicState.channel === "account_recommend") {
     fillPublicCategories({ categories: [] });
     return;
@@ -776,6 +799,7 @@ async function loadPublicCategories() {
 }
 
 async function loadPublicList() {
+  if (publicState.channel === "kg_charts") return;  // 榜单清单已在分类步骤加载
   $("#public-note").textContent = "正在加载歌单…";
   try {
     const params = {

@@ -1241,6 +1241,24 @@ _public_discovery_cache: "dict[tuple, tuple[float, bytes, str]]" = {}
 _public_discovery_locks: "dict[tuple, asyncio.Lock]" = {}
 
 
+def _load_kg_charts() -> "list[dict]":
+    """从宿主 repo 直接加载 publicplaylists 的酷狗榜单清单（静态常量）。
+
+    /srv/proxy 只装了 env_merge 两个文件（镜像裁剪），整包 import 不通，
+    用 importlib 单文件加载让常量源与 repo 部署保持同步。"""
+    import importlib.util
+
+    try:
+        path = str(Path(CONF["repo_dir"]) / "proxy" / "publicplaylists.py")
+        spec = importlib.util.spec_from_file_location("_fnme_publicplaylists", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return list(getattr(mod, "KG_CHARTS", []) or [])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("load KG_CHARTS failed: %s", exc)
+        return []
+
+
 @app.api_route("/api/public-playlists", methods=["GET"])
 @app.api_route("/api/public-playlists/{target:path}", methods=["GET"])
 async def api_public_playlists(target: str = "", request: Request = None):
@@ -1250,6 +1268,20 @@ async def api_public_playlists(target: str = "", request: Request = None):
     FNMUSIC_PUBLIC_PLAYLISTS_SELECTION；音乐页展示由 proxy 侧负责。
     """
     provider = str(request.query_params.get("provider") or "musicbox").strip()
+    if provider == "kugou":
+        # 酷狗榜单：数据取自 proxy.publicplaylists 的内置榜单清单（静态），
+        # 勾选后写入 selection，取数/映射由 proxy 侧负责——不经过 musicbox
+        _KG = _load_kg_charts()
+        rows = [{"id": str(c["id"]), "name": str(c["name"]), "kind": "chart",
+                 "source": "kg", "cover_url": str(c.get("cover") or ""),
+                 "track_count": 100, "author": "酷狗"} for c in _KG]
+        if target == "capabilities":
+            return JSONResponse(content={"ok": True, "data": {
+                "channels": [{"id": "kg_charts", "name": "酷狗榜单", "kind": "chart"}]}})
+        if target in ("categories", ""):
+            channel = str(request.query_params.get("channel") or "kg_charts")
+            return JSONResponse(content={"ok": True, "data": rows if channel == "kg_charts" else []})
+        return JSONResponse(content={"ok": True, "data": []})
     if provider != "musicbox":
         return JSONResponse(content={"ok": False, "error": "provider 必须是 musicbox"}, status_code=400)
     if target and target not in ("capabilities", "categories") and not re.fullmatch(r"[^/]+(/tracks)?", target):

@@ -57,6 +57,7 @@ function switchPage(page) {
   if (page === "about") loadAbout();
   if (page === "xiaomusic") loadXmPage();
   else stopXmPolling();
+  if (page === "upgrade") upEnsureLoaded();
 }
 $$("[data-page]").forEach((btn) => btn.addEventListener("click", () => switchPage(btn.dataset.page)));
 
@@ -2110,3 +2111,371 @@ $("#pi-run").addEventListener("click", async () => {
 });
 
 $("#pi-refresh").addEventListener("click", () => { if (piState.timer) return; piPoll(); });
+
+/* -------------------------------------------------------------- 音质升级 */
+const upState = {
+  page: 1, size: 50, total: 0, items: [], loaded: false,
+  cands: new Map(), taskId: null, timer: null, lastResults: [], lastItems: [],
+};
+
+function upApi(path, options) {
+  return api(path, options).then((body) => {
+    if (body && typeof body.code === "number" && body.code !== 0) {
+      throw new Error(body.msg || `错误 ${body.code}`);
+    }
+    return body;
+  });
+}
+
+function upSize(n) {
+  const b = Number(n) || 0;
+  if (b >= 1024 * 1024 * 1024) return (b / 1024 / 1024 / 1024).toFixed(2) + " GB";
+  if (b >= 1024 * 1024) return (b / 1024 / 1024).toFixed(1) + " MB";
+  if (b >= 1024) return Math.round(b / 1024) + " KB";
+  return b + " B";
+}
+
+function upRender() {
+  const rows = $("#up-rows");
+  const sel = new Set([...rows.querySelectorAll("input[data-guid]:checked")].map((c) => c.dataset.guid));
+  rows.innerHTML = "";
+  if (!upState.items.length) {
+    rows.innerHTML = `<tr><td colspan="7" class="muted">没有符合条件的歌曲</td></tr>`;
+  }
+  for (const it of upState.items) {
+    const tr = document.createElement("tr");
+    tr.dataset.guid = it.guid;
+    const disabled = it.upgradable === false ? "disabled" : "";
+    tr.innerHTML = `
+      <td class="mt-check"><input type="checkbox" data-guid="${it.guid}" ${sel.has(it.guid) ? "checked" : ""} ${disabled}></td>
+      <td class="mt-title" title="${(it.path || "").replace(/"/g, "&quot;")}">${escapeHtml(it.title || "（无标题）")}</td>
+      <td>${escapeHtml(it.artist || "")}</td>
+      <td class="mt-flag up-fmt-cell"><span class="up-fmt">${escapeHtml((it.format || "").toUpperCase())}</span> <span class="up-q">${escapeHtml(it.quality || "")}</span></td>
+      <td class="mt-flag">${upSize(it.size)}</td>
+      <td>${escapeHtml(it.album || "")}</td>
+      <td class="mt-status" data-status-for="${it.guid}">${it.upgradable === false ? "已最佳" : ""}</td>`;
+    rows.appendChild(tr);
+  }
+  const pages = Math.max(1, Math.ceil(upState.total / upState.size));
+  $("#up-count").textContent = `共 ${upState.total} 首，本页 ${upState.items.length} 首`;
+  $("#up-pageinfo").textContent = `第 ${upState.page} 页 / ${pages} 页`;
+}
+
+async function upLoadStats() {
+  try {
+    const body = await upApi("/api/upgrade/stats");
+    const d = body.data || {};
+    const fmt = Object.entries(d.byFormat || {})
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => `${(k || "other").toUpperCase()} ${v}`)
+      .join(" · ");
+    const buckets = Object.entries(d.buckets || {})
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => `${k} ${v}`)
+      .join(" · ");
+    $("#up-stats").innerHTML = `曲库共 <b>${d.total || 0}</b> 首<br>${escapeHtml(fmt)}<br><span class="muted">${escapeHtml(buckets)}</span>`;
+  } catch (e) {
+    $("#up-stats").textContent = "统计失败：" + e.message;
+  }
+}
+
+async function upLoad() {
+  try {
+    const body = await upApi(`/api/upgrade/tracks?page=${upState.page}&size=${upState.size}` +
+      `&q=${encodeURIComponent(($("#up-q").value || "").trim())}&filter=${$("#up-filter").value}`);
+    upState.total = body.data.total;
+    upState.items = body.data.items;
+    upRender();
+    upState.loaded = true;
+  } catch (e) {
+    $("#up-rows").innerHTML = `<tr><td colspan="7" style="color:var(--err)">${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+function upEnsureLoaded() {
+  if (!upState.loaded) {
+    upLoadStats();
+    upLoad();
+  }
+}
+
+function upSelected() {
+  return [...$("#up-rows").querySelectorAll("input[data-guid]:checked")].map((c) => c.dataset.guid);
+}
+
+function upSources() {
+  const out = [];
+  if ($("#up-src-kuwo").checked) out.push("kuwo");
+  if ($("#up-src-migu").checked) out.push("migu");
+  return out;
+}
+
+/* ---- 候选弹窗 ---- */
+function upModalOpen() { $("#up-modal").hidden = false; }
+function upModalClose() { $("#up-modal").hidden = true; }
+
+function upRenderModal() {
+  const body = $("#up-modal-body");
+  body.innerHTML = "";
+  let total = 0;
+  for (const row of upState.cands.values()) {
+    const box = document.createElement("div");
+    box.className = "up-item";
+    box.dataset.guid = row.guid;
+    const cur = row.current || {};
+    const head = document.createElement("div");
+    head.className = "up-item-head";
+    head.innerHTML = `<b>${escapeHtml(row.title || "")}</b>
+      <span class="muted">${escapeHtml(row.artist || "")} · 当前 ${escapeHtml((cur.format || "").toUpperCase())} ${escapeHtml(cur.quality || "")}${cur.size ? " · " + upSize(cur.size) : ""}</span>`;
+    box.appendChild(head);
+
+    const list = row.candidates || [];
+    if (!list.length) {
+      const p = document.createElement("div");
+      p.className = "muted";
+      p.textContent = row.error ? `无可用候选：${row.error}` : "无可用候选";
+      box.appendChild(p);
+    } else {
+      const firstBetter = list.findIndex((c) => c.kind === "exact" && c.better);
+      list.forEach((c, i) => {
+        total += 1;
+        const label = document.createElement("label");
+        label.className = "up-cand" + (c.kind === "exact" ? "" : " up-cand-suspect");
+        const flags = [];
+        if (c.kind === "suspect") flags.push(`<span class="up-warn">${escapeHtml(c.reason || "疑似")}</span>`);
+        else if (c.better) flags.push(`<span class="up-better">可提升</span>`);
+        else flags.push(`<span class="up-same">不更优</span>`);
+        if (c.durationSuspicious) flags.push(`<span class="up-warn">时长差 ${(c.durationDiffMs / 1000).toFixed(1)}s</span>`);
+        // 候选自己的歌名/歌手与当前曲目不同时（疑似项）必须标出来，否则看不出差在哪
+        const name = (c.kind !== "exact" || c.title !== row.title || (c.artist && c.artist !== row.artist))
+          ? `<span class="up-cand-name">${escapeHtml(c.title || "")}${c.artist ? " · " + escapeHtml(c.artist) : ""}</span>`
+          : "";
+        label.innerHTML = `<input type="radio" name="c-${row.guid}" value="${escapeHtml(c.id)}" ${i === firstBetter ? "checked" : ""}>
+          ${name}
+          <span class="up-src">${escapeHtml((c.source || "").toUpperCase())}</span>
+          <span class="up-fmt">${escapeHtml((c.format || "").toUpperCase())}</span>
+          <span class="up-q">${escapeHtml(c.quality || "")}</span>
+          <span class="up-sz">${upSize(c.size)}</span>
+          <span class="up-dur">${c.durationS ? Math.floor(c.durationS / 60) + ":" + String(Math.round(c.durationS % 60)).padStart(2, "0") : ""}</span>
+          ${flags.join("")}`;
+        box.appendChild(label);
+      });
+    }
+    body.appendChild(box);
+  }
+  $("#up-modal-sum").textContent = `${upState.cands.size} 首 / ${total} 个候选`;
+  const dry = $("#up-dry").checked;
+  $("#up-modal-note").textContent = dry ? "试运行：只下载校验，不替换文件" : "将真实替换文件（原文件备份 7 天）";
+  $("#up-modal-run").textContent = dry ? "开始校验" : "开始升级";
+  upModalOpen();
+}
+
+async function upFind() {
+  const guids = upSelected();
+  if (!guids.length) return toast("先勾选要升级的歌曲", "fail");
+  if (guids.length > 50) return toast("单次最多 50 首，请分批", "fail");
+  const sources = upSources();
+  if (!sources.length) return toast("至少选一个音源", "fail");
+  const btn = $("#up-find");
+  btn.disabled = true;
+  btn.textContent = "搜索中…";
+  try {
+    const body = await upApi("/api/upgrade/candidates", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ guids, sources }),
+    });
+    upState.cands = new Map((body.data.items || []).map((r) => [r.guid, r]));
+    upRenderModal();
+  } catch (e) {
+    toast("查找候选失败：" + e.message, "fail");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "查找候选";
+  }
+}
+
+function upCollectItems() {
+  const items = [];
+  for (const row of upState.cands.values()) {
+    const picked = $(`#up-modal-body input[name="c-${row.guid}"]:checked`);
+    if (!picked) continue;
+    const cand = (row.candidates || []).find((c) => c.id === picked.value);
+    if (!cand) continue;
+    items.push({ guid: row.guid, candidate: cand });
+  }
+  return items;
+}
+
+async function upRun(forceReal) {
+  const items = upCollectItems();
+  if (!items.length) return toast("没有选中任何候选版本", "fail");
+  const dryRun = forceReal ? false : $("#up-dry").checked;
+  upState.lastItems = items;
+  const btn = $("#up-modal-run");
+  btn.disabled = true;
+  btn.textContent = "提交中…";
+  try {
+    const body = await upApi("/api/upgrade/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items, dryRun }),
+    });
+    upState.taskId = body.data.taskId;
+    upModalClose();
+    upState.lastResults = [];
+    $("#up-progress").hidden = false;
+    $("#up-progress").className = "report";
+    $("#up-progress").textContent = `已提交 ${items.length} 首，开始处理…`;
+    upPoll();
+  } catch (e) {
+    toast("启动失败：" + e.message, "fail");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* 试运行通过后，用同一批选择真正替换（不必重新找候选） */
+async function upConfirmReplace() {
+  const items = upState.lastItems || [];
+  if (!items.length) return toast("没有可替换的选择，请重新查找候选", "fail");
+  if (!window.confirm(`将真实替换 ${items.length} 首文件（原文件备份 7 天，可回滚）。继续？`)) return;
+  const btn = $("#up-confirm");
+  if (btn) { btn.disabled = true; btn.textContent = "提交中…"; }
+  try {
+    const body = await upApi("/api/upgrade/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items, dryRun: false }),
+    });
+    upState.taskId = body.data.taskId;
+    $("#up-progress").className = "report";
+    $("#up-progress").textContent = `已提交 ${items.length} 首，开始替换…`;
+    upPoll();
+  } catch (e) {
+    toast("启动失败：" + e.message, "fail");
+    if (btn) { btn.disabled = false; btn.textContent = "确认替换"; }
+  }
+}
+
+function upResultHtml(r) {
+  if (!r.ok) {
+    return `<div class="up-res up-res-fail"><b>${escapeHtml(r.title || r.guid || "")}</b>
+      <span class="muted">${escapeHtml(r.error || "失败")}</span></div>`;
+  }
+  const from = r.from || {};
+  const to = r.to || {};
+  const done = r.dryRun ? "已校验（未替换）" : "已升级";
+  const rollback = r.dryRun ? "" :
+    `<button class="btn up-rollback" data-guid="${escapeHtml(r.guid)}" type="button">回滚</button>`;
+  return `<div class="up-res"><b>${escapeHtml(r.title || "")}</b>
+    <span class="muted">${escapeHtml(from.format || "").toUpperCase()} ${escapeHtml(from.quality || "")} → ${escapeHtml(to.format || "").toUpperCase()} ${escapeHtml(to.quality || "")}（${escapeHtml(to.source || "")}）</span>
+    <span class="up-ok">${done}</span>${rollback}</div>`;
+}
+
+async function upPoll() {
+  if (!upState.taskId) return;
+  let body;
+  try {
+    body = await upApi(`/api/upgrade/task/${upState.taskId}`);
+  } catch (e) {
+    $("#up-progress").textContent = "进度查询失败：" + e.message;
+    return;
+  }
+  const t = body.data;
+  const pct = t.total ? Math.round((t.done / t.total) * 100) : 0;
+  let head;
+  if (t.running) {
+    head = `处理中 ${t.done}/${t.total}（${pct}%）${t.dryRun ? " · 试运行" : ""}`;
+  } else if (t.dryRun) {
+    head = `试运行完成：${t.okCount} 首校验通过 · 未改动任何文件`;
+  } else {
+    head = `替换完成：成功 ${t.okCount} 首，失败 ${t.failCount} 首`;
+  }
+  const rows = (t.results || []).map(upResultHtml).join("");
+  const confirmBtn = (!t.running && t.dryRun && t.okCount > 0)
+    ? `<div class="up-confirm-row"><button class="btn primary" id="up-confirm" type="button">确认替换这 ${t.okCount} 首</button>
+         <span class="muted">不想确认就保持现状，文件不会变</span></div>`
+    : "";
+  $("#up-progress").innerHTML = `<div><b>${head}</b></div>${confirmBtn}<div class="up-res-list">${rows}</div>`;
+  $("#up-progress").className = "report " + (t.running ? "" : (t.failCount ? "fail" : (t.dryRun ? "warn" : "ok")));
+  if (t.running) {
+    clearTimeout(upState.timer);
+    upState.timer = setTimeout(upPoll, 1500);
+  } else {
+    if (!t.dryRun) { upLoadStats(); upLoad(); }
+    toast(t.dryRun ? `试运行通过 ${t.okCount} 首，文件未改动` : `升级完成：成功 ${t.okCount} / 失败 ${t.failCount}`,
+          t.failCount && !t.okCount ? "fail" : "");
+  }
+}
+
+/* ---- 事件 ---- */
+$("#up-refresh").addEventListener("click", () => { upState.page = 1; upLoadStats(); upLoad(); });
+$("#up-q").addEventListener("keydown", (e) => { if (e.key === "Enter") { upState.page = 1; upLoad(); } });
+$("#up-filter").addEventListener("change", () => { upState.page = 1; upLoad(); });
+$("#up-prev").addEventListener("click", () => {
+  if (upState.page > 1) { upState.page -= 1; upLoad(); }
+});
+$("#up-next").addEventListener("click", () => {
+  if (upState.page * upState.size < upState.total) { upState.page += 1; upLoad(); }
+});
+$("#up-check-all").addEventListener("change", (e) => {
+  $("#up-rows").querySelectorAll("input[data-guid]").forEach((c) => {
+    if (!c.disabled) c.checked = e.target.checked;
+  });
+});
+$("#up-find").addEventListener("click", upFind);
+$("#up-modal-cancel").addEventListener("click", upModalClose);
+$("#up-modal-run").addEventListener("click", upRun);
+$("#up-modal").addEventListener("click", (ev) => { if (ev.target === $("#up-modal")) upModalClose(); });
+$("#up-dry").addEventListener("change", () => {
+  if (!$("#up-modal").hidden) upRenderModal();
+});
+
+$("#up-progress").addEventListener("click", async (ev) => {
+  if (ev.target.closest("#up-confirm")) { upConfirmReplace(); return; }
+  const btn = ev.target.closest(".up-rollback");
+  if (!btn) return;
+  const guid = btn.dataset.guid;
+  if (!guid) return;
+  btn.disabled = true;
+  try {
+    await upApi("/api/upgrade/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ guid }),
+    });
+    toast("已回滚");
+    upLoadStats();
+    upLoad();
+  } catch (e) {
+    toast("回滚失败：" + e.message, "fail");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("#up-backups").addEventListener("click", async () => {
+  try {
+    const body = await upApi("/api/upgrade/backups");
+    const d = body.data || {};
+    $("#up-backup-info").textContent = `备份 ${d.count || 0} 个，共 ${upSize(d.size || 0)}（${d.dir || ""}）`;
+  } catch (e) {
+    $("#up-backup-info").textContent = "读取失败：" + e.message;
+  }
+});
+
+$("#up-purge").addEventListener("click", async () => {
+  try {
+    const body = await upApi("/api/upgrade/purge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ days: 7 }),
+    });
+    const d = body.data || {};
+    toast(`已清理 ${d.removed || 0} 个过期备份`);
+    $("#up-backup-info").textContent = `剩余 ${d.kept || 0} 个`;
+  } catch (e) {
+    toast("清理失败：" + e.message, "fail");
+  }
+});

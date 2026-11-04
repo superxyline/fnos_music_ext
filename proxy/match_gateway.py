@@ -27,11 +27,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import match_core  # noqa: E402
 import playlist_import  # noqa: E402  歌单导入引擎（复用同款 .env 加载）
+import quality_upgrade  # noqa: E402  曲库音质升级
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("fnmusic_match_gw")
 
 app = FastAPI()
+
+_MAX_CAND = 50      # 单次找候选上限（每首一次搜索，控制耗时）
+_MAX_BATCH_GW = 100  # 单次升级上限
 
 
 def _err(msg: str, status: int = 400) -> JSONResponse:
@@ -138,6 +142,132 @@ async def dedup(request: Request):
                             "error": str(e) or type(e).__name__})
     ok_n = sum(1 for r in results if r.get("ok"))
     return {"code": 0, "msg": "", "data": {"total": len(results), "ok": ok_n, "results": results}}
+
+
+# ------------------------------------------------ 曲库音质升级 --
+
+@app.get("/api/upgrade/stats")
+async def upgrade_stats():
+    try:
+        data = await asyncio.to_thread(quality_upgrade.stats)
+        return {"code": 0, "msg": "", "data": data}
+    except Exception as e:
+        logger.exception("upgrade stats failed")
+        return _err(f"统计失败: {type(e).__name__}: {e}", 500)
+
+
+@app.get("/api/upgrade/tracks")
+async def upgrade_tracks(page: int = Query(1), size: int = Query(50),
+                         q: str = Query(""), filter: str = Query("all")):
+    try:
+        data = await asyncio.to_thread(quality_upgrade.list_tracks, page, size, q, filter)
+        return {"code": 0, "msg": "", "data": data}
+    except Exception as e:
+        logger.exception("upgrade list failed")
+        return _err(f"列表查询失败: {type(e).__name__}: {e}", 500)
+
+
+@app.post("/api/upgrade/candidates")
+async def upgrade_candidates(request: Request):
+    """批量找候选：只搜索，不下载、不改任何文件。"""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    guids = [str(g) for g in (body.get("guids") or []) if g]
+    if not guids:
+        return _err("guids 为空")
+    if len(guids) > _MAX_CAND:
+        return _err(f"单次最多 {_MAX_CAND} 首，请分批")
+    sources = [str(s) for s in (body.get("sources") or []) if s] or None
+    try:
+        data = await quality_upgrade.search_candidates(guids, sources)
+        return {"code": 0, "msg": "", "data": data}
+    except Exception as e:
+        logger.exception("upgrade candidates failed")
+        return _err(f"搜索失败: {type(e).__name__}: {e}", 500)
+
+
+@app.post("/api/upgrade/run")
+async def upgrade_run(request: Request):
+    """执行升级。dryRun=true 时只下载校验，不替换文件、不写库。"""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    items = body.get("items") or []
+    if not isinstance(items, list) or not items:
+        return _err("items 为空")
+    if len(items) > _MAX_BATCH_GW:
+        return _err(f"单次最多 {_MAX_BATCH_GW} 首")
+    clean = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        guid = str(it.get("guid") or "")
+        cand = it.get("candidate") or {}
+        if not guid or not isinstance(cand, dict) or not cand.get("id"):
+            continue
+        clean.append({"guid": guid, "candidate": cand})
+    if not clean:
+        return _err("没有有效的升级项（需要 guid + candidate.id）")
+    missing = [c["guid"] for c in clean if match_core._track_row(c["guid"]) is None]
+    if missing:
+        return _err(f"{len(missing)} 个 guid 不存在: {missing[:3]}")
+    try:
+        task_id = quality_upgrade.start_task(clean, bool(body.get("dryRun")))
+        return {"code": 0, "msg": "", "data": {"taskId": task_id, "total": len(clean),
+                                               "dryRun": bool(body.get("dryRun"))}}
+    except RuntimeError:
+        return _err("无运行中的事件循环", 500)
+
+
+@app.get("/api/upgrade/task/{task_id}")
+async def upgrade_task(task_id: str):
+    t = quality_upgrade.get_task(task_id)
+    if not t:
+        return _err("任务不存在", 404)
+    return {"code": 0, "msg": "", "data": t}
+
+
+@app.post("/api/upgrade/rollback")
+async def upgrade_rollback(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    guid = str(body.get("guid") or "")
+    if not guid:
+        return _err("guid 为空")
+    try:
+        data = await asyncio.to_thread(quality_upgrade.rollback, guid)
+    except Exception as e:
+        logger.exception("upgrade rollback failed")
+        return _err(f"回滚失败: {type(e).__name__}: {e}", 500)
+    if not data.get("ok"):
+        return _err(str(data.get("error") or "回滚失败"))
+    return {"code": 0, "msg": "", "data": data}
+
+
+@app.get("/api/upgrade/backups")
+async def upgrade_backups():
+    try:
+        return {"code": 0, "msg": "", "data": quality_upgrade.list_backups()}
+    except Exception as e:
+        return _err(f"读取备份失败: {type(e).__name__}: {e}", 500)
+
+
+@app.post("/api/upgrade/purge")
+async def upgrade_purge(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        data = quality_upgrade.purge_backups(int(body.get("days", 7)))
+        return {"code": 0, "msg": "", "data": data}
+    except Exception as e:
+        return _err(f"清理失败: {type(e).__name__}: {e}", 500)
 
 
 # ------------------------------------------------ 歌单导入（网易云/QQ） --

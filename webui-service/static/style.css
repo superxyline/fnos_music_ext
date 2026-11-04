@@ -472,3 +472,53 @@ input[type="radio"] { accent-color: var(--accent); margin-top: 4px; }
 .xm-health-item.err { border-left-color: var(--err); }
 .xm-health-item.err .dot { background: var(--err); }
 .xm-health-item.err .txt { color: var(--err); }
+
+/* ---------------------------------------------------------------- 音质升级 */
+.up-item {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: var(--surface-2);
+}
+.up-item-head {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
+  margin-bottom: 6px;
+}
+.up-cand {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 6px 8px; border-radius: 8px;
+  font-size: 13px; cursor: pointer;
+  border: 1px solid transparent;
+}
+.up-cand:hover { background: var(--accent-soft); }
+.up-cand input { margin: 0; flex: none; }
+.up-cand-same { opacity: .62; }
+.up-src { font-weight: 600; min-width: 3.4em; }
+.up-fmt { color: var(--accent); font-weight: 600; min-width: 3em; }
+.up-q { min-width: 6.5em; }
+.up-sz, .up-dur { color: var(--muted); min-width: 4.4em; }
+.up-better, .up-same, .up-warn {
+  font-size: 11px; padding: 1px 6px; border-radius: 999px; white-space: nowrap;
+}
+.up-better { color: var(--ok); background: var(--ok-soft); }
+.up-same { color: var(--muted); background: var(--badge-dim-bg); }
+.up-warn { color: var(--warn); background: var(--err-soft); }
+.up-res-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.up-res {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  font-size: 13px; padding: 5px 8px; border-radius: 8px;
+  background: var(--surface-2);
+}
+.up-res-fail { border-left: 3px solid var(--err); }
+.up-ok { color: var(--ok); font-weight: 600; font-size: 12px; }
+.up-res .up-rollback { padding: 2px 9px; font-size: 12px; margin-left: auto; }
+.up-cand-suspect { border: 1px dashed var(--line); }
+/* 列表里格式与音质合并成一列并前移，窄屏也能一眼看到码率 */
+.up-fmt-cell { white-space: nowrap; }
+.up-fmt-cell .up-q { min-width: auto; color: var(--muted); }
+.up-fmt-cell .up-fmt { min-width: auto; }
+/* 候选行：候选自身歌名/歌手（疑似项与当前曲目不一致时才出现） */
+.up-cand-name { flex: 1 0 100%; font-size: 12px; color: var(--text); padding-left: 22px; opacity: .85; }
+.report.warn { border-color: var(--warn); }
+.up-confirm-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 2px; }

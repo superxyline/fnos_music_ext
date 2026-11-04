@@ -64,7 +64,6 @@ TIER_HIGH = 2             # ≥256k
 TIER_MID = 3              # ≥160k
 TIER_LOW = 4              # 其余
 
-BACKUP_DIRNAME = ".fnmusic-upgrade-backup"
 # 升级台账：与 repo 同级 sources-data 下（安装时由 install.sh 建目录，容器挂载点同源）
 LOG_PATH_DEFAULT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -92,26 +91,42 @@ def _db() -> sqlite3.Connection:
 
 
 def _backup_root() -> str:
-    """备份目录：放在库根目录下、以 . 开头，官方扫描器按隐藏目录跳过。"""
-    lib = _library_root()
-    return os.path.join(lib, BACKUP_DIRNAME)
+    """备份目录。
 
-
-def _library_root() -> str:
+    **绝不能放在曲库目录内**：官方扫描器并不跳过以 `.` 开头的隐藏目录，放在库里
+    会被当成新曲目收录（3.7.3 首次发布的真实事故），进而出现「备份的备份」，
+    还会把曲库根判定带偏。默认与升级台账同处 repo 同级的 sources-data 下，
+    该目录不在任何共享曲库内，官方扫描不会触碰。
+    """
     explicit = _env("FNMUSIC_UPGRADE_BACKUP_ROOT")
     if explicit:
         return explicit
-    # 取曲库最常见的一级目录（与 db 里 path 一致）
+    return os.path.join(os.path.dirname(_log_path()), "upgrade-backup")
+
+
+_LIB_DIRS_TTL = 60.0
+_lib_dirs_cache: "tuple[float, set[str]] | None" = None
+
+
+def _library_dirs() -> "set[str]":
+    """官方曲库里实际存在文件的目录集合（安全边界依据）。
+
+    直接用 db 里登记的父目录，而不是猜一个"曲库根"——曲库可以有子目录、
+    也可以有多个共享库，取单一路径会误判。
+    """
+    global _lib_dirs_cache
+    now = time.monotonic()
+    if _lib_dirs_cache and now - _lib_dirs_cache[0] < _LIB_DIRS_TTL:
+        return _lib_dirs_cache[1]
     conn = _db()
     try:
-        row = conn.execute(
-            "SELECT path FROM audio_file WHERE is_physical_file_deleted=0 "
-            "ORDER BY id DESC LIMIT 1").fetchone()
+        rows = conn.execute(
+            "SELECT DISTINCT path FROM audio_file WHERE is_physical_file_deleted=0").fetchall()
     finally:
         conn.close()
-    if not row:
-        raise RuntimeError("曲库为空，无法定位目录")
-    return os.path.dirname(str(row["path"]))
+    dirs = {os.path.realpath(os.path.dirname(str(r[0]))) for r in rows if r[0]}
+    _lib_dirs_cache = (now, dirs)
+    return dirs
 
 
 def _log_path() -> str:
@@ -231,12 +246,15 @@ def _row_to_item(r: sqlite3.Row) -> dict:
     br = int(r["bitrate"] or 0)
     sr = int(r["sample_rate"] or 0)
     lossless = suffix in LOSSLESS_EXT
+    path = str(r["path"] or "")
+    # 3.7.3 曾把备份放进曲库、被官方扫描收录；这类残留不允许再升级，页面标出来让用户删
+    residue = "fnmusic-upgrade-backup" in path
     return {
         "guid": r["guid"],
         "title": r["title"] or "",
         "artist": r["artist"] or "",
         "album": r["album"] or "",
-        "path": r["path"] or "",
+        "path": path,
         "name": r["name"] or "",
         "format": suffix,
         "lossless": lossless,
@@ -251,7 +269,8 @@ def _row_to_item(r: sqlite3.Row) -> dict:
         "quality": _fmt_bitrate(suffix, br, bits, sr),
         "tier": _tier(suffix, br, bits),
         "tierLabel": _tier_label(suffix, br, bits),
-        "upgradable": (not lossless) or bits < 24,
+        "upgradable": (not residue) and ((not lossless) or bits < 24),
+        "residue": residue,
         "hasCover": bool(r["cover_guid"]),
     }
 
@@ -688,10 +707,14 @@ def _read_log() -> "list[dict]":
 
 
 def _ensure_in_library(path: str) -> None:
-    """安全边界：只允许操作曲库目录内的文件（防误删/误覆盖）。"""
-    root = os.path.realpath(_library_root())
+    """安全边界：只允许操作曲库目录内的文件（防误删/误覆盖）。
+
+    判据是该文件的父目录必须出现在官方 db 登记的目录里；备份目录天然不在其中，
+    所以对备份文件的操作会被挡下（避免「备份的备份」）。
+    """
     real = os.path.realpath(path)
-    if not real.startswith(root + os.sep):
+    parent = os.path.dirname(real)
+    if parent not in _library_dirs():
         raise RuntimeError(f"路径不在曲库内，拒绝操作: {path}")
 
 
@@ -726,6 +749,10 @@ async def _upgrade_one(http: httpx.AsyncClient, guid: str, cand: dict,
     if not item:
         return {"guid": guid, "ok": False, "error": "曲目不存在"}
     old_path = item["path"]
+    bak_root = os.path.realpath(_backup_root())
+    if os.path.realpath(old_path).startswith(bak_root + os.sep):
+        return {"guid": guid, "ok": False,
+                "error": "该曲目指向升级备份文件（不是曲库曲目），请先把它从曲库移除"}
     _ensure_in_library(old_path)
     if not os.path.exists(old_path):
         return {"guid": guid, "ok": False, "error": "原文件不存在"}

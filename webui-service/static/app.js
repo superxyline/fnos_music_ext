@@ -2146,6 +2146,9 @@ function upRender() {
     const tr = document.createElement("tr");
     tr.dataset.guid = it.guid;
     const disabled = it.upgradable === false ? "disabled" : "";
+    const status = it.residue
+      ? `<span class="up-warn">备份残留，建议删除</span>`
+      : (it.upgradable === false ? "已最佳" : "");
     tr.innerHTML = `
       <td class="mt-check"><input type="checkbox" data-guid="${it.guid}" ${sel.has(it.guid) ? "checked" : ""} ${disabled}></td>
       <td class="mt-title" title="${(it.path || "").replace(/"/g, "&quot;")}">${escapeHtml(it.title || "（无标题）")}</td>
@@ -2153,7 +2156,7 @@ function upRender() {
       <td class="mt-flag up-fmt-cell"><span class="up-fmt">${escapeHtml((it.format || "").toUpperCase())}</span> <span class="up-q">${escapeHtml(it.quality || "")}</span></td>
       <td class="mt-flag">${upSize(it.size)}</td>
       <td>${escapeHtml(it.album || "")}</td>
-      <td class="mt-status" data-status-for="${it.guid}">${it.upgradable === false ? "已最佳" : ""}</td>`;
+      <td class="mt-status" data-status-for="${it.guid}">${status}</td>`;
     rows.appendChild(tr);
   }
   const pages = Math.max(1, Math.ceil(upState.total / upState.size));

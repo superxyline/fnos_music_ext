@@ -275,6 +275,66 @@ def _row_to_item(r: sqlite3.Row) -> dict:
     }
 
 
+def _probe_meta(path: str) -> dict:
+    """读文件内嵌标签（歌曲管理「内嵌信息不全」筛选用）。
+
+    结果按 (mtime, size) 缓存——列表翻页/反复筛选不重复读盘。返回字段：
+    exists / title / artist / album / year / trackNo / hasCover。
+    """
+    try:
+        st = os.stat(path)
+        cache_key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return {"exists": False, "title": "", "artist": "", "album": "",
+                "year": "", "trackNo": "", "hasCover": False}
+    cached = _META_CACHE.get(path)
+    if cached and cached[0] == cache_key:
+        return cached[1]
+    meta = {"exists": True, "title": "", "artist": "", "album": "",
+            "year": "", "trackNo": "", "hasCover": False}
+    try:
+        from mutagen import File as MutagenFile
+
+        audio = MutagenFile(path)
+        if audio is not None and getattr(audio, "tags", None):
+            def _g(*keys: str) -> str:
+                for k in keys:
+                    try:
+                        v = audio.tags.get(k)
+                    except Exception:  # noqa: BLE001
+                        v = None
+                    if v:
+                        return str(v[0]) if isinstance(v, (list, tuple)) else str(v)
+                return ""
+            # ID3（mp3）/ Vorbis Comment（flac/ogg）/ MP4 原子 三套键名各取一份
+            meta["title"] = _g("TIT2", "title", "\xa9nam")
+            meta["artist"] = _g("TPE1", "artist", "\xa9ART")
+            meta["album"] = _g("TALB", "album", "\xa9alb")
+            meta["year"] = _g("TDRC", "TYER", "date", "\xa9day")
+            meta["trackNo"] = _g("TRCK", "tracknumber", "trkn")
+        meta["hasCover"] = bool(_read_embedded_cover(path))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("probe meta failed %s: %s", path, exc)
+    _META_CACHE[path] = (cache_key, meta)
+    return meta
+
+
+_META_CACHE: "dict[str, tuple]" = {}
+
+
+def _meta_issues(meta: dict) -> "list[str]":
+    """内嵌信息缺口清单（前端展示与筛选判据共用）。"""
+    if not meta.get("exists"):
+        return ["文件缺失"]
+    issues = []
+    for field, label in (("title", "标题"), ("artist", "歌手"), ("album", "专辑")):
+        if not str(meta.get(field) or "").strip():
+            issues.append(label)
+    if not meta.get("hasCover"):
+        issues.append("封面")
+    return issues
+
+
 def list_tracks(page: int = 1, size: int = 50, keyword: str = "",
                 filter_: str = "all") -> dict:
     page = max(1, int(page or 1))
@@ -287,6 +347,25 @@ def list_tracks(page: int = 1, size: int = 50, keyword: str = "",
         where += (" AND (t.title LIKE ? ESCAPE '\\' OR af.path LIKE ? ESCAPE '\\'"
                   " OR ar.name LIKE ? ESCAPE '\\')")
         params = [f"%{esc}%"] * 3
+    if filter_ == "meta_incomplete":
+        # 内嵌信息不全：必须逐个读文件真实标签（SQL 层只有 DB 字段），内存过滤分页。
+        # 首次全库扫描约几百首 × 每首毫秒级 mutagen 读取，量级可接受；结果有缓存。
+        conn = _db()
+        try:
+            rows = conn.execute(
+                f"{_LIST_SQL}{where} GROUP BY t.id ORDER BY t.id DESC", params).fetchall()
+        finally:
+            conn.close()
+        items = []
+        for r in rows:
+            it = _row_to_item(r)
+            issues = _meta_issues(_probe_meta(it["path"]))
+            if issues:
+                it["metaIssues"] = issues
+                items.append(it)
+        total = len(items)
+        return {"total": total, "page": page, "size": size,
+                "items": items[(page - 1) * size:(page - 1) * size + size]}
     conn = _db()
     try:
         total = conn.execute(
@@ -366,7 +445,7 @@ def _base_title(s: Any) -> str:
     return _norm_text(_BRACKET_TAIL.sub("", str(s or "")))
 
 
-def _shape_candidate(item: dict, cur_item: dict) -> "dict | None":
+def _shape_candidate(item: dict, cur_item: dict, mode: str = "upgrade") -> "dict | None":
     """musicdl 搜索条目 → 前端候选。
 
     分两档：
@@ -374,6 +453,10 @@ def _shape_candidate(item: dict, cur_item: dict) -> "dict | None":
       suspect —— 标题相同但歌手对不上，或「原曲名 + 版本后缀」，只作参考，
                  默认不勾选，由用户在候选列表里自行判断。
     完全不相干的直接丢弃（宁可漏，不可错配）。
+
+    mode="replace"（歌曲管理·换源）：本地元数据可能本来就是错的（歌手不符
+    很常见），suspect 不降权丢弃照常返回；额外计算 infoScore（候选自身信息
+    完整度：标题/歌手吻合、专辑、封面、时长吻合），前端按它综合音质排序。
     """
     if not isinstance(item, dict):
         return None
@@ -407,6 +490,25 @@ def _shape_candidate(item: dict, cur_item: dict) -> "dict | None":
     cur_dur = int(cur_item.get("durationMs") or 0)
     dur_diff = abs(dur_s * 1000 - cur_dur) if (dur_s and cur_dur) else 0
     better = (kind == "exact") and tier < int(cur_item.get("tier") or TIER_LOW)
+
+    # 信息完整度评分（0~6）：换源模式的核心排序依据——本地信息错的歌，
+    # 要优先选「音源里信息更全/更吻合」的候选来修标签。
+    info_score = 0
+    if c_norm == t_norm:
+        info_score += 2
+    elif _base_title(title) == _base_title(cur_title):
+        info_score += 1
+    if toks and artist and any(t in _norm_text(artist) for t in toks):
+        info_score += 1
+    if str(item.get("album") or "").strip():
+        info_score += 1
+    if str(item.get("cover_url") or "").strip():
+        info_score += 1
+    if dur_s and cur_dur and dur_diff <= 3000:
+        info_score += 1
+    elif not cur_dur:
+        info_score += 0  # 本地时长未知，无法判断，不加分
+
     return {
         "id": cid,
         "source": str(item.get("source") or ""),
@@ -423,6 +525,7 @@ def _shape_candidate(item: dict, cur_item: dict) -> "dict | None":
         "kind": kind,
         "reason": reason,
         "better": better,
+        "infoScore": info_score,
         "durationDiffMs": int(dur_diff),
         "durationSuspicious": bool(dur_diff and dur_diff > 3000),
         "coverUrl": str(item.get("cover_url") or ""),
@@ -432,7 +535,8 @@ def _shape_candidate(item: dict, cur_item: dict) -> "dict | None":
 _CAND_CACHE: "dict[str, dict]" = {}   # musicdl id → 候选原始条目（含 download_url）
 
 
-async def _search_one(http: httpx.AsyncClient, item: dict, sources: "list[str]") -> dict:
+async def _search_one(http: httpx.AsyncClient, item: dict, sources: "list[str]",
+                      mode: str = "upgrade") -> dict:
     out = {"guid": item["guid"], "title": item.get("title"), "artist": item.get("artist"),
            "current": {k: item.get(k) for k in
                        ("format", "bitrate", "sampleRate", "bitDepth", "quality", "tier",
@@ -458,7 +562,7 @@ async def _search_one(http: httpx.AsyncClient, item: dict, sources: "list[str]")
     def _collect(rows: "list[dict]", seen: "set[str]") -> "list[dict]":
         got = []
         for it in rows:
-            c = _shape_candidate(it, item)
+            c = _shape_candidate(it, item, mode)
             if not c or c["id"] in seen:
                 continue
             seen.add(c["id"])
@@ -475,16 +579,23 @@ async def _search_one(http: httpx.AsyncClient, item: dict, sources: "list[str]")
     if not cands:
         out["error"] = "音源里没有这首歌"
         return out
-    cands.sort(key=lambda c: (0 if c["kind"] == "exact" else 1,
-                              0 if c["better"] else 1,
-                              c["tier"], -c["size"]))
+    if mode == "replace":
+        # 换源：信息完整度优先，其次音质档位/体积；时长可疑压底防错配
+        cands.sort(key=lambda c: (0 if c["kind"] == "exact" else 1,
+                                  1 if c["durationSuspicious"] else 0,
+                                  -c["infoScore"], c["tier"], -c["size"]))
+    else:
+        cands.sort(key=lambda c: (0 if c["kind"] == "exact" else 1,
+                                  0 if c["better"] else 1,
+                                  c["tier"], -c["size"]))
+    out["mode"] = mode
     out["candidates"] = cands
     out["exactCount"] = sum(1 for c in cands if c["kind"] == "exact")
     return out
 
 
 async def search_candidates(guids: "list[str]", sources: "list[str] | None" = None,
-                            concurrency: int = 4) -> dict:
+                            concurrency: int = 4, mode: str = "upgrade") -> dict:
     srcs = [s.strip() for s in (sources or list(DEFAULT_SOURCES)) if s.strip()]
     if not srcs:
         srcs = list(DEFAULT_SOURCES)
@@ -499,7 +610,7 @@ async def search_candidates(guids: "list[str]", sources: "list[str] | None" = No
     async with httpx.AsyncClient() as http:
         async def _run(it: dict) -> None:
             async with sem:
-                results.append(await _search_one(http, it, srcs))
+                results.append(await _search_one(http, it, srcs, mode))
 
         await asyncio.gather(*[_run(it) for it in items])
     order = {g: i for i, g in enumerate(guids)}
@@ -744,7 +855,7 @@ async def _download(http: httpx.AsyncClient, cand_id: str, dest: str,
 
 
 async def _upgrade_one(http: httpx.AsyncClient, guid: str, cand: dict,
-                       dry_run: bool) -> dict:
+                       dry_run: bool, mode: str = "upgrade") -> dict:
     item = get_track_item(guid)
     if not item:
         return {"guid": guid, "ok": False, "error": "曲目不存在"}
@@ -781,7 +892,7 @@ async def _upgrade_one(http: httpx.AsyncClient, guid: str, cand: dict,
         if old_dur_ms and dur_ms and abs(dur_ms - old_dur_ms) > 3000:
             raise RuntimeError(f"时长不符（原 {old_dur_ms/1000:.1f}s / 新 {dur_ms/1000:.1f}s），疑似错配")
         new_tier = _tier(new_ext, probe.get("bitrate") or 0, probe.get("bitDepth") or 0)
-        if new_tier >= int(item.get("tier") or TIER_LOW):
+        if mode != "replace" and new_tier >= int(item.get("tier") or TIER_LOW):
             raise RuntimeError(f"音质未提升（{_fmt_bitrate(new_ext, probe.get('bitrate') or 0, probe.get('bitDepth') or 0, probe.get('sampleRate') or 0)}）")
 
         cover = _read_embedded_cover(old_path)
@@ -804,10 +915,16 @@ async def _upgrade_one(http: httpx.AsyncClient, guid: str, cand: dict,
                 "year": item.get("year")}
         if not item.get("artist"):
             meta["artist"] = cand.get("artist") or ""
+        if mode == "replace":
+            # 换源模式的核心诉求就是修元数据：候选的信息来自音源（比本地内嵌可靠），
+            # 用户手动选定后以候选为准写标签；候选缺哪项回落本地值。
+            meta["title"] = str(cand.get("title") or "").strip() or item["title"]
+            meta["artist"] = str(cand.get("artist") or "").strip() or item["artist"]
+            meta["album"] = str(cand.get("album") or "").strip() or item["album"]
         _write_tags_full(tmp, new_ext, meta, cover, lyric)
 
         result = {
-            "guid": guid, "ok": True, "dryRun": bool(dry_run),
+            "guid": guid, "ok": True, "dryRun": bool(dry_run), "mode": mode,
             "title": item["title"], "artist": item["artist"],
             "from": {"format": item["format"], "quality": item["quality"],
                      "size": item["size"], "path": old_path},
@@ -854,7 +971,8 @@ async def _upgrade_one(http: httpx.AsyncClient, guid: str, cand: dict,
 
         _append_log({
             "ts": int(time.time()), "guid": guid, "title": item["title"],
-            "artist": item["artist"], "oldPath": old_path, "oldFormat": item["format"],
+            "artist": item["artist"], "mode": mode,
+            "oldPath": old_path, "oldFormat": item["format"],
             "newPath": new_path, "newFormat": new_ext,
             "backup": backup_path, "dbId": _audio_file_id(guid),
             "old": {"format": item["format"], "size": item["size"],
@@ -926,11 +1044,12 @@ def _prune() -> None:
             _TASKS.pop(k, None)
 
 
-def start_task(items: "list[dict]", dry_run: bool) -> str:
+def start_task(items: "list[dict]", dry_run: bool, mode: str = "upgrade") -> str:
     _prune()
     task_id = uuid.uuid4().hex[:12]
     _TASKS[task_id] = {
         "id": task_id, "items": list(items), "dryRun": bool(dry_run),
+        "mode": "replace" if mode == "replace" else "upgrade",
         "results": [], "running": True, "createdAt": time.monotonic(),
         "current": "", "okCount": 0, "failCount": 0,
     }
@@ -948,7 +1067,7 @@ async def _run_task(task_id: str) -> None:
             cand = entry.get("candidate") or {}
             t["current"] = guid
             try:
-                res = await _upgrade_one(http, guid, cand, t["dryRun"])
+                res = await _upgrade_one(http, guid, cand, t["dryRun"], t.get("mode") or "upgrade")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("upgrade %s failed: %s", guid, exc)
                 res = {"guid": guid, "ok": False, "error": str(exc) or type(exc).__name__}

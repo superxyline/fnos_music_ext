@@ -180,8 +180,9 @@ async def upgrade_candidates(request: Request):
     if len(guids) > _MAX_CAND:
         return _err(f"单次最多 {_MAX_CAND} 首，请分批")
     sources = [str(s) for s in (body.get("sources") or []) if s] or None
+    mode = "replace" if str(body.get("mode") or "") == "replace" else "upgrade"
     try:
-        data = await quality_upgrade.search_candidates(guids, sources)
+        data = await quality_upgrade.search_candidates(guids, sources, mode=mode)
         return {"code": 0, "msg": "", "data": data}
     except Exception as e:
         logger.exception("upgrade candidates failed")
@@ -215,9 +216,11 @@ async def upgrade_run(request: Request):
     if missing:
         return _err(f"{len(missing)} 个 guid 不存在: {missing[:3]}")
     try:
-        task_id = quality_upgrade.start_task(clean, bool(body.get("dryRun")))
+        mode = "replace" if str(body.get("mode") or "") == "replace" else "upgrade"
+        task_id = quality_upgrade.start_task(clean, bool(body.get("dryRun")), mode)
         return {"code": 0, "msg": "", "data": {"taskId": task_id, "total": len(clean),
-                                               "dryRun": bool(body.get("dryRun"))}}
+                                               "dryRun": bool(body.get("dryRun")),
+                                               "mode": mode}}
     except RuntimeError:
         return _err("无运行中的事件循环", 500)
 
@@ -228,6 +231,26 @@ async def upgrade_task(task_id: str):
     if not t:
         return _err("任务不存在", 404)
     return {"code": 0, "msg": "", "data": t}
+
+
+@app.post("/api/manage/delete")
+async def manage_delete(request: Request):
+    """歌曲管理·物理删除：删文件（含同名 .lrc）+ 删库记录与全部引用，不进回收站。"""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    guids = [str(g) for g in (body.get("guids") or []) if g]
+    if not guids:
+        return _err("guids 为空")
+    if len(guids) > _MAX_BATCH_GW:
+        return _err(f"单次最多 {_MAX_BATCH_GW} 首")
+    try:
+        data = await asyncio.to_thread(match_core.delete_tracks_physical, guids)
+        return {"code": 0, "msg": "", "data": data}
+    except Exception as e:
+        logger.exception("manage delete failed")
+        return _err(f"删除失败: {type(e).__name__}: {e}", 500)
 
 
 @app.post("/api/upgrade/rollback")

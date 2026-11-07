@@ -1023,6 +1023,121 @@ def remove_duplicate(remove_track_id: int, keep_track_id: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 歌曲管理：物理删除（歌曲管理页，用户明确要求直接删文件不留备份）
+# ---------------------------------------------------------------------------
+
+def delete_track_physical(guid: str) -> dict:
+    """物理删除单曲：删文件（+同名 .lrc）→ 删歌词分片 → 删库记录与全部引用。
+
+    与去重不同：不迁移引用、不进回收站——收藏/歌单里指向它的行一并删除，
+    播放历史同。删除前检查文件是否被其它在库曲目共享同一路径（重复收录），
+    共享时拒绝并引导走「重复清理」。库事务失败时文件已删（先删文件是防
+    "库删了文件还在"被扫描器重新收录），会如实报告 error。
+    """
+    conn = _db()
+    try:
+        r = conn.execute(
+            "SELECT t.id, t.title, t.audio_file_id, t.cover_guid, af.path FROM track t "
+            "JOIN audio_file af ON af.id = t.audio_file_id WHERE t.guid = ?",
+            (guid,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not r:
+        return {"guid": guid, "ok": False, "error": "曲目不存在"}
+    track_id = int(r["id"])
+    src_path = str(r["path"] or "")
+    audio_file_id = int(r["audio_file_id"])
+    cover_guid = str(r["cover_guid"] or "")
+
+    if src_path:
+        # 文件被其它在库曲目共享同一路径时拒绝（删一首会把另一首的文件也干掉）
+        conn = _db()
+        try:
+            shared = conn.execute(
+                "SELECT COUNT(*) FROM track t2 JOIN audio_file af2 ON af2.id = t2.audio_file_id "
+                "WHERE t2.guid != ? AND af2.path = ? AND t2.is_audio_file_deleted = 0 "
+                "AND t2.is_admin_deleted = 0",
+                (guid, src_path),
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            shared = 0
+        finally:
+            conn.close()
+        if shared:
+            return {"guid": guid, "ok": False, "title": r["title"],
+                    "error": "该文件路径同时被其它在库曲目引用（疑似重复收录），"
+                             "请改用「歌曲匹配 → 重复清理」处理"}
+
+    removed_files = []
+    if src_path and os.path.exists(src_path):
+        try:
+            os.remove(src_path)
+            removed_files.append(src_path)
+        except OSError as e:
+            return {"guid": guid, "ok": False, "error": f"删除文件失败: {e}"}
+        sidecar = os.path.splitext(src_path)[0] + ".lrc"
+        if os.path.exists(sidecar):
+            try:
+                os.remove(sidecar)
+                removed_files.append(sidecar)
+            except OSError:
+                pass
+
+    # 扩展写回的封面文件（meta/cover/track/<cover_guid[:2]>/<cover_guid>）；
+    # cover_guid 为空或指向官方自有存储时文件不存在，静默跳过
+    if re.fullmatch(r"[0-9a-f]{32}", cover_guid):
+        cover_file = os.path.join(COVER_ROOT, "track", cover_guid[:2], cover_guid)
+        if os.path.exists(cover_file):
+            try:
+                os.remove(cover_file)
+            except OSError:
+                pass
+
+    conn = _db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _remove_lyric_of(conn, track_id)
+        for table in ("favorite_track", "playlist_track", "play_history",
+                      "user_track_lyric_preference", "user_track_lyric_offset",
+                      "track_artist", "track_genre"):
+            try:
+                conn.execute(f"DELETE FROM {table} WHERE track_id = ?", (track_id,))
+            except sqlite3.OperationalError:
+                pass  # 表不存在的老库跳过
+        conn.execute("DELETE FROM track WHERE id = ?", (track_id,))
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM track WHERE audio_file_id = ?", (audio_file_id,)
+        ).fetchone()[0]
+        if remaining == 0:
+            conn.execute("DELETE FROM audio_file WHERE id = ?", (audio_file_id,))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return {"guid": guid, "ok": True, "title": r["title"],
+            "removed": removed_files}
+
+
+def delete_tracks_physical(guids: "list[str]") -> dict:
+    """批量物理删除，逐首独立处理（一首失败不影响其它），返回逐首结果。"""
+    results = []
+    for g in guids:
+        g = str(g or "").strip()
+        if not g:
+            continue
+        try:
+            results.append(delete_track_physical(g))
+        except Exception as e:  # noqa: BLE001
+            results.append({"guid": g, "ok": False, "error": str(e)})
+    return {"results": results,
+            "okCount": sum(1 for r in results if r.get("ok")),
+            "failCount": sum(1 for r in results if not r.get("ok"))}
+
+
+# ---------------------------------------------------------------------------
 # 批量任务（进程内）
 # ---------------------------------------------------------------------------
 

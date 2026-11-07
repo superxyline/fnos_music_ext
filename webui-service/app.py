@@ -1472,6 +1472,29 @@ async def upgrade_proxy(path: str, request: Request):
                     media_type=resp.headers.get("content-type", "application/json"))
 
 
+@app.api_route("/api/manage/{path:path}", methods=["GET", "POST", "DELETE"])
+async def manage_proxy(path: str, request: Request):
+    """转发歌曲管理请求到宿主机匹配网关（:8776），与音质升级同网关同超时。"""
+    url = f"{_match_upstream()}/api/manage/{path}"
+    if request.url.query:
+        url += f"?{request.url.query}"
+    body = await request.body()
+    client = get_http(request)
+    try:
+        resp = await client.request(
+            request.method, url, content=body,
+            headers={"Content-Type": request.headers.get("content-type") or "application/json"},
+            timeout=300.0,
+        )
+    except httpx.HTTPError as exc:
+        return JSONResponse(
+            {"code": 502, "msg": f"管理服务不可达（{type(exc).__name__}）", "data": None},
+            status_code=200,
+        )
+    return Response(content=resp.content, status_code=resp.status_code,
+                    media_type=resp.headers.get("content-type", "application/json"))
+
+
 # ------------------------------------------------------------------ 小爱音箱（xiaomusic 桥接代理） --
 # 桥接服务是同容器第 5 个 supervisor 进程（127.0.0.1:8005）。以下端点 1:1 转发它的
 # 向导 API，管理台「小爱音箱」配置页只面对本服务的 /api/xiaomusic/*。

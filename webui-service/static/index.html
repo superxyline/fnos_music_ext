@@ -6,7 +6,7 @@
   <title>fnmusic-ext 管理台</title>
   <!-- 先定主题再加载样式，深色模式下避免首屏白闪 -->
   <script src="/app/fnmusic-ext/static/theme-boot.js"></script>
-  <link rel="stylesheet" href="/app/fnmusic-ext/static/style.css?v=3.7.4">
+  <link rel="stylesheet" href="/app/fnmusic-ext/static/style.css?v=3.7.5">
   <link rel="icon" type="image/png" href="/app/fnmusic-ext/static/icon.png">
 </head>
 <body>
@@ -29,6 +29,7 @@
         <button class="nav-item" data-page="match">歌曲匹配</button>
         <button class="nav-item" data-page="pimport">歌单导入</button>
         <button class="nav-item" data-page="upgrade">音质升级</button>
+        <button class="nav-item" data-page="manage">歌曲管理</button>
         <button class="nav-item" data-page="xiaomusic">小爱音箱</button>
         <button class="nav-item" data-page="llm">高级 · 大模型</button>
         <button class="nav-item" data-page="settings">设置</button>
@@ -326,7 +327,11 @@
             <button class="btn primary" id="up-find">查找候选</button>
             <span class="muted" id="up-count"></span>
           </div>
-          <div class="match-wrap"><table class="match-table">
+          <div class="match-wrap"><table class="match-table fit">
+            <colgroup>
+              <col style="width:34px"><col style="width:24%"><col style="width:14%">
+              <col style="width:14%"><col style="width:8%"><col style="width:20%"><col>
+            </colgroup>
             <thead>
               <tr>
                 <th class="mt-check"><input type="checkbox" id="up-check-all" title="全选本页"></th>
@@ -335,7 +340,7 @@
                 <th>专辑</th><th class="mt-status">状态</th>
               </tr>
             </thead>
-            <tbody id="up-rows"><tr><td colspan="8" class="muted">加载中…</td></tr></tbody>
+            <tbody id="up-rows"><tr><td colspan="7" class="muted">加载中…</td></tr></tbody>
           </table></div>
           <div class="btn-row">
             <button class="btn" id="up-prev">上一页</button>
@@ -353,6 +358,57 @@
             <button class="btn" id="up-purge">清理 7 天前备份</button>
             <span class="muted" id="up-backup-info"></span>
           </div>
+        </div>
+      </section>
+
+      <!-- 歌曲管理 -->
+      <section class="page" id="page-manage">
+        <h2>歌曲管理</h2>
+        <p class="hint">统一管理本地曲库：勾选歌曲<b>物理删除</b>（直接删文件与曲库记录，<b>不进回收站、不可恢复</b>，收藏/歌单里的引用一并移除）；筛选「内嵌信息不全」列出文件标签缺标题/歌手/专辑/封面的歌（读文件实测，非曲库记录）；或按音源<b>搜索替换</b>——本地歌曲内嵌信息（歌手/专辑/标题）有错时，优先推荐音源里信息更全、更吻合的版本，由你逐首确认后替换（写回正确标签，收藏与播放记录不变）。</p>
+
+        <div class="card">
+          <div class="btn-row">
+            <input class="input grow" id="mg-q" placeholder="按歌名 / 歌手 / 路径筛选…">
+            <select class="input" id="mg-filter">
+              <option value="all" selected>全部歌曲</option>
+              <option value="meta_incomplete">内嵌信息不全</option>
+              <option value="lossy">仅有损</option>
+              <option value="below320">仅低于 320k</option>
+              <option value="lossless">仅无损</option>
+              <option value="hires">仅 Hi-Res</option>
+            </select>
+            <button class="btn" id="mg-refresh">查询</button>
+          </div>
+          <div class="btn-row">
+            <label class="match-want"><input type="checkbox" id="mg-src-kuwo" checked> 酷我</label>
+            <label class="match-want"><input type="checkbox" id="mg-src-migu" checked> 咪咕</label>
+            <label class="match-want"><input type="checkbox" id="mg-dry" checked> 先试运行（只校验不替换）</label>
+            <button class="btn primary" id="mg-find">搜索替换选中</button>
+            <button class="btn danger" id="mg-delete">删除选中</button>
+            <span class="muted" id="mg-count"></span>
+          </div>
+          <div class="match-wrap"><table class="match-table fit">
+            <colgroup>
+              <col style="width:34px"><col style="width:19%"><col style="width:12%">
+              <col style="width:14%"><col style="width:14%"><col style="width:8%">
+              <col style="width:6%"><col>
+            </colgroup>
+            <thead>
+              <tr>
+                <th class="mt-check"><input type="checkbox" id="mg-check-all" title="全选本页"></th>
+                <th>歌名</th><th>歌手</th><th>专辑</th>
+                <th class="mt-flag">格式 / 音质</th><th class="mt-flag">大小</th><th class="mt-flag">时长</th>
+                <th class="mt-status">信息 / 路径</th>
+              </tr>
+            </thead>
+            <tbody id="mg-rows"><tr><td colspan="8" class="muted">加载中…</td></tr></tbody>
+          </table></div>
+          <div class="btn-row">
+            <button class="btn" id="mg-prev">上一页</button>
+            <span class="muted" id="mg-pageinfo"></span>
+            <button class="btn" id="mg-next">下一页</button>
+          </div>
+          <div id="mg-progress" class="report" hidden></div>
         </div>
       </section>
 
@@ -478,6 +534,7 @@
     <button class="nav-item" data-page="tee">缓存</button>
     <button class="nav-item" data-page="match">匹配</button>
     <button class="nav-item" data-page="upgrade">升级</button>
+    <button class="nav-item" data-page="manage">管理</button>
     <button class="nav-item" data-page="xiaomusic">音箱</button>
     <button class="nav-item" data-page="llm">高级</button>
     <button class="nav-item" data-page="settings">设置</button>
@@ -526,8 +583,24 @@
     </div>
   </div>
 
+  <div class="modal-mask" id="mg-modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="mg-modal-title"
+         style="width:min(900px,100%);max-height:min(86vh,760px)">
+      <div class="modal-head">
+        <div class="card-title" id="mg-modal-title">选择替换版本</div>
+        <span class="muted" id="mg-modal-sum"></span>
+      </div>
+      <div class="modal-body" id="mg-modal-body"></div>
+      <div class="modal-foot">
+        <span class="muted" id="mg-modal-note" style="margin-right:auto"></span>
+        <button class="btn" id="mg-modal-cancel" type="button">取消</button>
+        <button class="btn primary" id="mg-modal-run" type="button">开始替换</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast" hidden></div>
 
-  <script src="/app/fnmusic-ext/static/app.js?v=3.7.4"></script>
+  <script src="/app/fnmusic-ext/static/app.js?v=3.7.5"></script>
 </body>
 </html>

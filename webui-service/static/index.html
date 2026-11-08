@@ -6,7 +6,7 @@
   <title>fnmusic-ext 管理台</title>
   <!-- 先定主题再加载样式，深色模式下避免首屏白闪 -->
   <script src="/app/fnmusic-ext/static/theme-boot.js"></script>
-  <link rel="stylesheet" href="/app/fnmusic-ext/static/style.css?v=3.7.5-m1">
+  <link rel="stylesheet" href="/app/fnmusic-ext/static/style.css?v=3.7.5-q7">
   <link rel="icon" type="image/png" href="/app/fnmusic-ext/static/icon.png">
 </head>
 <body>
@@ -153,10 +153,15 @@
         <div class="card">
           <div class="card-title">音质偏好</div>
           <div class="radio-list" id="quality-list">
-            <label><input type="radio" name="quality" value="high"><div><b>高音质</b><span>优先最高档，失败逐级向下</span></div></label>
-            <label><input type="radio" name="quality" value="balanced"><div><b>平衡</b><span>取中间档（偶数档取中间偏高），失败先降后升</span></div></label>
-            <label><input type="radio" name="quality" value="smooth"><div><b>流畅</b><span>优先最低档，最快出声</span></div></label>
+            <label><input type="radio" name="quality" value="standard"><div><b>标准</b><span>128kbps，最省流量</span></div></label>
+            <label><input type="radio" name="quality" value="higher"><div><b>较高</b><span>约 192kbps</span></div></label>
+            <label><input type="radio" name="quality" value="exhigh"><div><b>极高</b><span>320kbps</span></div></label>
+            <label><input type="radio" name="quality" value="lossless"><div><b>无损</b><span>FLAC，默认档</span></div></label>
+            <label><input type="radio" name="quality" value="hires"><div><b>Hi-Res</b><span>24bit 高解析（需音源支持）</span></div></label>
+            <label><input type="radio" name="quality" value="jymaster"><div><b>超清母带</b><span>需网易 VIP 权益</span></div></label>
+            <label><input type="radio" name="quality" value="sky"><div><b>沉浸声</b><span>需网易 VIP 权益</span></div></label>
           </div>
+          <p class="hint">所选档位音源不支持时自动逐级下降、不回升（如 Hi-Res 缺货退无损）。洛雪侧档位映射到 128k/320k/FLAC 三档；APP 下载音质对官方 App 的下载请求生效，选「跟随 App」时按 App 里选的档位。</p>
         </div>
         <div class="card">
           <div class="card-title">推荐</div>
@@ -538,6 +543,6 @@
 
   <div class="toast" id="toast" hidden></div>
 
-  <script src="/app/fnmusic-ext/static/app.js?v=3.7.5-m1"></script>
+  <script src="/app/fnmusic-ext/static/app.js?v=3.7.5-q7"></script>
 </body>
 </html>

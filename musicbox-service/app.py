@@ -36,7 +36,7 @@ logger = logging.getLogger("musicbox_service.app")
 ensure_xdg_dirs()
 
 SEARCH_TYPES = {"song", "album", "artist", "playlist"}
-QUALITY_WHITELIST = {"exhigh", "higher", "standard", "lossless", "hires", "jymaster"}
+QUALITY_WHITELIST = {"standard", "higher", "exhigh", "lossless", "hires", "jymaster", "sky"}
 
 
 class UpstreamException(Exception):

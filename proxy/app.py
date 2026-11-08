@@ -40,6 +40,7 @@ try:
     from . import publicplaylists as pubpl
     from . import history_playlist as histpl
     from . import music_compat
+    from . import quality_policy as qp
     from .cache_gc import purge_rolling, sweep_orphan_lyrics
     from .env_merge import parse_env_file
     from .version import get_version
@@ -50,6 +51,7 @@ except ImportError:  # uvicorn --app-dir proxy
     import publicplaylists as pubpl  # type: ignore
     import history_playlist as histpl  # type: ignore
     import music_compat  # type: ignore
+    import quality_policy as qp  # type: ignore
     from cache_gc import purge_rolling, sweep_orphan_lyrics  # type: ignore
     from env_merge import parse_env_file  # type: ignore
     from version import get_version  # type: ignore
@@ -59,6 +61,24 @@ logger = logging.getLogger("fnmusic_proxy")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 _HOME = dailyrec.home_dir()
+
+
+def _initial_play_quality() -> str:
+    """七档播放音质（移植上游 v2.12.0 quality_policy）：显式 FNMUSIC_PLAY_QUALITY
+    优先；未设置时按旧三档偏好/各源主档迁移——high+主档(默认 lossless)→无损、
+    balanced→极高、smooth→标准。"""
+    explicit = (os.environ.get("FNMUSIC_PLAY_QUALITY") or "").strip().lower()
+    if explicit:
+        try:
+            return qp.normalize_quality(explicit, default=None)
+        except ValueError:
+            logger.warning("FNMUSIC_PLAY_QUALITY=%r 非法，回退旧配置迁移", explicit)
+    return qp.effective_play_quality({
+        "FNMUSIC_QUALITY_MODE": os.environ.get("FNMUSIC_QUALITY_MODE") or "",
+        "FNMUSIC_LX_ENABLED": os.environ.get("FNMUSIC_LX_ENABLED") or "",
+        "FNMUSIC_LX_QUALITY": os.environ.get("FNMUSIC_LX_QUALITY") or "",
+        "FNMUSIC_NETEASE_QUALITY": os.environ.get("FNMUSIC_NETEASE_QUALITY") or "",
+    })
 
 # lx 平台别名 → 规范代码（与 lxmusic-service/app.py 的 _SOURCE_ALIASES 保持一致）
 _LX_ALIASES = {
@@ -179,6 +199,7 @@ CONF = {
     # v2.0.0：音质模式 high|balanced|smooth（档序见 quality_order）；
     # 推荐双开关 / 封面补全 / .env 热重载默认开，均可被 .env 覆盖
     "quality_mode": (os.environ.get("FNMUSIC_QUALITY_MODE") or "high").strip().lower(),
+    "play_quality": _initial_play_quality(),
     "recommend_hot": os.environ.get("FNMUSIC_RECOMMEND_HOT", "true").lower() in ("true", "1", "yes"),
     "recommend_daily": os.environ.get("FNMUSIC_RECOMMEND_DAILY", "true").lower() in ("true", "1", "yes"),
     # 网易账号歌单注入（2.6.0）：默认关；需网易盒子启用并扫码登录，
@@ -509,6 +530,7 @@ _ENV_WATCH_KEYS: dict[str, tuple[str, str]] = {
     "FNMUSIC_APP_V2_SEARCH": ("app_v2_search", "bool"),
     "FNMUSIC_SEARCH_LOG_QUERY": ("search_log_query", "bool"),
     "FNMUSIC_QUALITY_MODE": ("quality_mode", "quality_mode"),
+    "FNMUSIC_PLAY_QUALITY": ("play_quality", "play_quality"),
     "FNMUSIC_TEE_SAVE_ENABLED": ("tee_save_enabled", "bool"),
     "FNMUSIC_TEE_SAVE_DIR": ("tee_save_dir", "str"),
     "FNMUSIC_TEE_CACHE_MAX": ("tee_cache_max", "tee_cache_max"),
@@ -580,6 +602,11 @@ def _env_watch_parse(raw: str, kind: str):
             return None
     if kind == "quality_mode":
         return raw.lower() if raw.lower() in ("high", "balanced", "smooth") else None
+    if kind == "play_quality":
+        try:
+            return qp.normalize_quality(raw, default=None)
+        except ValueError:
+            return None
     if kind == "download_quality":
         return raw.lower() if raw.lower() in ("any", "320", "lossless") else None
     if kind == "lx_sources":
@@ -2543,6 +2570,28 @@ async def _lx_search_request(client: httpx.AsyncClient, keyword: str, limit: int
 _NETEASE_QUALITY_LADDER = ["standard", "higher", "exhigh", "lossless", "hires", "jymaster"]
 _LX_QUALITY_LADDER = ["standard", "high", "lossless"]
 
+# 七档播放音质 → 洛雪三档参数（standard=128k / high=320k / lossless=flac）序列。
+# 洛雪侧无 192k/Hi-Res 独立档，higher 落到 128k、无损家族统一封顶 flac；
+# quality_ladder 自目标档逐级下降，这里再去重成 lxmusic 可接受的参数序列。
+_LX_TIER_OF = {
+    "standard": ("standard",),
+    "higher": ("standard",),
+    "exhigh": ("high", "standard"),
+    "lossless": ("lossless", "high", "standard"),
+    "hires": ("lossless", "high", "standard"),
+    "jymaster": ("lossless", "high", "standard"),
+    "sky": ("lossless", "high", "standard"),
+}
+
+
+def _lx_quality_seq() -> "list[str]":
+    seq: list[str] = []
+    for q in qp.quality_ladder(str(CONF.get("play_quality") or "lossless")):
+        for tier in _LX_TIER_OF[q]:
+            if tier not in seq:
+                seq.append(tier)
+    return seq or ["standard"]
+
 
 def quality_order(ladder: "list[str] | tuple[str, ...]", mode: "str | None", primary: "str | None" = None) -> list[str]:
     """按音质模式排档序（ladder 从低到高）。
@@ -2599,6 +2648,7 @@ def _lx_media_headers(resolved: "dict | None") -> dict[str, str]:
 _LX_URL_PIN: "dict[str, tuple[dict, float]]" = {}
 _LX_URL_PIN_MAX = 512
 _LX_URL_PIN_TTL_S = 600.0
+_LX_URL_CONFIG: "tuple | None" = None
 
 
 def _lx_url_pin_drop(song_id: str) -> None:
@@ -2660,10 +2710,7 @@ async def resolve_lx_url(client: httpx.AsyncClient, song_id: str, fresh: bool = 
             return pin[0]
         if pin:
             _LX_URL_PIN.pop(key, None)
-    primary = str(CONF.get("lx_quality") or "lossless").strip()
-    qualities = quality_order(_LX_QUALITY_LADDER, CONF.get("quality_mode"), primary)
-    if primary and primary not in qualities:
-        qualities.insert(0, primary)
+    qualities = _lx_quality_seq()
 
     for q in qualities:
         try:
@@ -2740,8 +2787,11 @@ def _cancel_netease_resolutions() -> list:
 
 def _sync_netease_quality() -> None:
     """音质配置热重载后旧直链不可比：清在飞任务与预热钉链，普通钉链按 expi 自然过期。"""
-    global _NETEASE_URL_CONFIG
-    config = (CONF.get("netease_quality"), CONF.get("quality_mode"))
+    global _NETEASE_URL_CONFIG, _LX_URL_CONFIG
+    config = (CONF.get("play_quality"),)
+    if _LX_URL_CONFIG != config:
+        _LX_URL_CONFIG = config
+        _LX_URL_PIN.clear()
     if _NETEASE_URL_CONFIG == config:
         return
     if _NETEASE_URL_CONFIG is not None:
@@ -2856,10 +2906,7 @@ def _prefetch_netease(request: Request, guid: str) -> None:
 
 async def _resolve_netease_url_uncached(client: httpx.AsyncClient, song_id: str,
                                          fresh: bool = False) -> str | None:
-    primary = str(CONF.get("netease_quality") or "lossless").strip()
-    qualities = quality_order(_NETEASE_QUALITY_LADDER, CONF.get("quality_mode"), primary)
-    if primary and primary not in qualities:
-        qualities.insert(0, primary)
+    qualities = qp.quality_ladder(str(CONF.get("play_quality") or "lossless"))
 
     for q in qualities:
         try:
@@ -5736,17 +5783,17 @@ def ordered_stream_alternatives(item: dict) -> list[dict]:
         x for x in (item.get("_alternatives") or [])
         if isinstance(x, dict) and _same_recording(item, x)
     ]
-    mode = str(CONF.get("quality_mode") or "high").strip().lower()
+    level = qp.normalize_quality(str(CONF.get("play_quality") or "lossless"))
     known = sorted({round(_candidate_kbps(x), 1) for x in alts if _candidate_kbps(x) > 0})
     if not known:
         return list(alts)
-    if mode == "smooth":
-        order = known
-    elif mode == "balanced":
-        mid = len(known) // 2
-        order = [known[mid]] + list(reversed(known[:mid])) + known[mid + 1:]
-    else:
+    # 无损及以上目标：码率高者优先（无损候选 kbps 自然最高）；有损目标：最接近
+    # 目标码率者优先（同距取低），不主动上探更高档。
+    if qp.QUALITY_LEVELS.index(level) >= qp.QUALITY_LEVELS.index("lossless"):
         order = list(reversed(known))
+    else:
+        tgt = {"standard": 128.0, "higher": 192.0, "exhigh": 320.0}[level]
+        order = sorted(known, key=lambda v: (abs(v - tgt), v))
     rank = {v: i for i, v in enumerate(order)}
     return sorted(alts, key=lambda x: rank.get(round(_candidate_kbps(x), 1), len(order)))
 

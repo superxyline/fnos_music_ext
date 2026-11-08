@@ -216,7 +216,7 @@ function applyConfigToForm() {
   $$("input[name=provider]").forEach((el) => { el.checked = el.value === provider; });
   syncProviderPanels(provider);
   syncNeteaseAccount(); // 扫码卡片常显：任意音源下都同步网易登录态
-  const quality = v.FNMUSIC_QUALITY_MODE || "high";
+  const quality = v.FNMUSIC_PLAY_QUALITY || "lossless";
   $$("input[name=quality]").forEach((el) => { el.checked = el.value === quality; });
   $("#recommend-hot").checked = v.FNMUSIC_RECOMMEND_HOT === "true";
   $("#recommend-daily").checked = v.FNMUSIC_RECOMMEND_DAILY === "true";
@@ -276,7 +276,7 @@ function collectConfig() {
     FNMUSIC_MUSICDL_ENABLED: provider === "musicdl",
     FNMUSIC_NETEASE_ENABLED: provider === "musicbox",
     FNMUSIC_LX_ENABLED: provider === "lxmusic",
-    FNMUSIC_QUALITY_MODE: ($$("input[name=quality]").find((el) => el.checked) || {}).value || "high",
+    FNMUSIC_PLAY_QUALITY: ($$("input[name=quality]").find((el) => el.checked) || {}).value || "lossless",
     FNMUSIC_RECOMMEND_HOT: $("#recommend-hot").checked,
     FNMUSIC_RECOMMEND_DAILY: $("#recommend-daily").checked,
     FNMUSIC_HISTORY_PLAYLIST_ENABLED: $("#history-playlist").checked,

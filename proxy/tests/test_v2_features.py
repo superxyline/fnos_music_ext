@@ -70,20 +70,20 @@ def test_quality_order_netease_ladder_modes():
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("mode,expected", [
-    ("high", ["lossless", "high", "standard"]),
-    ("balanced", ["high", "standard", "lossless"]),
-    ("smooth", ["standard", "high", "lossless"]),
+@pytest.mark.parametrize("quality,expected", [
+    ("lossless", ["lossless", "high", "standard"]),
+    ("hires", ["lossless", "high", "standard"]),
+    ("exhigh", ["high", "standard"]),
+    ("higher", ["standard"]),
 ])
-async def test_resolve_lx_url_follows_quality_mode(monkeypatch, mode, expected):
+async def test_resolve_lx_url_follows_quality_mode(monkeypatch, quality, expected):
     seen = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(str(request.url.params.get("quality")))
         return httpx.Response(404)  # 全部失败才会逐档尝试
 
-    monkeypatch.setitem(CONF, "quality_mode", mode)
-    monkeypatch.setitem(CONF, "lx_quality", "lossless")
+    monkeypatch.setitem(CONF, "play_quality", quality)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://127.0.0.1:8772") as client:
         assert await resolve_lx_url(client, "lx:kg:HASH1") is None
     assert seen == expected
@@ -97,8 +97,7 @@ async def test_resolve_netease_url_default_high_ladder(monkeypatch):
         seen.append(str(request.url.params.get("quality")))
         return httpx.Response(200, json={"ok": True, "data": {"code": 200, "url": ""}})
 
-    monkeypatch.setitem(CONF, "quality_mode", "high")
-    monkeypatch.setitem(CONF, "netease_quality", "lossless")
+    monkeypatch.setitem(CONF, "play_quality", "lossless")
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://127.0.0.1:8770") as client:
         assert await resolve_netease_url(client, "186016") is None
     # 6 档梯在 lossless 锚点向下：lossless → exhigh → higher → standard
@@ -113,12 +112,12 @@ def _alt(sid: str, kbps: float, dur: float = 200.0) -> dict:
 
 
 @pytest.mark.parametrize("mode,expected_ids", [
-    ("high", ["3", "1", "2"]),       # 码率高者优先
-    ("smooth", ["2", "1", "3"]),    # 码率低者优先
-    ("balanced", ["1", "2", "3"]),  # 中间 320 先，向下 128，向上 900
+    ("lossless", ["3", "1", "2"]),  # 无损目标：码率高者优先
+    ("exhigh", ["1", "2", "3"]),    # 320 目标：320→128→900（最近优先，同距取低）
+    ("standard", ["2", "1", "3"]),  # 128 目标：128→320→900
 ])
 def test_ordered_stream_alternatives_by_mode(monkeypatch, mode, expected_ids):
-    monkeypatch.setitem(CONF, "quality_mode", mode)
+    monkeypatch.setitem(CONF, "play_quality", mode)
     item = {
         "id": "x:0", "source": "x", "title": "T", "artist": "A", "duration_s": 200,
         "_alternatives": [_alt("1", 320), _alt("2", 128), _alt("3", 900)],

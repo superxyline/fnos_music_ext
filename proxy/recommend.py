@@ -138,6 +138,15 @@ def llm_enabled() -> bool:
     return bool(llm_base_url() and llm_api_key())
 
 
+def llm_protocol() -> str:
+    """Chat Completions（默认，兼容 OpenAI 及各兼容网关）或 Responses（ reasoning 系列新协议）。"""
+    return (os.environ.get("FNMUSIC_LLM_PROTOCOL") or "chat").strip().lower() in ("responses",) and "responses" or "chat"
+
+
+def llm_max_output_tokens() -> int:
+    return _env_int("FNMUSIC_LLM_MAX_OUTPUT_TOKENS", 4096, 256, 65536)
+
+
 def recommend_cache_dir() -> str:
     return os.environ.get("FNMUSIC_RECOMMEND_DIR") or os.path.join(home_dir(), "recommend_cache")
 
@@ -815,39 +824,110 @@ def parse_llm_recommendations(text: str) -> list[dict]:
     return out
 
 
+def _llm_quota_blocked() -> str:
+    """每日 token 限额检查；返回拦截原因（空=放行）。"""
+    import llm_usage
+
+    if llm_usage.within_limit():
+        return ""
+    used = llm_usage.used_today()
+    return f"今日 token 已达上限（{used.get('total', 0)}/{llm_usage.daily_limit()}）"
+
+
+def _extract_usage(body: dict, protocol: str) -> "dict | None":
+    if not isinstance(body, dict):
+        return None
+    u = body.get("usage")
+    if not isinstance(u, dict):
+        return None
+    if protocol == "responses":
+        prompt = u.get("input_tokens")
+        completion = u.get("output_tokens")
+    else:
+        prompt = u.get("prompt_tokens")
+        completion = u.get("completion_tokens")
+    total = u.get("total_tokens")
+    if not isinstance(prompt, int) and not isinstance(completion, int) and not isinstance(total, int):
+        return None
+    return {"prompt": int(prompt or 0), "completion": int(completion or 0),
+            "total": int(total or ((prompt or 0) + (completion or 0)))}
+
+
+def _extract_content(body: dict, protocol: str) -> "tuple[str, str]":
+    """返回 (content, finish_reason)；responses 协议 status=incomplete 视为被截断。"""
+    if protocol == "responses":
+        text = body.get("output_text")
+        if isinstance(text, str) and text.strip():
+            return text, "stop"
+        chunks = []
+        reason = ""
+        for item in body.get("output") or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("status") == "incomplete":
+                reason = "incomplete"
+            for c in item.get("content") or []:
+                if isinstance(c, dict) and isinstance(c.get("text"), str):
+                    chunks.append(c["text"])
+        return "".join(chunks), reason
+    choices = body.get("choices") or []
+    if choices and isinstance(choices[0], dict):
+        msg = choices[0].get("message") or {}
+        return str(msg.get("content") or ""), str(choices[0].get("finish_reason") or "")
+    return "", ""
+
+
 async def call_llm(http_client: httpx.AsyncClient, prompt: str) -> list[dict]:
+    import llm_usage
+
     base = llm_base_url()
     key = llm_api_key()
     if not base or not key:
         return []
-    url = base if base.endswith("/chat/completions") else f"{base}/chat/completions"
-    payload = {
-        "model": llm_model(),
-        "temperature": 0.8,
-        "max_tokens": 4096,
-        "messages": [
-            {"role": "system", "content": "你只输出合法 JSON 数组，不要 markdown。"},
-            {"role": "user", "content": prompt},
-        ],
-    }
-    headers = {
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-    }
+    protocol = llm_protocol()
+    max_tokens = llm_max_output_tokens()
+    if protocol == "responses":
+        url = base if base.endswith("/responses") else f"{base}/responses"
+        payload = {"model": llm_model(), "input": prompt, "max_output_tokens": max_tokens}
+    else:
+        url = base if base.endswith("/chat/completions") else f"{base}/chat/completions"
+        payload = {
+            "model": llm_model(),
+            "temperature": 0.8,
+            "max_tokens": max_tokens,
+            "messages": [
+                {"role": "system", "content": "你只输出合法 JSON 数组，不要 markdown。"},
+                {"role": "user", "content": prompt},
+            ],
+        }
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
+    blocked = _llm_quota_blocked()
+    if blocked:
+        llm_usage.record(actual_request=False, failure_reason="额度拦截", failure_detail=blocked)
+        logger.warning("llm call blocked: %s", blocked)
+        return []
     try:
         resp = await http_client.post(url, json=payload, headers=headers, timeout=llm_timeout_s())
         if resp.status_code >= 400:
+            detail = f"HTTP {resp.status_code}: {resp.text[:200]}"
+            llm_usage.record(failure_reason=f"HTTP {resp.status_code}", failure_detail=detail)
             logger.warning("llm http %s", resp.status_code)
             return []
         body = resp.json()
-        content = ""
-        if isinstance(body, dict):
-            choices = body.get("choices") or []
-            if choices and isinstance(choices[0], dict):
-                msg = choices[0].get("message") or {}
-                content = str(msg.get("content") or "")
+        usage = _extract_usage(body, protocol)
+        content, finish = _extract_content(body, protocol)
+        # issue #83：推理模型输出预算耗尽会静默降级（status=incomplete / finish_reason=length
+        # 且无正文）——记入账本最近失败，不再无声返回空
+        truncated = (finish in ("length", "incomplete")) and not content.strip()
+        llm_usage.record(usage, failure_reason="输出预算耗尽" if truncated else None,
+                         failure_detail=f"finish={finish}" if truncated else "")
+        if truncated:
+            logger.warning("llm output budget exhausted (finish=%s)", finish)
+            return []
         return parse_llm_recommendations(content)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
+        llm_usage.record(failure_reason=type(e).__name__, failure_detail=str(e)[:200])
         logger.warning("llm call failed: %s", e)
         return []
 

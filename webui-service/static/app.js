@@ -252,6 +252,9 @@ function applyConfigToForm() {
   $("#llm-base").value = v.FNMUSIC_LLM_BASE_URL || "";
   $("#llm-key").value = v.FNMUSIC_LLM_API_KEY || "";
   $("#llm-model").value = v.FNMUSIC_LLM_MODEL || "";
+  $("#llm-protocol").value = v.FNMUSIC_LLM_PROTOCOL || "chat";
+  $("#llm-daily-limit").value = v.FNMUSIC_LLM_DAILY_TOKEN_LIMIT ?? "1000000";
+  $("#llm-max-tokens").value = v.FNMUSIC_LLM_MAX_OUTPUT_TOKENS ?? "4096";
   $("#search-timeout").value = v.FNMUSIC_SEARCH_TIMEOUT || "15";
   $("#search-probe").checked = v.FNMUSIC_SEARCH_PROBE === "true";
   $("#app-v2-search").checked = v.FNMUSIC_APP_V2_SEARCH !== "false";
@@ -294,6 +297,9 @@ function collectConfig() {
     FNMUSIC_LLM_BASE_URL: $("#llm-base").value.trim(),
     FNMUSIC_LLM_API_KEY: $("#llm-key").value.trim(),
     FNMUSIC_LLM_MODEL: $("#llm-model").value.trim(),
+    FNMUSIC_LLM_PROTOCOL: $("#llm-protocol").value || "chat",
+    FNMUSIC_LLM_DAILY_TOKEN_LIMIT: $("#llm-daily-limit").value.trim() || "1000000",
+    FNMUSIC_LLM_MAX_OUTPUT_TOKENS: $("#llm-max-tokens").value.trim() || "4096",
     FNMUSIC_SEARCH_TIMEOUT: parseInt($("#search-timeout").value || "15", 10) || 15,
     FNMUSIC_SEARCH_PROBE: $("#search-probe").checked,
     FNMUSIC_APP_V2_SEARCH: $("#app-v2-search").checked,
@@ -1364,7 +1370,7 @@ $("#dedup-run").addEventListener("click", async () => {
 });
 
 /* -------------------------------------------------------------- 表单脏标记 */
-["#tee-dir", "#tee-max", "#llm-base", "#llm-key", "#llm-model", "#lx-url", "#search-timeout", "#bind-timeout", "#handoff-max", "#scan-path"].forEach((sel) =>
+["#tee-dir", "#tee-max", "#llm-base", "#llm-key", "#llm-model", "#llm-protocol", "#llm-daily-limit", "#llm-max-tokens", "#lx-url", "#search-timeout", "#bind-timeout", "#handoff-max", "#scan-path"].forEach((sel) =>
   $(sel).addEventListener("input", () => markDirty()));
 $$("input[name=quality]").forEach((el) => el.addEventListener("change", () => markDirty("音质偏好需保存后生效")));
 ["#recommend-hot", "#recommend-daily", "#history-playlist", "#public-playlists-enabled", "#search-probe", "#app-v2-search", "#search-log-query", "#tee-enabled", "#fav-download-enabled", "#auto-cover", "#lyric-auto-dl", "#netease-my-playlists", "#netease-subscribed", "#netease-resident"].forEach((sel) =>
@@ -2563,3 +2569,38 @@ $("#up-purge").addEventListener("click", async () => {
   }
 });
 
+
+
+/* ---- LLM 用量（读宿主 llm_usage.json，跨进程只读） ---- */
+async function llmLoadUsage() {
+  try {
+    const body = await api("/api/llm/usage");
+    const d = body.data || {};
+    const info = $("#llm-usage-info");
+    const detail = $("#llm-usage-detail");
+    if (!d.available) {
+      info.textContent = d.corrupt ? "账本文件损坏（不覆盖，待排查）" : "暂无用量记录（配置大模型并触发推荐后产生）";
+      detail.textContent = "";
+      return;
+    }
+    const today = d.today || {};
+    const cum = d.cumulative || {};
+    info.textContent = `今日：${today.total || 0} token / ${today.requests || 0} 次请求`;
+    const fmt = new Intl.NumberFormat("zh-CN");
+    let html = `累计：${fmt.format(cum.total || 0)} token · ${fmt.format(cum.requests || 0)} 次请求` +
+      `（输入 ${fmt.format(cum.prompt || 0)} / 输出 ${fmt.format(cum.completion || 0)}）`;
+    const fails = (d.history || []).filter((h) => h.lastFailure);
+    if (fails.length) {
+      const f = fails[0].lastFailure;
+      html += `<br>最近失败：${escapeHtml(String(f.reason || "?"))} · ${escapeHtml(String(f.detail || "").slice(0, 80))}`;
+    }
+    const days = (d.history || []).filter((h) => h.total).slice(0, 7)
+      .map((h) => `${h.date.slice(4, 6)}/${h.date.slice(6, 8)} ${fmt.format(h.total)}`).join(" · ");
+    if (days) html += `<br>近 7 天：${days}`;
+    detail.innerHTML = html;
+  } catch (e) {
+    $("#llm-usage-info").textContent = "读取失败：" + e.message;
+  }
+}
+$$('[data-page="llm"]').forEach((btn) => btn.addEventListener("click", llmLoadUsage));
+$("#llm-usage-refresh").addEventListener("click", llmLoadUsage);

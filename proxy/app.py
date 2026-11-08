@@ -560,6 +560,9 @@ _ENV_WATCH_KEYS: dict[str, tuple[str, str]] = {
     "FNMUSIC_LLM_BASE_URL": ("llm_base_url", "llm_url"),
     "FNMUSIC_LLM_API_KEY": ("", "str"),
     "FNMUSIC_LLM_MODEL": ("llm_model", "str"),
+    "FNMUSIC_LLM_PROTOCOL": ("llm_protocol", "str"),
+    "FNMUSIC_LLM_DAILY_TOKEN_LIMIT": ("", "str"),
+    "FNMUSIC_LLM_MAX_OUTPUT_TOKENS": ("", "str"),
     "FNMUSIC_SEARCH_TIMEOUT": ("search_timeout", "seconds"),
     # issue #29：推荐构建预算/候选数/逐首校验运行期可调（recommend.py 动态读 os.environ）
     "FNMUSIC_RECOMMEND_BUDGET_S": ("", "str"),

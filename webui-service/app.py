@@ -128,6 +128,9 @@ SCHEMA: dict[str, dict] = {
     "FNMUSIC_LLM_BASE_URL": {"kind": "str", "default": "", "group": "llm", "reload": "hot", "label": "OpenAI 兼容 Base URL"},
     "FNMUSIC_LLM_API_KEY": {"kind": "secret", "default": "", "group": "llm", "reload": "hot", "label": "API Key"},
     "FNMUSIC_LLM_MODEL": {"kind": "str", "default": "gpt-4o-mini", "group": "llm", "reload": "hot", "label": "模型"},
+    "FNMUSIC_LLM_PROTOCOL": {"kind": "enum", "values": ["chat", "responses"], "default": "chat", "group": "llm", "reload": "hot", "label": "接口协议"},
+    "FNMUSIC_LLM_DAILY_TOKEN_LIMIT": {"kind": "int", "default": "1000000", "min": 0, "max": 1000000000, "group": "llm", "reload": "hot", "label": "每日 token 上限（0=不限）"},
+    "FNMUSIC_LLM_MAX_OUTPUT_TOKENS": {"kind": "int", "default": "4096", "min": 256, "max": 65536, "group": "llm", "reload": "hot", "label": "单次输出上限（token）"},
     "FNMUSIC_SEARCH_TIMEOUT": {"kind": "int", "default": "15", "min": 1, "max": 60, "group": "search", "reload": "hot", "label": "搜索超时时间"},
     "FNMUSIC_SEARCH_PROBE": {"kind": "bool", "default": "false", "group": "search", "reload": "hot", "label": "逐曲探活(beta)"},
     "FNMUSIC_APP_V2_SEARCH": {"kind": "bool", "default": "true", "group": "search", "reload": "hot", "label": "App 新版搜索端点兼容"},
@@ -1471,6 +1474,48 @@ async def upgrade_proxy(path: str, request: Request):
         )
     return Response(content=resp.content, status_code=resp.status_code,
                     media_type=resp.headers.get("content-type", "application/json"))
+
+
+@app.get("/api/llm/usage")
+async def llm_usage_endpoint():
+    """读取宿主 proxy 记账的 llm_usage.json（跨进程只读，不缓存）。"""
+    import json as _json
+
+    candidates = []
+    env_file = (os.environ.get("FNMUSIC_LLM_USAGE_FILE") or "").strip()
+    if env_file:
+        candidates.append(env_file)
+    repo_dir = (os.environ.get("WEBUI_REPO_DIR") or "").strip()
+    if repo_dir:
+        candidates.append(os.path.join(repo_dir, "llm_usage.json"))
+    candidates.append("/repo/llm_usage.json")
+    path = next((c for c in candidates if os.path.exists(c)), None)
+    if not path:
+        return JSONResponse({"code": 0, "msg": "", "data": {"available": False}})
+    try:
+        with open(path, "rb") as f:
+            raw = _json.loads(f.read().decode("utf-8"))
+    except Exception:
+        return JSONResponse({"code": 0, "msg": "", "data": {"available": False, "corrupt": True}})
+    days = raw.get("days") if isinstance(raw, dict) else None
+    if not isinstance(days, dict):
+        # 旧 flat 结构：只有当日一个 dict
+        days = {str(raw.get("date") or ""): raw} if isinstance(raw, dict) and raw.get("date") else {}
+    from datetime import datetime, timedelta, timezone
+    today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d")
+    tot = {"prompt": 0, "completion": 0, "total": 0, "requests": 0}
+    history = []
+    for day, d in sorted(days.items(), reverse=True):
+        d = d if isinstance(d, dict) else {}
+        for k in ("prompt", "completion", "total", "requests"):
+            tot[k] += int(d.get(k) or 0)
+        history.append({"date": day, "total": int(d.get("total") or 0),
+                        "requests": int(d.get("requests") or 0),
+                        "lastFailure": d.get("lastFailure")})
+    return JSONResponse({"code": 0, "msg": "", "data": {
+        "available": True, "today": days.get(today) or {}, "cumulative": tot,
+        "history": history[:30], "path": path,
+    }})
 
 
 @app.api_route("/api/manage/{path:path}", methods=["GET", "POST", "DELETE"])

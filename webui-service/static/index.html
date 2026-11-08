@@ -442,6 +442,21 @@
           <label class="field"><span>Base URL</span><input class="input" id="llm-base" placeholder="https://api.example.com/v1"></label>
           <label class="field"><span>API Key</span><input class="input" id="llm-key" type="password" placeholder="sk-…"></label>
           <label class="field"><span>模型</span><input class="input" id="llm-model" placeholder="gpt-4o-mini"></label>
+          <label class="field"><span>接口协议</span>
+            <select class="input" id="llm-protocol">
+              <option value="chat">Chat Completions（默认，兼容各网关）</option>
+              <option value="responses">Responses（GPT-5 / o 系列推理模型）</option>
+            </select>
+          </label>
+          <div class="btn-row">
+            <label class="field grow"><span>每日 token 上限（0=不限）</span><input class="input" id="llm-daily-limit" placeholder="1000000"></label>
+            <label class="field grow"><span>单次输出上限（token）</span><input class="input" id="llm-max-tokens" placeholder="4096"></label>
+          </div>
+          <div class="btn-row">
+            <button class="btn" id="llm-usage-refresh" type="button">刷新用量</button>
+            <span class="muted" id="llm-usage-info"></span>
+          </div>
+          <div id="llm-usage-detail" class="muted"></div>
         </div>
       </section>
 

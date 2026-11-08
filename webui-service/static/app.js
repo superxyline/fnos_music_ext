@@ -58,7 +58,6 @@ function switchPage(page) {
   if (page === "xiaomusic") loadXmPage();
   else stopXmPolling();
   if (page === "upgrade") upEnsureLoaded();
-  if (page === "manage") mgEnsureLoaded();
 }
 $$("[data-page]").forEach((btn) => btn.addEventListener("click", () => switchPage(btn.dataset.page)));
 
@@ -2117,6 +2116,8 @@ $("#pi-refresh").addEventListener("click", () => { if (piState.timer) return; pi
 const upState = {
   page: 1, size: 50, total: 0, items: [], loaded: false,
   cands: new Map(), taskId: null, timer: null, lastResults: [], lastItems: [],
+  mode: "upgrade",   // 当前候选/执行的搜索模式：upgrade=升级音质 replace=换源修信息
+  lastMode: "upgrade",
 };
 
 function upApi(path, options) {
@@ -2136,28 +2137,36 @@ function upSize(n) {
   return b + " B";
 }
 
+function upDur(ms) {
+  const s = Math.round((Number(ms) || 0) / 1000);
+  if (!s) return "";
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+
 function upRender() {
   const rows = $("#up-rows");
   const sel = new Set([...rows.querySelectorAll("input[data-guid]:checked")].map((c) => c.dataset.guid));
   rows.innerHTML = "";
   if (!upState.items.length) {
-    rows.innerHTML = `<tr><td colspan="7" class="muted">没有符合条件的歌曲</td></tr>`;
+    rows.innerHTML = `<tr><td colspan="8" class="muted">没有符合条件的歌曲</td></tr>`;
   }
   for (const it of upState.items) {
     const tr = document.createElement("tr");
     tr.dataset.guid = it.guid;
     const disabled = it.upgradable === false ? "disabled" : "";
-    const status = it.residue
-      ? `<span class="up-warn">备份残留，建议删除</span>`
-      : (it.upgradable === false ? "已最佳" : "");
+    const warn = it.residue ? `<span class="up-warn">备份残留</span>` : "";
+    const issues = (it.metaIssues || [])
+      .map((x) => `<span class="up-warn">${x === "文件缺失" ? "文件缺失" : "缺" + x}</span>`).join(" ");
+    const status = it.residue && it.upgradable === false ? "" : (it.upgradable === false ? `<span class="muted">已最佳</span>` : "");
     tr.innerHTML = `
       <td class="mt-check"><input type="checkbox" data-guid="${it.guid}" ${sel.has(it.guid) ? "checked" : ""} ${disabled}></td>
       <td class="mt-title" title="${(it.path || "").replace(/"/g, "&quot;")}">${escapeHtml(it.title || "（无标题）")}</td>
       <td title="${(it.artist || "").replace(/"/g, "&quot;")}">${escapeHtml(it.artist || "")}</td>
+      <td title="${(it.album || "").replace(/"/g, "&quot;")}">${escapeHtml(it.album || "")}</td>
       <td class="mt-flag up-fmt-cell"><span class="up-fmt">${escapeHtml((it.format || "").toUpperCase())}</span> <span class="up-q">${escapeHtml(it.quality || "")}</span></td>
       <td class="mt-flag" title="${it.size || 0} 字节">${upSize(it.size)}</td>
-      <td title="${(it.album || "").replace(/"/g, "&quot;")}">${escapeHtml(it.album || "")}</td>
-      <td class="mt-status" data-status-for="${it.guid}">${status}</td>`;
+      <td class="mt-flag">${upDur(it.durationMs)}</td>
+      <td class="mt-status" title="${(it.path || "").replace(/"/g, "&quot;")}">${warn}${issues}<span class="muted">${escapeHtml((it.path || "").split(/[\/]/).pop() || "")}</span>${status}</td>`;
     rows.appendChild(tr);
   }
   const pages = Math.max(1, Math.ceil(upState.total / upState.size));
@@ -2214,11 +2223,13 @@ function upSources() {
   return out;
 }
 
-/* ---- 候选弹窗 ---- */
+/* ---- 候选弹窗（按 upState.mode 渲染升级/换源两种语义） ---- */
 function upModalOpen() { $("#up-modal").hidden = false; }
 function upModalClose() { $("#up-modal").hidden = true; }
 
 function upRenderModal() {
+  const mode = upState.mode;
+  $("#up-modal-title").textContent = mode === "replace" ? "选择替换版本（换源修信息）" : "选择升级版本";
   const body = $("#up-modal-body");
   body.innerHTML = "";
   let total = 0;
@@ -2240,19 +2251,28 @@ function upRenderModal() {
       p.textContent = row.error ? `无可用候选：${row.error}` : "无可用候选";
       box.appendChild(p);
     } else {
-      const firstBetter = list.findIndex((c) => c.kind === "exact" && c.better);
+      // upgrade 模式默认勾第一个「精确且音质更优」的；replace 模式已按信息完整度+音质排好序，默认勾第一个
+      const firstBetter = mode === "replace" ? 0 : list.findIndex((c) => c.kind === "exact" && c.better);
       list.forEach((c, i) => {
         total += 1;
         const label = document.createElement("label");
         label.className = "up-cand" + (c.kind === "exact" ? "" : " up-cand-suspect");
         const flags = [];
         if (c.kind === "suspect") flags.push(`<span class="up-warn">${escapeHtml(c.reason || "疑似")}</span>`);
-        else if (c.better) flags.push(`<span class="up-better">可提升</span>`);
-        else flags.push(`<span class="up-same">不更优</span>`);
+        const curTier = Number(cur.tier);
+        if (Number.isFinite(curTier)) {
+          if (c.tier < curTier) flags.push(`<span class="up-better">音质提升</span>`);
+          else if (c.tier === curTier) flags.push(`<span class="up-same">${mode === "replace" ? "音质持平" : "不更优"}</span>`);
+          else flags.push(`<span class="up-warn">音质更低</span>`);
+        }
         if (c.durationSuspicious) flags.push(`<span class="up-warn">时长差 ${(c.durationDiffMs / 1000).toFixed(1)}s</span>`);
-        // 候选自己的歌名/歌手与当前曲目不同时（疑似项）必须标出来，否则看不出差在哪
-        const name = (c.kind !== "exact" || c.title !== row.title || (c.artist && c.artist !== row.artist))
+        // 候选自己的歌名/歌手必须可见——换源修信息时要核对它才准替换
+        const showName = mode === "replace" || c.kind !== "exact" || c.title !== row.title || (c.artist && c.artist !== row.artist);
+        const name = showName
           ? `<span class="up-cand-name">${escapeHtml(c.title || "")}${c.artist ? " · " + escapeHtml(c.artist) : ""}</span>`
+          : "";
+        const info = mode === "replace"
+          ? `<span class="up-same" title="信息完整度：标题吻合2 + 歌手吻合1 + 有专辑1 + 有封面1 + 时长吻合1">信息 ${c.infoScore}/6</span>`
           : "";
         label.innerHTML = `<input type="radio" name="c-${row.guid}" value="${escapeHtml(c.id)}" ${i === firstBetter ? "checked" : ""}>
           ${name}
@@ -2262,7 +2282,7 @@ function upRenderModal() {
           <span class="up-q">${escapeHtml(c.quality || "")}</span>
           <span class="up-sz">${upSize(c.size)}</span>
           <span class="up-dur">${c.durationS ? Math.floor(c.durationS / 60) + ":" + String(Math.round(c.durationS % 60)).padStart(2, "0") : ""}</span>
-          ${flags.join("")}`;
+          ${info}${flags.join("")}`;
         box.appendChild(label);
       });
     }
@@ -2270,25 +2290,31 @@ function upRenderModal() {
   }
   $("#up-modal-sum").textContent = `${upState.cands.size} 首 / ${total} 个候选`;
   const dry = $("#up-dry").checked;
-  $("#up-modal-note").textContent = dry ? "试运行：只下载校验，不替换文件" : "将真实替换文件（原文件备份 7 天）";
-  $("#up-modal-run").textContent = dry ? "开始校验" : "开始升级";
+  if (mode === "replace") {
+    $("#up-modal-note").textContent = dry ? "试运行：只下载校验，不替换文件" : "将替换文件并写回候选的标题/歌手/专辑标签（原文件备份 7 天）";
+  } else {
+    $("#up-modal-note").textContent = dry ? "试运行：只下载校验，不替换文件" : "将真实替换文件（原文件备份 7 天）";
+  }
+  $("#up-modal-run").textContent = dry ? "开始校验" : (mode === "replace" ? "开始替换" : "开始升级");
   upModalOpen();
 }
 
-async function upFind() {
+async function upFind(mode) {
   const guids = upSelected();
-  if (!guids.length) return toast("先勾选要升级的歌曲", "fail");
+  if (!guids.length) return toast("先勾选要处理的歌曲", "fail");
   if (guids.length > 50) return toast("单次最多 50 首，请分批", "fail");
   const sources = upSources();
   if (!sources.length) return toast("至少选一个音源", "fail");
-  const btn = $("#up-find");
+  upState.mode = mode;
+  const btn = mode === "replace" ? $("#up-find-replace") : $("#up-find");
+  const btnText = mode === "replace" ? "换源修信息" : "升级音质";
   btn.disabled = true;
   btn.textContent = "搜索中…";
   try {
     const body = await upApi("/api/upgrade/candidates", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ guids, sources }),
+      body: JSON.stringify({ guids, sources, mode }),
     });
     upState.cands = new Map((body.data.items || []).map((r) => [r.guid, r]));
     upRenderModal();
@@ -2296,7 +2322,7 @@ async function upFind() {
     toast("查找候选失败：" + e.message, "fail");
   } finally {
     btn.disabled = false;
-    btn.textContent = "查找候选";
+    btn.textContent = btnText;
   }
 }
 
@@ -2324,8 +2350,9 @@ async function upRun(forceReal) {
     const body = await upApi("/api/upgrade/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items, dryRun }),
+      body: JSON.stringify({ items, dryRun, mode: upState.mode }),
     });
+    upState.lastMode = upState.mode;
     upState.taskId = body.data.taskId;
     upModalClose();
     upState.lastResults = [];
@@ -2351,7 +2378,7 @@ async function upConfirmReplace() {
     const body = await upApi("/api/upgrade/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items, dryRun: false }),
+      body: JSON.stringify({ items, dryRun: false, mode: upState.lastMode }),
     });
     upState.taskId = body.data.taskId;
     $("#up-progress").className = "report";
@@ -2376,7 +2403,7 @@ function upResultHtml(r) {
   }
   const from = r.from || {};
   const to = r.to || {};
-  const done = r.dryRun ? "已校验（未替换）" : "已升级";
+  const done = r.dryRun ? "已校验（未替换）" : (r.mode === "replace" ? "已替换" : "已升级");
   const rollback = r.dryRun ? "" :
     `<button class="btn up-rollback" data-guid="${escapeHtml(r.guid)}" type="button">回滚</button>`;
   return `<div class="up-res"><b>${escapeHtml(r.title || "")}</b>
@@ -2415,7 +2442,8 @@ async function upPoll() {
     upState.timer = setTimeout(upPoll, 1500);
   } else {
     if (!t.dryRun) { upLoadStats(); upLoad(); }
-    toast(t.dryRun ? `试运行通过 ${t.okCount} 首，文件未改动` : `升级完成：成功 ${t.okCount} / 失败 ${t.failCount}`,
+    toast(t.dryRun ? `试运行通过 ${t.okCount} 首，文件未改动`
+          : `${upState.lastMode === "replace" ? "替换" : "升级"}完成：成功 ${t.okCount} / 失败 ${t.failCount}`,
           t.failCount && !t.okCount ? "fail" : "");
   }
 }
@@ -2435,7 +2463,51 @@ $("#up-check-all").addEventListener("change", (e) => {
     if (!c.disabled) c.checked = e.target.checked;
   });
 });
-$("#up-find").addEventListener("click", upFind);
+$("#up-find").addEventListener("click", () => upFind("upgrade"));
+$("#up-find-replace").addEventListener("click", () => upFind("replace"));
+
+/* ---- 删除（物理删除，不进回收站） ---- */
+$("#up-delete").addEventListener("click", async () => {
+  const guids = upSelected();
+  if (!guids.length) return toast("先勾选要删除的歌曲", "fail");
+  if (guids.length > 100) return toast("单次最多 100 首，请分批", "fail");
+  const msg = `将物理删除 ${guids.length} 首歌曲：
+
+` +
+    `· 音频文件与同名 .lrc 直接删除，不进回收站，无法恢复
+` +
+    `· 收藏、歌单、播放历史里的引用一并移除
+
+确认删除？`;
+  if (!window.confirm(msg)) return;
+  const btn = $("#up-delete");
+  btn.disabled = true;
+  btn.textContent = "删除中…";
+  try {
+    const body = await upApi("/api/manage/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ guids }),
+    });
+    const d = body.data || {};
+    const lines = (d.results || []).map((r) => r.ok
+      ? `<div class="up-res"><b>${escapeHtml(r.title || r.guid)}</b><span class="up-ok">已删除</span></div>`
+      : `<div class="up-res up-res-fail"><b>${escapeHtml(r.title || r.guid)}</b><span class="muted">${escapeHtml(r.error || "失败")}</span></div>`);
+    const rep = $("#up-progress");
+    rep.hidden = false;
+    rep.className = "report " + (d.failCount ? "fail" : "ok");
+    rep.innerHTML = `<div><b>删除完成：成功 ${d.okCount || 0} 首，失败 ${d.failCount || 0} 首</b></div>
+      <div class="up-res-list">${lines.join("")}</div>`;
+    toast(`删除完成：成功 ${d.okCount || 0} / 失败 ${d.failCount || 0}`,
+          d.failCount && !d.okCount ? "fail" : "");
+    upLoad();
+  } catch (e) {
+    toast("删除失败：" + e.message, "fail");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "删除选中";
+  }
+});
 $("#up-modal-cancel").addEventListener("click", upModalClose);
 $("#up-modal-run").addEventListener("click", () => upRun(false));
 $("#up-modal").addEventListener("click", (ev) => { if (ev.target === $("#up-modal")) upModalClose(); });
@@ -2491,359 +2563,3 @@ $("#up-purge").addEventListener("click", async () => {
   }
 });
 
-/* -------------------------------------------------------------- 歌曲管理
-   与音质升级共用曲库列表接口（/api/upgrade/tracks）；删除走 /api/manage/delete
-   （物理删除，不进回收站）；搜索替换走候选/执行接口但 mode=replace——
-   排序按「信息完整度 + 音质」综合，suspect（歌手不符/版本后缀不同）不降权
-   （本地内嵌信息本来就可能是错的），由用户逐首确认。 */
-const mgState = {
-  page: 1, size: 50, total: 0, items: [], loaded: false,
-  cands: new Map(), taskId: null, timer: null, lastItems: [],
-};
-
-function mgEnsureLoaded() {
-  if (!mgState.loaded) mgLoad();
-}
-
-function mgDur(ms) {
-  const s = Math.round((Number(ms) || 0) / 1000);
-  if (!s) return "";
-  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
-}
-
-function mgRender() {
-  const rows = $("#mg-rows");
-  const sel = new Set([...rows.querySelectorAll("input[data-guid]:checked")].map((c) => c.dataset.guid));
-  rows.innerHTML = "";
-  if (!mgState.items.length) {
-    rows.innerHTML = `<tr><td colspan="8" class="muted">没有符合条件的歌曲</td></tr>`;
-  }
-  for (const it of mgState.items) {
-    const tr = document.createElement("tr");
-    tr.dataset.guid = it.guid;
-    const warn = it.residue ? `<span class="up-warn">备份残留</span>` : "";
-    tr.innerHTML = `
-      <td class="mt-check"><input type="checkbox" data-guid="${it.guid}" ${sel.has(it.guid) ? "checked" : ""}></td>
-      <td class="mt-title" title="${(it.path || "").replace(/"/g, "&quot;")}">${escapeHtml(it.title || "（无标题）")}</td>
-      <td title="${(it.artist || "").replace(/"/g, "&quot;")}">${escapeHtml(it.artist || "")}</td>
-      <td title="${(it.album || "").replace(/"/g, "&quot;")}">${escapeHtml(it.album || "")}</td>
-      <td class="mt-flag up-fmt-cell"><span class="up-fmt">${escapeHtml((it.format || "").toUpperCase())}</span> <span class="up-q">${escapeHtml(it.quality || "")}</span></td>
-      <td class="mt-flag" title="${it.size || 0} 字节">${upSize(it.size)}</td>
-      <td class="mt-flag">${mgDur(it.durationMs)}</td>
-      <td class="mt-status" title="${(it.path || "").replace(/"/g, "&quot;")}">${warn}${(it.metaIssues || []).map((x) => `<span class="up-warn">${x === "文件缺失" ? "文件缺失" : "缺" + x}</span>`).join(" ")}<span class="muted">${escapeHtml((it.path || "").split(/[\\\\/]/).pop() || "")}</span></td>`;
-    rows.appendChild(tr);
-  }
-  const pages = Math.max(1, Math.ceil(mgState.total / mgState.size));
-  $("#mg-count").textContent = `共 ${mgState.total} 首，本页 ${mgState.items.length} 首`;
-  $("#mg-pageinfo").textContent = `第 ${mgState.page} 页 / ${pages} 页`;
-}
-
-async function mgLoad() {
-  try {
-    const body = await upApi(`/api/upgrade/tracks?page=${mgState.page}&size=${mgState.size}` +
-      `&q=${encodeURIComponent(($("#mg-q").value || "").trim())}&filter=${$("#mg-filter").value}`);
-    mgState.total = body.data.total;
-    mgState.items = body.data.items;
-    mgRender();
-    mgState.loaded = true;
-  } catch (e) {
-    $("#mg-rows").innerHTML = `<tr><td colspan="8" style="color:var(--err)">${escapeHtml(e.message)}</td></tr>`;
-  }
-}
-
-function mgSelected() {
-  return [...$("#mg-rows").querySelectorAll("input[data-guid]:checked")].map((c) => c.dataset.guid);
-}
-
-function mgSources() {
-  const out = [];
-  if ($("#mg-src-kuwo").checked) out.push("kuwo");
-  if ($("#mg-src-migu").checked) out.push("migu");
-  return out;
-}
-
-/* ---- 删除 ---- */
-$("#mg-delete").addEventListener("click", async () => {
-  const guids = mgSelected();
-  if (!guids.length) return toast("先勾选要删除的歌曲", "fail");
-  if (guids.length > 100) return toast("单次最多 100 首，请分批", "fail");
-  const msg = `将物理删除 ${guids.length} 首歌曲：\n\n` +
-    `· 音频文件与同名 .lrc 直接删除，不进回收站，无法恢复\n` +
-    `· 收藏、歌单、播放历史里的引用一并移除\n\n确认删除？`;
-  if (!window.confirm(msg)) return;
-  const btn = $("#mg-delete");
-  btn.disabled = true;
-  btn.textContent = "删除中…";
-  try {
-    const body = await upApi("/api/manage/delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ guids }),
-    });
-    const d = body.data || {};
-    const ok = d.results || [];
-    const lines = ok.map((r) => r.ok
-      ? `<div class="up-res"><b>${escapeHtml(r.title || r.guid)}</b><span class="up-ok">已删除</span></div>`
-      : `<div class="up-res up-res-fail"><b>${escapeHtml(r.title || r.guid)}</b><span class="muted">${escapeHtml(r.error || "失败")}</span></div>`);
-    const rep = $("#mg-progress");
-    rep.hidden = false;
-    rep.className = "report " + (d.failCount ? "fail" : "ok");
-    rep.innerHTML = `<div><b>删除完成：成功 ${d.okCount || 0} 首，失败 ${d.failCount || 0} 首</b></div>
-      <div class="up-res-list">${lines.join("")}</div>`;
-    toast(`删除完成：成功 ${d.okCount || 0} / 失败 ${d.failCount || 0}`,
-          d.failCount && !d.okCount ? "fail" : "");
-    mgLoad();
-  } catch (e) {
-    toast("删除失败：" + e.message, "fail");
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "删除选中";
-  }
-});
-
-/* ---- 搜索替换 ---- */
-function mgModalOpen() { $("#mg-modal").hidden = false; }
-function mgModalClose() { $("#mg-modal").hidden = true; }
-
-function mgRenderModal() {
-  const body = $("#mg-modal-body");
-  body.innerHTML = "";
-  let total = 0;
-  for (const row of mgState.cands.values()) {
-    const box = document.createElement("div");
-    box.className = "up-item";
-    box.dataset.guid = row.guid;
-    const cur = row.current || {};
-    const head = document.createElement("div");
-    head.className = "up-item-head";
-    head.innerHTML = `<b>${escapeHtml(row.title || "")}</b>
-      <span class="muted">${escapeHtml(row.artist || "")} · 当前 ${escapeHtml((cur.format || "").toUpperCase())} ${escapeHtml(cur.quality || "")}${cur.size ? " · " + upSize(cur.size) : ""}</span>`;
-    box.appendChild(head);
-
-    const list = row.candidates || [];
-    if (!list.length) {
-      const p = document.createElement("div");
-      p.className = "muted";
-      p.textContent = row.error ? `无可用候选：${row.error}` : "无可用候选";
-      box.appendChild(p);
-    } else {
-      // 后端已按 信息完整度+音质 排好序，默认选第一个
-      list.forEach((c, i) => {
-        total += 1;
-        const label = document.createElement("label");
-        label.className = "up-cand" + (c.kind === "exact" ? "" : " up-cand-suspect");
-        const curTier = Number(cur.tier);
-        const flags = [];
-        if (c.kind === "suspect") flags.push(`<span class="up-warn">${escapeHtml(c.reason || "疑似")}</span>`);
-        if (Number.isFinite(curTier)) {
-          if (c.tier < curTier) flags.push(`<span class="up-better">音质提升</span>`);
-          else if (c.tier === curTier) flags.push(`<span class="up-same">音质持平</span>`);
-          else flags.push(`<span class="up-warn">音质更低</span>`);
-        }
-        if (c.durationSuspicious) flags.push(`<span class="up-warn">时长差 ${(c.durationDiffMs / 1000).toFixed(1)}s</span>`);
-        // 候选自己的歌名/歌手必须标出来——换源修信息时用户要核对它才准替换
-        const name = `<span class="up-cand-name">${escapeHtml(c.title || "")}${c.artist ? " · " + escapeHtml(c.artist) : ""}</span>`;
-        const info = `<span class="up-same" title="信息完整度：标题吻合2 + 歌手吻合1 + 有专辑1 + 有封面1 + 时长吻合1">信息 ${c.infoScore}/6</span>`;
-        label.innerHTML = `<input type="radio" name="mc-${row.guid}" value="${escapeHtml(c.id)}" ${i === 0 ? "checked" : ""}>
-          ${name}
-          <span class="up-src">${escapeHtml((c.source || "").toUpperCase())}</span>
-          <span class="up-fmt">${escapeHtml((c.format || "").toUpperCase())}</span>
-          <span class="up-tier">${escapeHtml(upTierName(c.tierLabel))}</span>
-          <span class="up-q">${escapeHtml(c.quality || "")}</span>
-          <span class="up-sz">${upSize(c.size)}</span>
-          <span class="up-dur">${c.durationS ? Math.floor(c.durationS / 60) + ":" + String(Math.round(c.durationS % 60)).padStart(2, "0") : ""}</span>
-          ${info}${flags.join("")}`;
-        box.appendChild(label);
-      });
-    }
-    body.appendChild(box);
-  }
-  $("#mg-modal-sum").textContent = `${mgState.cands.size} 首 / ${total} 个候选`;
-  const dry = $("#mg-dry").checked;
-  $("#mg-modal-note").textContent = dry ? "试运行：只下载校验，不替换文件" : "将替换文件并写回候选的标题/歌手/专辑标签（原文件备份 7 天）";
-  $("#mg-modal-run").textContent = dry ? "开始校验" : "开始替换";
-  mgModalOpen();
-}
-
-async function mgFind() {
-  const guids = mgSelected();
-  if (!guids.length) return toast("先勾选要替换的歌曲", "fail");
-  if (guids.length > 50) return toast("单次最多 50 首，请分批", "fail");
-  const sources = mgSources();
-  if (!sources.length) return toast("至少选一个音源", "fail");
-  const btn = $("#mg-find");
-  btn.disabled = true;
-  btn.textContent = "搜索中…";
-  try {
-    const body = await upApi("/api/upgrade/candidates", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ guids, sources, mode: "replace" }),
-    });
-    mgState.cands = new Map((body.data.items || []).map((r) => [r.guid, r]));
-    mgRenderModal();
-  } catch (e) {
-    toast("搜索候选失败：" + e.message, "fail");
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "搜索替换选中";
-  }
-}
-
-function mgCollectItems() {
-  const items = [];
-  for (const row of mgState.cands.values()) {
-    const picked = $(`#mg-modal-body input[name="mc-${row.guid}"]:checked`);
-    if (!picked) continue;  // 无候选/未选的跳过
-    const cand = (row.candidates || []).find((c) => c.id === picked.value);
-    if (!cand) continue;
-    items.push({ guid: row.guid, candidate: cand });
-  }
-  return items;
-}
-
-async function mgRun(forceReal) {
-  const items = mgCollectItems();
-  if (!items.length) return toast("没有选中任何候选版本", "fail");
-  const dryRun = forceReal ? false : $("#mg-dry").checked;
-  mgState.lastItems = items;
-  const btn = $("#mg-modal-run");
-  btn.disabled = true;
-  btn.textContent = "提交中…";
-  try {
-    const body = await upApi("/api/upgrade/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items, dryRun, mode: "replace" }),
-    });
-    mgState.taskId = body.data.taskId;
-    mgModalClose();
-    $("#mg-progress").hidden = false;
-    $("#mg-progress").className = "report";
-    $("#mg-progress").textContent = `已提交 ${items.length} 首，开始处理…`;
-    mgPoll();
-  } catch (e) {
-    toast("启动失败：" + e.message, "fail");
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-/* 试运行通过后，用同一批选择真正替换 */
-async function mgConfirmReplace() {
-  const items = mgState.lastItems || [];
-  if (!items.length) return toast("没有可替换的选择，请重新搜索候选", "fail");
-  if (!window.confirm(`将真实替换 ${items.length} 首文件（原文件备份 7 天，可回滚）。继续？`)) return;
-  const btn = $("#mg-confirm");
-  if (btn) { btn.disabled = true; btn.textContent = "提交中…"; }
-  try {
-    const body = await upApi("/api/upgrade/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items, dryRun: false, mode: "replace" }),
-    });
-    mgState.taskId = body.data.taskId;
-    $("#mg-progress").className = "report";
-    $("#mg-progress").textContent = `已提交 ${items.length} 首，开始替换…`;
-    mgPoll();
-  } catch (e) {
-    toast("启动失败：" + e.message, "fail");
-    if (btn) { btn.disabled = false; btn.textContent = "确认替换"; }
-  }
-}
-
-function mgResultHtml(r) {
-  if (!r.ok) {
-    return `<div class="up-res up-res-fail"><b>${escapeHtml(r.title || r.guid || "")}</b>
-      <span class="muted">${escapeHtml(r.error || "失败")}</span></div>`;
-  }
-  const from = r.from || {};
-  const to = r.to || {};
-  const done = r.dryRun ? "已校验（未替换）" : "已替换";
-  const rollback = r.dryRun ? "" :
-    `<button class="btn up-rollback" data-guid="${escapeHtml(r.guid)}" type="button">回滚</button>`;
-  return `<div class="up-res"><b>${escapeHtml(r.title || "")}</b>
-    <span class="muted">${escapeHtml(from.format || "").toUpperCase()} ${escapeHtml(from.quality || "")} → ${escapeHtml(to.format || "").toUpperCase()} ${escapeHtml(to.quality || "")}（${escapeHtml(to.source || "")}）</span>
-    <span class="up-ok">${done}</span>${rollback}</div>`;
-}
-
-async function mgPoll() {
-  if (!mgState.taskId) return;
-  let body;
-  try {
-    body = await upApi(`/api/upgrade/task/${mgState.taskId}`);
-  } catch (e) {
-    $("#mg-progress").textContent = "进度查询失败：" + e.message;
-    return;
-  }
-  const t = body.data;
-  const pct = t.total ? Math.round((t.done / t.total) * 100) : 0;
-  let head;
-  if (t.running) {
-    head = `处理中 ${t.done}/${t.total}（${pct}%）${t.dryRun ? " · 试运行" : ""}`;
-  } else if (t.dryRun) {
-    head = `试运行完成：${t.okCount} 首校验通过 · 未改动任何文件`;
-  } else {
-    head = `替换完成：成功 ${t.okCount} 首，失败 ${t.failCount} 首`;
-  }
-  const rows = (t.results || []).map(mgResultHtml).join("");
-  const confirmBtn = (!t.running && t.dryRun && t.okCount > 0)
-    ? `<div class="up-confirm-row"><button class="btn primary" id="mg-confirm" type="button">确认替换这 ${t.okCount} 首</button>
-         <span class="muted">不想确认就保持现状，文件不会变</span></div>`
-    : "";
-  $("#mg-progress").innerHTML = `<div><b>${head}</b></div>${confirmBtn}<div class="up-res-list">${rows}</div>`;
-  $("#mg-progress").className = "report " + (t.running ? "" : (t.failCount ? "fail" : (t.dryRun ? "warn" : "ok")));
-  if (t.running) {
-    clearTimeout(mgState.timer);
-    mgState.timer = setTimeout(mgPoll, 1500);
-  } else {
-    if (!t.dryRun) mgLoad();
-    toast(t.dryRun ? `试运行通过 ${t.okCount} 首，文件未改动` : `替换完成：成功 ${t.okCount} / 失败 ${t.failCount}`,
-          t.failCount && !t.okCount ? "fail" : "");
-  }
-}
-
-/* ---- 事件 ---- */
-$("#mg-refresh").addEventListener("click", () => { mgState.page = 1; mgLoad(); });
-$("#mg-q").addEventListener("keydown", (e) => { if (e.key === "Enter") { mgState.page = 1; mgLoad(); } });
-$("#mg-filter").addEventListener("change", () => { mgState.page = 1; mgLoad(); });
-$("#mg-prev").addEventListener("click", () => {
-  if (mgState.page > 1) { mgState.page -= 1; mgLoad(); }
-});
-$("#mg-next").addEventListener("click", () => {
-  if (mgState.page * mgState.size < mgState.total) { mgState.page += 1; mgLoad(); }
-});
-$("#mg-check-all").addEventListener("change", (e) => {
-  $("#mg-rows").querySelectorAll("input[data-guid]").forEach((c) => {
-    if (!c.disabled) c.checked = e.target.checked;
-  });
-});
-$("#mg-find").addEventListener("click", mgFind);
-$("#mg-modal-cancel").addEventListener("click", mgModalClose);
-$("#mg-modal-run").addEventListener("click", () => mgRun(false));
-$("#mg-modal").addEventListener("click", (ev) => { if (ev.target === $("#mg-modal")) mgModalClose(); });
-$("#mg-dry").addEventListener("change", () => {
-  if (!$("#mg-modal").hidden) mgRenderModal();
-});
-
-$("#mg-progress").addEventListener("click", async (ev) => {
-  if (ev.target.closest("#mg-confirm")) { mgConfirmReplace(); return; }
-  const btn = ev.target.closest(".up-rollback");
-  if (!btn) return;
-  const guid = btn.dataset.guid;
-  if (!guid) return;
-  btn.disabled = true;
-  try {
-    await upApi("/api/upgrade/rollback", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ guid }),
-    });
-    toast("已回滚");
-    mgLoad();
-  } catch (e) {
-    toast("回滚失败：" + e.message, "fail");
-  } finally {
-    btn.disabled = false;
-  }
-});

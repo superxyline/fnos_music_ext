@@ -2032,7 +2032,8 @@ async function xmResetWizard() {
 const piState = { data: null, taskId: "", timer: null };
 
 async function piApi(path, opts) {
-  const resp = await fetch(`/api/match/${path}`, {
+  // 直连 :8774 与飞牛桌面（/app/fnmusic-ext 前缀）都要能打中；前缀由 webui 中间件剥离
+  const resp = await fetch(APP_BASE + `/api/import/${path}`, {
     headers: { "Content-Type": "application/json" }, ...opts,
   });
   return resp.json();
@@ -2055,7 +2056,7 @@ function piRenderProgress(t) {
 async function piPoll() {
   if (!piState.taskId) return;
   try {
-    const data = await piApi(`import/task/${piState.taskId}`);
+    const data = await piApi(`task/${piState.taskId}`);
     if (data.code === 0) piRenderProgress(data.data);
   } catch (_) { /* 网关短暂不可达，等下一轮 */ }
 }
@@ -2066,7 +2067,7 @@ $("#pi-preview").addEventListener("click", async () => {
   $("#pi-summary").textContent = "解析中…";
   const platform = $("#pi-platform").value;
   try {
-    const data = await piApi(`import/preview?input=${encodeURIComponent(input)}&platform=${platform}`);
+    const data = await piApi(`preview?input=${encodeURIComponent(input)}&platform=${platform}`);
     if (data.code !== 0) { $("#pi-summary").textContent = data.msg || "解析失败"; return; }
     piState.data = data.data;
     $("#pi-summary").textContent = `歌单「${data.data.name}」（${data.data.platform}）共 ${data.data.tracks.length} 首：` +
@@ -2078,7 +2079,7 @@ $("#pi-preview").addEventListener("click", async () => {
 });
 
 async function piLoadTargets() {
-  const data = await piApi("import/playlists");
+  const data = await piApi("playlists");
   const sel = $("#pi-target");
   sel.innerHTML = '<option value="">— 选择目标歌单 —</option>';
   if (data.code !== 0) {
@@ -2105,7 +2106,7 @@ $("#pi-run").addEventListener("click", async () => {
   $("#pi-run").disabled = true;
   $("#pi-progress").textContent = "启动导入…";
   const platform = $("#pi-platform").value;
-  const resp = await fetch("/api/match/import/run", {
+  const resp = await fetch(APP_BASE + "/api/import/run", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ input: $("#pi-input").value.trim(), platform,

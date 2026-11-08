@@ -47,7 +47,9 @@ def _env(key: str, default: str = "") -> str:
 # -------------------------------------------------------------- 输入解析 --
 
 _NETEASE_URL_RE = re.compile(r"music\.163\.com/.*[?&]id=(\d+)|music\.163\.com/playlist/(\d+)")
-_QQ_URL_RE = re.compile(r"y\.qq\.com/n/ryqq/playlist/([0-9a-zA-Z]+)|i\.y\.qq\.com/.*[?&]id=(\d+)")
+# 手机 QQ 分享出来的歌单链接 host 是 i2.y.qq.com / i.y.qq.com（新版还有 i3 等），
+# 路径形如 /n3/other/pages/details/playlist.html?...&id=123456 —— 这里放宽为 i\d*.y.qq.com
+_QQ_URL_RE = re.compile(r"y\.qq\.com/n/ryqq/playlist/([0-9a-zA-Z]+)|i\d*\.y\.qq\.com/.*[?&]id=(\d+)")
 
 
 def parse_input(text: str, platform: str = "") -> "tuple[str, str]":

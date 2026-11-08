@@ -1427,6 +1427,35 @@ def _match_upstream() -> str:
     return _match_upstream_cache
 
 
+@app.api_route("/api/import/{path:path}", methods=["GET", "POST", "DELETE"])
+async def import_proxy(path: str, request: Request):
+    """歌单导入转发到宿主机匹配网关（:8776）。
+
+    网关上的导入接口挂在 /api/import/*（与歌曲匹配的 /api/match/* 不同前缀）。
+    这里单独给一条代理，前端统一走 /api/import/*，两种访问入口都一致：
+    桌面网关的 /app/fnmusic-ext 前缀由 DesktopPrefixMiddleware 剥掉。
+    预览要拉整张歌单，超时给足。
+    """
+    url = f"{_match_upstream()}/api/import/{path}"
+    if request.url.query:
+        url += f"?{request.url.query}"
+    body = await request.body()
+    client = get_http(request)
+    try:
+        resp = await client.request(
+            request.method, url, content=body,
+            headers={"Content-Type": request.headers.get("content-type") or "application/json"},
+            timeout=300.0,
+        )
+    except httpx.HTTPError as exc:
+        return JSONResponse(
+            {"code": 502, "msg": f"导入服务不可达（{type(exc).__name__}）", "data": None},
+            status_code=200,
+        )
+    return Response(content=resp.content, status_code=resp.status_code,
+                    media_type=resp.headers.get("content-type", "application/json"))
+
+
 @app.api_route("/api/match/{path:path}", methods=["GET", "POST", "DELETE"])
 async def match_proxy(path: str, request: Request):
     """转发歌曲匹配请求到宿主机匹配网关（:8776）。"""

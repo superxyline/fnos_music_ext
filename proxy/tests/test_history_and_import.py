@@ -80,6 +80,16 @@ def test_parse_input_urls():
     assert pimp.parse_input("2884035", platform="netease") == ("netease", "2884035")
 
 
+def test_parse_input_qq_mobile_share():
+    """手机 QQ 分享出来的链接 host 是 i2.y.qq.com / i.y.qq.com（issue 反馈）。"""
+    assert pimp.parse_input(
+        "https://i2.y.qq.com/n3/other/pages/details/playlist.html?sid=x&id=123456"
+    ) == ("qq", "123456")
+    assert pimp.parse_input(
+        "https://i.y.qq.com/n2/m/share/details/taoge.html?id=7890"
+    ) == ("qq", "7890")
+
+
 def test_parse_input_errors():
     import pytest
     with pytest.raises(ValueError):

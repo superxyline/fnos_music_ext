@@ -243,6 +243,7 @@ function applyConfigToForm() {
   $("#auto-cover").checked = v.FNMUSIC_AUTO_COVER !== "false";
   $("#lyric-auto-dl").checked = v.FNMUSIC_LYRIC_AUTO_DL === "true";
   $("#tee-dir").value = v.FNMUSIC_TEE_SAVE_DIR || "";
+  $("#tee-layout").value = v.FNMUSIC_DOWNLOAD_LAYOUT || "flat";
   $("#tee-max").value = v.FNMUSIC_TEE_CACHE_MAX || "2";
   $("#bind-timeout").value = v.FNMUSIC_OFFICIAL_BIND_TIMEOUT_S || "120";
   $("#handoff-max").value = v.FNMUSIC_TEE_HANDOFF_MAX != null ? v.FNMUSIC_TEE_HANDOFF_MAX : "3";
@@ -290,6 +291,7 @@ function collectConfig() {
     FNMUSIC_AUTO_COVER: $("#auto-cover").checked,
     FNMUSIC_LYRIC_AUTO_DL: $("#lyric-auto-dl").checked,
     FNMUSIC_TEE_SAVE_DIR: $("#tee-dir").value.trim(),
+    FNMUSIC_DOWNLOAD_LAYOUT: $("#tee-layout").value || "flat",
     FNMUSIC_TEE_CACHE_MAX: parseInt($("#tee-max").value || "2", 10),
     FNMUSIC_OFFICIAL_BIND_TIMEOUT_S: parseInt($("#bind-timeout").value || "120", 10) || 120,
     FNMUSIC_TEE_HANDOFF_MAX: parseInt($("#handoff-max").value || "3", 10) || 0,
@@ -1370,7 +1372,7 @@ $("#dedup-run").addEventListener("click", async () => {
 });
 
 /* -------------------------------------------------------------- 表单脏标记 */
-["#tee-dir", "#tee-max", "#llm-base", "#llm-key", "#llm-model", "#llm-protocol", "#llm-daily-limit", "#llm-max-tokens", "#lx-url", "#search-timeout", "#bind-timeout", "#handoff-max", "#scan-path"].forEach((sel) =>
+["#tee-dir", "#tee-layout", "#tee-max", "#llm-base", "#llm-key", "#llm-model", "#llm-protocol", "#llm-daily-limit", "#llm-max-tokens", "#lx-url", "#search-timeout", "#bind-timeout", "#handoff-max", "#scan-path"].forEach((sel) =>
   $(sel).addEventListener("input", () => markDirty()));
 $$("input[name=quality]").forEach((el) => el.addEventListener("change", () => markDirty("音质偏好需保存后生效")));
 ["#recommend-hot", "#recommend-daily", "#history-playlist", "#public-playlists-enabled", "#search-probe", "#app-v2-search", "#search-log-query", "#tee-enabled", "#fav-download-enabled", "#auto-cover", "#lyric-auto-dl", "#netease-my-playlists", "#netease-subscribed", "#netease-resident"].forEach((sel) =>
@@ -2604,3 +2606,46 @@ async function llmLoadUsage() {
 }
 $$('[data-page="llm"]').forEach((btn) => btn.addEventListener("click", llmLoadUsage));
 $("#llm-usage-refresh").addEventListener("click", llmLoadUsage);
+
+
+/* ---- 下载目录布局整理（走匹配网关 /api/manage/organize） ---- */
+let organizeTimer = null;
+async function organizePoll() {
+  try {
+    const body = await api("/api/manage/organize/status");
+    const job = (body.data || {}).job;
+    const info = $("#tee-organize-info");
+    const detail = $("#tee-organize-detail");
+    if (!job) { info.textContent = ""; detail.textContent = ""; return; }
+    const running = job.status === "running";
+    info.textContent = running ? `整理中：${job.phase || ""}` : `上次整理：${job.status === "completed" ? "完成" : job.status} · 移动 ${job.moved || 0} · 跳过 ${job.skipped || 0} · 失败 ${job.failed || 0}`;
+    const errs = (job.errors || []).slice(0, 5).map((e) => `${e.path}: ${e.error}`).join("；");
+    detail.textContent = errs ? `失败明细：${errs}` : "";
+    if (running) {
+      clearTimeout(organizeTimer);
+      organizeTimer = setTimeout(organizePoll, 2000);
+    }
+  } catch (_) { /* 网关短暂不可达 */ }
+}
+$("#tee-organize").addEventListener("click", async () => {
+  if (!window.confirm("将把保存路径下已有歌曲按当前布局移动到子目录（音频与歌词/封面一起移动）。继续？")) return;
+  const btn = $("#tee-organize");
+  btn.disabled = true;
+  btn.textContent = "启动中…";
+  try {
+    const body = await api("/api/manage/organize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ layout: $("#tee-layout").value || "flat" }),
+    });
+    const d = body.data || {};
+    if (d.busy) { $("#tee-organize-info").textContent = "已有整理任务在运行"; }
+    organizePoll();
+  } catch (e) {
+    toast("启动整理失败：" + e.message, "fail");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "按布局整理现有文件";
+  }
+});
+$$('[data-page="tee"]').forEach((btn) => btn.addEventListener("click", organizePoll));

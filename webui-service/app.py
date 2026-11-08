@@ -119,6 +119,7 @@ SCHEMA: dict[str, dict] = {
     "FNMUSIC_FAVORITE_DOWNLOAD_ENABLED": {"kind": "bool", "default": "true", "group": "tee", "reload": "hot", "label": "收藏自动下载"},
     "FNMUSIC_DOWNLOAD_MIN_QUALITY": {"kind": "enum", "values": ["any", "320", "lossless"], "default": "any", "group": "tee", "reload": "hot", "label": "收藏下载音质门槛"},
     "FNMUSIC_TEE_SAVE_DIR": {"kind": "str", "default": "", "group": "tee", "reload": "hot", "label": "保存路径（留空自动探测）"},
+    "FNMUSIC_DOWNLOAD_LAYOUT": {"kind": "enum", "values": ["flat", "artist", "album", "artist_album"], "default": "flat", "group": "tee", "reload": "hot", "label": "下载目录布局"},
     "FNMUSIC_TEE_CACHE_MAX": {"kind": "int", "default": "2", "min": 1, "max": 100, "group": "tee", "reload": "hot", "label": "关闭时滚动缓存数"},
     "FNMUSIC_AUTO_COVER": {"kind": "bool", "default": "true", "group": "tee", "reload": "hot", "label": "自动下载封面"},
     "FNMUSIC_LYRIC_AUTO_DL": {"kind": "bool", "default": "false", "group": "tee", "reload": "hot", "label": "自动下载歌词"},

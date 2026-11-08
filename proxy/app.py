@@ -41,6 +41,8 @@ try:
     from . import history_playlist as histpl
     from . import music_compat
     from . import quality_policy as qp
+    from .organize import target_dir as layout_target_dir, safe_part as safe_layout_part
+    from .organize import _ensure_target_dir as ensure_layout_dir
     from .cache_gc import purge_rolling, sweep_orphan_lyrics
     from .env_merge import parse_env_file
     from .version import get_version
@@ -52,6 +54,8 @@ except ImportError:  # uvicorn --app-dir proxy
     import history_playlist as histpl  # type: ignore
     import music_compat  # type: ignore
     import quality_policy as qp  # type: ignore
+    from organize import target_dir as layout_target_dir, safe_part as safe_layout_part  # type: ignore
+    from organize import _ensure_target_dir as ensure_layout_dir  # type: ignore
     from cache_gc import purge_rolling, sweep_orphan_lyrics  # type: ignore
     from env_merge import parse_env_file  # type: ignore
     from version import get_version  # type: ignore
@@ -199,6 +203,7 @@ CONF = {
     # v2.0.0：音质模式 high|balanced|smooth（档序见 quality_order）；
     # 推荐双开关 / 封面补全 / .env 热重载默认开，均可被 .env 覆盖
     "quality_mode": (os.environ.get("FNMUSIC_QUALITY_MODE") or "high").strip().lower(),
+    "download_layout": (os.environ.get("FNMUSIC_DOWNLOAD_LAYOUT") or "flat").strip().lower(),
     "play_quality": _initial_play_quality(),
     "recommend_hot": os.environ.get("FNMUSIC_RECOMMEND_HOT", "true").lower() in ("true", "1", "yes"),
     "recommend_daily": os.environ.get("FNMUSIC_RECOMMEND_DAILY", "true").lower() in ("true", "1", "yes"),
@@ -531,6 +536,7 @@ _ENV_WATCH_KEYS: dict[str, tuple[str, str]] = {
     "FNMUSIC_SEARCH_LOG_QUERY": ("search_log_query", "bool"),
     "FNMUSIC_QUALITY_MODE": ("quality_mode", "quality_mode"),
     "FNMUSIC_PLAY_QUALITY": ("play_quality", "play_quality"),
+    "FNMUSIC_DOWNLOAD_LAYOUT": ("download_layout", "download_layout"),
     "FNMUSIC_TEE_SAVE_ENABLED": ("tee_save_enabled", "bool"),
     "FNMUSIC_TEE_SAVE_DIR": ("tee_save_dir", "str"),
     "FNMUSIC_TEE_CACHE_MAX": ("tee_cache_max", "tee_cache_max"),
@@ -605,6 +611,8 @@ def _env_watch_parse(raw: str, kind: str):
             return None
     if kind == "quality_mode":
         return raw.lower() if raw.lower() in ("high", "balanced", "smooth") else None
+    if kind == "download_layout":
+        return raw.lower() if raw.lower() in ("flat", "artist", "album", "artist_album") else None
     if kind == "play_quality":
         try:
             return qp.normalize_quality(raw, default=None)
@@ -1920,7 +1928,44 @@ def _is_rolling_cache_stem(path: str, guid: str) -> bool:
         return False
 
 
-def library_media_path(guid: str, title: str, ext: str, artist: str = "", directory: str | None = None) -> str:
+def download_layout() -> str:
+    layout = str(CONF.get("download_layout") or "flat").strip()
+    return layout if layout in ("flat", "artist", "album", "artist_album") else "flat"
+
+
+def download_subdir(root: str, artist: str = "", album: str = "") -> str:
+    """按布局计算落盘子目录（下载与手动整理共用同一套目录计算与符号链接防护）。"""
+    root_abs = os.path.realpath(os.path.abspath(root))
+    target = layout_target_dir(root_abs, download_layout(), artist, album)
+    ensure_layout_dir(root_abs, target, create_root=True)
+    return target
+
+
+def _existing_library_file(directory: str, basename: str) -> str | None:
+    """同名（跨扩展名）曲库文件：同曲二次落盘时复用已有文件，不产生重复。"""
+    for ext in CACHE_EXTS:
+        candidate = os.path.join(directory, f"{basename}.{ext}")
+        if os.path.exists(candidate) and os.path.getsize(candidate) > 0:
+            return candidate
+    return None
+
+
+def _find_reusable_library_file(root: str, basename: str) -> str | None:
+    """同曲已有文件保持原位复用，切换存放方式不制造重复副本。"""
+    if not os.path.isdir(root):
+        return None
+    for base, dirs, files in os.walk(root, followlinks=False):
+        dirs[:] = sorted(name for name in dirs if not os.path.islink(os.path.join(base, name)))
+        for ext in CACHE_EXTS:
+            candidate = os.path.join(base, f"{basename}.{ext}")
+            if (os.path.basename(candidate) in files and not os.path.islink(candidate)
+                    and os.path.getsize(candidate) > 0):
+                return candidate
+    return None
+
+
+def library_media_path(guid: str, title: str, ext: str, artist: str = "", album: str = "",
+                       directory: str | None = None) -> str:
     lib = directory or detect_library_dir()
     recalled = recalled_media_path(guid)
     if recalled and not _is_rolling_cache_stem(recalled, guid):
@@ -1928,8 +1973,17 @@ def library_media_path(guid: str, title: str, ext: str, artist: str = "", direct
     stem = recalled_media_stem(guid)
     if stem and not _is_rolling_cache_stem(stem, guid):
         return f"{stem}.{ext}"
+    download_root = os.path.abspath(directory or detect_library_dir())
+    lib = download_subdir(download_root, artist, album)
     os.makedirs(lib, exist_ok=True)
-    return unique_library_path(lib, library_basename(title, artist, source_from_online_guid(guid)), ext)
+    basename = library_basename(title, artist, source_from_online_guid(guid) or "")
+    if basename.lower() != "unknown":
+        # issue #52 重复曲目：同曲（同"歌手 - 歌名"）跨 guid 二次落盘直接复用
+        # 已有文件（含旧布局目录），聚合搜索多源条目/切布局不再各存一份
+        existing = _existing_library_file(lib, basename) or _find_reusable_library_file(download_root, basename)
+        if existing:
+            return existing
+    return unique_library_path(lib, basename, ext)
 
 
 def find_lyric_file(guid: str) -> str | None:
@@ -4174,7 +4228,7 @@ def _tee_finalize(part: str, guid: str, ext: str, info: dict | None, tee_enabled
             title = tag_title or title
             artist = artist or tag_artist
             album = album or tag_album
-        dest = library_media_path(guid, title, ext, artist=artist, directory=tee_save_dir())
+        dest = library_media_path(guid, title, ext, artist=artist, album=album, directory=tee_save_dir())
         if os.path.exists(dest):
             # issue #52 同曲复用：同 guid 重复落盘或同曲跨 guid（聚合搜索多源
             # 条目/跨平台候选切换）二次落库时，复用曲库已有文件——丢弃本次字节
@@ -4783,9 +4837,9 @@ def _promote_rolling_cache_to_library(guid: str, hint: dict) -> "str | None":
         album = album or al2
     if not title:
         return None
-    lib = tee_save_dir()
-    os.makedirs(lib, exist_ok=True)
     ext = os.path.splitext(cached)[1].lstrip(".") or "mp3"
+    lib = download_subdir(tee_save_dir(), artist, album)
+    os.makedirs(lib, exist_ok=True)
     dest = unique_library_path(lib, library_basename(title, artist, source_from_online_guid(guid)), ext)
     try:
         os.replace(cached, dest)

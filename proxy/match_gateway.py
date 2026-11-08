@@ -19,6 +19,8 @@ import logging
 import os
 import re
 import sys
+import time
+import uuid
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
@@ -251,6 +253,96 @@ async def manage_delete(request: Request):
     except Exception as e:
         logger.exception("manage delete failed")
         return _err(f"删除失败: {type(e).__name__}: {e}", 500)
+
+
+# ------------------------------------------------------- 下载目录布局整理 --
+
+_ORGANIZE_JOBS: "dict[str, dict]" = {}
+_ORGANIZE_TASK: "asyncio.Task | None" = None
+
+
+class _OrganizeRuntime:
+    """organize 引擎的 runtime 适配层（对齐上游 app.py 自身提供的属性面）。
+
+    organize 引擎是自洽模块：CONF 提供 cache_dir/music_db，localmatch/
+    _LIBRARY_FILE_LOCK 等可选属性引擎自己兜底，这里给最小实现。
+    """
+
+    def __init__(self, root: str, layout: str) -> None:
+        self.CONF = {
+            "cache_dir": os.environ.get("FNMUSIC_CACHE_DIR", ""),
+            "music_db": match_core.MUSIC_DB,
+        }
+        self.job = {
+            "id": uuid.uuid4().hex[:12], "root": root, "layout": layout,
+            "status": "running", "phase": "扫描曲库", "started_at": time.time(),
+            "scanned": 0, "moved": 0, "skipped": 0, "failed": 0,
+            "details": [], "errors": [],
+        }
+        import types
+        self.localmatch = types.SimpleNamespace(reset_caches=lambda: None)
+        import contextlib
+        self._LIBRARY_FILE_LOCK = contextlib.nullcontext()
+
+    @property
+    def dailyrec(self):  # organize._database_metadata 兜底
+        import types
+        return types.SimpleNamespace(music_db_path=lambda: match_core.MUSIC_DB)
+
+
+def _organize_default_root() -> str:
+    """整理目标根目录：保存路径配置优先，否则取官方曲库里文件最多的目录。"""
+    env_dir = (os.environ.get("FNMUSIC_TEE_SAVE_DIR") or "").strip()
+    if env_dir and os.path.isdir(env_dir):
+        return env_dir
+    try:
+        conn = match_core._db()
+        try:
+            rows = conn.execute(
+                "SELECT path FROM audio_file WHERE is_physical_file_deleted=0").fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        rows = []
+    counts: "dict[str, int]" = {}
+    for (p,) in rows:
+        d = os.path.dirname(str(p or ""))
+        if d:
+            counts[d] = counts.get(d, 0) + 1
+    if not counts:
+        return ""
+    return max(counts, key=counts.get)
+
+
+@app.post("/api/manage/organize")
+async def manage_organize(request: Request):
+    """按布局整理现有曲库文件（移动音频+同名歌词/封面，官方重扫后路径自然更新）。"""
+    global _ORGANIZE_TASK
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    import organize as org
+
+    layout = str(body.get("layout") or "").strip() or "flat"
+    if layout not in org.LAYOUTS:
+        return _err(f"不支持的布局: {layout}")
+    root = str(body.get("root") or "").strip() or _organize_default_root()
+    if not root or not os.path.isdir(root):
+        return _err("整理根目录不可用（请先在「边听边存」配置保存路径）")
+    if _ORGANIZE_TASK is not None and not _ORGANIZE_TASK.done():
+        running = next((j for j in _ORGANIZE_JOBS.values() if j.get("status") == "running"), None)
+        return {"code": 0, "msg": "", "data": {"busy": True, "job": running}}
+    runtime = _OrganizeRuntime(root, layout)
+    _ORGANIZE_JOBS[runtime.job["id"]] = runtime.job
+    _ORGANIZE_TASK = asyncio.get_running_loop().create_task(org.run_organize(runtime, runtime.job))
+    return {"code": 0, "msg": "", "data": {"busy": False, "jobId": runtime.job["id"], "job": runtime.job}}
+
+
+@app.get("/api/manage/organize/status")
+async def manage_organize_status():
+    jobs = sorted(_ORGANIZE_JOBS.values(), key=lambda j: j.get("started_at") or 0, reverse=True)
+    return {"code": 0, "msg": "", "data": {"job": jobs[0] if jobs else None}}
 
 
 @app.post("/api/upgrade/rollback")

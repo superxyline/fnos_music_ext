@@ -6,7 +6,7 @@
   <title>fnmusic-ext 管理台</title>
   <!-- 先定主题再加载样式，深色模式下避免首屏白闪 -->
   <script src="/app/fnmusic-ext/static/theme-boot.js"></script>
-  <link rel="stylesheet" href="/app/fnmusic-ext/static/style.css?v=3.7.5-q7">
+  <link rel="stylesheet" href="/app/fnmusic-ext/static/style.css?v=3.7.5-o1">
   <link rel="icon" type="image/png" href="/app/fnmusic-ext/static/icon.png">
 </head>
 <body>
@@ -233,10 +233,24 @@
           <label class="field"><span>保存路径</span>
             <input class="input" id="tee-dir" placeholder="留空自动探测共享曲库目录">
           </label>
+          <label class="field"><span>下载目录布局</span>
+            <select class="input" id="tee-layout">
+              <option value="flat">扁平（全部在保存根目录，默认）</option>
+              <option value="artist">按歌手（歌手/歌名.flac）</option>
+              <option value="album">按专辑（专辑/歌名.flac）</option>
+              <option value="artist_album">歌手/专辑（歌手/专辑/歌名.flac）</option>
+            </select>
+          </label>
           <label class="field"><span>关闭时滚动缓存 <b id="tee-count-label"></b></span>
             <input class="input" id="tee-max" type="number" min="1" max="100">
           </label>
           <p class="hint">缓存数仅在关闭边听边存时生效；restore 还原时会一并清理这些滚动缓存。</p>
+          <div class="btn-row" style="margin-top:12px">
+            <button class="btn" id="tee-organize" type="button">按布局整理现有文件</button>
+            <span class="muted" id="tee-organize-info"></span>
+          </div>
+          <div id="tee-organize-detail" class="muted"></div>
+          <p class="hint">把保存路径下已有的歌曲移动到当前布局对应的子目录（音频与同名歌词/封面一起移动，已有同曲文件保持原位不重复）。整理前请确认飞牛音乐没有在扫描/播放这些文件；完成后在飞牛音乐里重新扫描曲库即可。新下载的歌曲始终按当前布局直接落盘。</p>
         </div>
         <div class="card">
           <label class="field"><span>官方绑定等待（秒） <b id="bind-timeout-label"></b></span>
@@ -558,6 +572,6 @@
 
   <div class="toast" id="toast" hidden></div>
 
-  <script src="/app/fnmusic-ext/static/app.js?v=3.7.5-q7"></script>
+  <script src="/app/fnmusic-ext/static/app.js?v=3.7.5-o1"></script>
 </body>
 </html>

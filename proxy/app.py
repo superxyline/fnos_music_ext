@@ -39,6 +39,7 @@ try:
     from . import nmplaylists as nmpl
     from . import publicplaylists as pubpl
     from . import history_playlist as histpl
+    from . import music_compat
     from .cache_gc import purge_rolling, sweep_orphan_lyrics
     from .env_merge import parse_env_file
     from .version import get_version
@@ -48,6 +49,7 @@ except ImportError:  # uvicorn --app-dir proxy
     import nmplaylists as nmpl  # type: ignore
     import publicplaylists as pubpl  # type: ignore
     import history_playlist as histpl  # type: ignore
+    import music_compat  # type: ignore
     from cache_gc import purge_rolling, sweep_orphan_lyrics  # type: ignore
     from env_merge import parse_env_file  # type: ignore
     from version import get_version  # type: ignore
@@ -3688,8 +3690,15 @@ async def search_track(request: Request):
         page = 1
 
     size_str = request.query_params.get("size")
+    # 飞牛音乐 1.1.19 起：不带 page/size 的搜索按 100 条窗口渲染，且 Web 端不会
+    # 自动翻第二页——默认窗口沿用 50 会让本地结果占满、在线结果被挤掉。
+    # 显式分页（传了 page 或 size 任一）保持原样；版本读不到时维持旧行为。
+    default_size = 50
+    if "page" not in request.query_params and "size" not in request.query_params:
+        if music_compat.supports_search_default_100():
+            default_size = 100
     try:
-        size = int(size_str) if size_str else 50
+        size = int(size_str) if size_str else default_size
     except (TypeError, ValueError):
         size = 50
     if size < 1:

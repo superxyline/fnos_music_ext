@@ -1,102 +1,186 @@
-# fnmusic-ext 飞牛音乐扩展代理（二次开发版）
+<div align="center">
 
-> **本仓库是 [javycoder/fnos_music_ext](https://github.com/javycoder/fnos_music_ext) 的二次开发版**，在上游 v2.3.0 基础上新增「红心收藏自动下载」等能力。**衷心感谢原作者 [@javycoder](https://github.com/javycoder) 的优秀开源工作**——本仓库的全部基础能力（Socket 接管、三音源、WebUI、收藏/歌单/历史体系）均来自上游项目，二次开发增量见 [二次开发功能](#二次开发功能) 一节。
->
-> - 本仓库 Gitee：https://gitee.com/superxyline/fnos_music_ext
-> - 本仓库 GitHub：https://github.com/superxyline/fnos_music_ext
-> - 上游仓库：https://github.com/javycoder/fnos_music_ext （Gitee 同名：https://gitee.com/javycoder/fnos_music_ext ）
+# fnmusic-ext · 飞牛音乐扩展（二次开发版）
 
-`fnmusic-ext` 是专为 fnOS（飞牛私有云）自带音乐应用（`trim.music`）打造的**无侵入增强扩展**。它通过接管官方后端的 Unix Socket 通信入口，在完全不修改官方程序、nginx 配置与数据库的前提下，让原生飞牛音乐获得在线音乐能力；可随时一条命令还原官方直连。
+**熟悉的飞牛音乐，不止于本地曲库。**
 
-> 当前版本：**v3.7.7**（v3.7.7＝**曲库目录整理**——「曲库管理」页把曲库文件按「歌手/专辑/歌名」两层目录归位，音频与歌词/封面随行，移动后立即同步官方库路径、guid/track 行不动，收藏/歌单/播放记录/刮削全部保留**无需重扫**；规划预览→确认→执行，同名冲突自动加序号，元数据兜底链（官方库→文件标签→文件名解析→未知歌手），官方 watcher 批量软删自动对账（搬移前采快照、搬完恢复并观察稳定）；同时「边听边存」整理现有文件并入同一执行器；v3.7.6＝**七档播放音质**（标准/较高/极高/无损/Hi-Res/超清母带/沉浸声，缺档逐级下降不回升，旧配置自动迁移）+ **大模型推荐升级**（Chat Completions / Responses 双协议、每日 token 限额、单次输出上限、用量账本）+ **下载目录四种布局 + 现有文件整理** + **「曲库管理」页合并**（升级音质 / 换源修信息 / 物理删除三动作共用一曲库列表与候选弹窗）+ **修复歌单导入在桌面入口必失败**（前端缺 `APP_BASE`、路由前缀失配，附回归测试）+ **兼容飞牛音乐 1.1.19** 搜索默认窗口 50→100；v3.7.5＝**歌曲管理**——管理台新增「歌曲管理」页：曲库统一列表（固定列宽自适应不出横向滚动）+ 勾选**物理删除**（文件/歌词/库记录/全部引用一并移除，重复收录共享路径自动拒绝）+ **内嵌信息不全筛选**（mutagen 实测文件标签，缺标题/歌手/专辑/封面逐行徽标）+ **搜索替换**（复用音质升级链路，按信息完整度+音质综合排序候选，允许同/低音质纯换源，替换后以候选元数据写回标签修内嵌信息）；同时修复音质升级「先试运行」勾选失效的问题；v3.7.4＝（v3.7.4＝**热修**：音质升级的备份目录原先放在曲库内 `.fnmusic-upgrade-backup/`，官方扫描器不跳过 `.` 开头的目录，会把备份当成新曲目收录（还会产生「备份的备份」并带偏曲库目录判定）；现改到 `sources-data/upgrade-backup/`，曲库边界改为「父目录须在官方 db 登记目录集合中」；v3.7.3＝**曲库音质升级**——管理台新增「音质升级」页，列出曲库全部本地歌曲的真实音质，勾选后到酷我/咪咕找更高音质的同名版本、逐个确认候选再替换，支持 mp3 → flac；只改官方库 `audio_file` 一行、`track` 完全不动，收藏与刮削原样保留，原文件备份 7 天可回滚；同时含 **VIP 曲目标记**（移植上游 #57）与**公共歌单酷狗榜单**（第二 provider）；v3.7.2＝**ARM64 支持加固**——pip 依赖装不上时自动临时装编译工具重试、基础镜像选定前校验架构匹配（防代理只给 amd64）、安装时按架构提示耗时，x86_64 与 arm64 仍共用一个包；v3.7.1＝修复管理台「接管小爱音箱音乐播放」勾选后底部不弹出「保存并生效」按钮——保存条只在标记了未保存修改后才滑出，该开关当时漏绑事件；v3.7.0＝**小爱音箱页显示正在播放**（歌名 + 本地曲库/在线源徽标，5 秒刷新）+ **按歌手播本地收藏**（说「播放周杰伦的本地收藏歌曲」把收藏里该歌手全部随机打乱连播）+ **修复「顺序播放本地收藏」被按歌名重排**（收藏顺序丢失、实测从「心痛2009」开始）并改为整张循环；v3.6.1＝重启后桥接 FATAL 根治（Dockerfile 补齐依赖）+ 管理台侧栏滚动；v3.6.0＝深色主题/设置页、直链输出、最近常听歌单、歌单导入（网易云/QQ）、小爱睡眠定时、搜索结果音质优先；v3.5.x 及更早见 [CHANGELOG.md](CHANGELOG.md)）
+本仓库是 [javycoder/fnos_music_ext](https://github.com/javycoder/fnos_music_ext) 的二次开发版——在上游「在线听歌」的基础上，强化**曲库管理、收藏下载、小爱音箱、歌单导入**等本地化能力。衷心感谢原作者 [@javycoder](https://github.com/javycoder) 的优秀开源工作，本仓库的全部基础能力（Socket 接管、三音源、WebUI、收藏/歌单/历史体系）均来自上游项目。
+
+[![Release](https://img.shields.io/github/v/release/superxyline/fnos_music_ext?label=%E6%AD%A3%E5%BC%8F%E7%89%88)](https://github.com/superxyline/fnos_music_ext/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![GitHub Stars](https://img.shields.io/github/stars/superxyline/fnos_music_ext?style=flat&label=Stars)](https://github.com/superxyline/fnos_music_ext/stargazers)
+
+[**下载安装**](https://github.com/superxyline/fnos_music_ext/releases) · [快速开始](#快速开始) · [二次开发功能](#二次开发功能) · [配置参考](#配置参考) · [更新日志](CHANGELOG.md) · [上游仓库](https://github.com/javycoder/fnos_music_ext) · [Gitee 镜像](https://gitee.com/superxyline/fnos_music_ext)
+
+</div>
+
+> 面向 fnOS 官方音乐应用 `trim.music` 的社区扩展，非飞牛官方产品。保留官方客户端，通过可逆的代理接管增加能力；**不修改官方二进制或 nginx 配置，不直接写入官方数据库结构**。停止扩展即可恢复官方直连。
 
 ![飞牛桌面里的 fnMusic 扩展管理](preview_image/preview.png)
 
-## 功能特性
+## 一眼了解
 
-- **在线聚合搜播**：在官方搜索框输入歌名，聚合三大音源之一的曲库（见下），在线歌曲即点即播，自动补齐滚动歌词与高清封面。搜索结果严格**本地优先**：本地曲库条目始终排在前面，在线音源结果（网易 > musicdl > 洛雪）紧随其后，并在歌名前标注**具体来源平台**（如 `[kuwo]晴天`、`[migu]晴天`、`[bilibili]晴天`、`[music box]晴天`），一眼区分本地与在线、以及来自哪个平台；
-- **三音源单选**（v2.0.0 起互斥，可在 WebUI 秒级切换）：
-  - [musicbox](https://github.com/darknessomi/musicbox)：网易云高品质解析，支持扫码登录 VIP/无损曲库与原生每日推荐；
-  - [musicdl](https://github.com/CharlesPikachu/musicdl)：酷我/咪咕等 57 个平台聚合，可按平台粒度勾选（编号见 [musicdl-service/PLATFORMS.md](musicdl-service/PLATFORMS.md)）。部分音乐源歌曲少，或返回的音乐不可播放，请自行测试并使用可靠音乐源；
-  - **lxmusic**：洛雪音乐自定义源运行时——搜索/歌词/榜单走内置平台接口，播放解析由你提供的洛雪自定义源脚本（Node 沙箱隔离运行）完成。源脚本支持三种配置方式：**粘贴 URL**、**上传电脑上的 `.js` 文件**、**从 NAS 选择 `.js`**（飞牛桌面内），搜索结果以及能否播放视源脚本而定，请自行测试并使用可靠来源；
-- **小爱音箱接管**（v3.3.0，可选，端口 8775）：内置 [fnmusic-xiaomusic](https://github.com/superxyline/fnmusic-xiaomusic) 桥接（xiaomusic 内嵌 + 收藏同步 + 口令播放），管理台「小爱音箱」页三步配置（小米账号登录 → 勾选音箱 → 飞牛账号），对小爱说「播放收藏」随机播放收藏、「播放晴天」直接点歌（在线源自动下载、不进收藏）。完成页实时显示**小米登录态**与**口令轮询状态**，失效时红字引导重新登录；「重新配置」为完全重置（退出登录 + 清配置 + 回第一步）。独立开关 `FNMUSIC_XIAOMUSIC_ENABLED`，与音源三选一互斥无关；
-- **管理 WebUI**（可选，端口 8774）：浏览器里完成音源切换、musicdl 平台勾选与音源测试（输入歌名逐平台验证是否出歌，**可选只测已勾选平台或一次测全部注册平台**）、网易扫码、洛雪源配置（URL/上传/NAS 选择）与测试保存、音质偏好、边听边存、推荐开关与 LLM 配置，全部热生效；v3.2.0 起还有「关于」页（版本/部署形态/仓库链接）与**检查更新**；v3.5.0 起支持**深色主题 + 设置页**（跟随系统/浅色/深色三档，嵌入飞牛时随宿主主题切换，直连时回退系统偏好）；
-- **音质偏好**（v3.7.6 起七档）：标准(128k) / 较高(192k) / 极高(320k) / 无损 / Hi-Res / 超清母带 / 沉浸声；所选档位音源不支持时**逐级下降、不回升**，旧配置自动迁移（high→无损、balanced→极高、smooth→标准）；APP 下载音质可单独设置（「跟随 APP」或指定档位）；
-- **智能边听边存**：在线听歌时后台自动缓存，再次播放本地秒开；可选完整试听后保存进本地曲库；
-- **推荐体系**：「热门推荐」与「每日推荐 MM-DD」两个独立歌单、独立开关；默认采信音源原生推荐，未启用网易时可配 OpenAI 兼容大模型兜底；歌单封面取列表里第一首有封面的曲目；
-- **多用户隔离收藏**：家庭多成员的红心收藏彼此独立，与本地曲库融合。
+当前版本：**v3.7.7**（变更详情见 [CHANGELOG.md](CHANGELOG.md)，版本增量摘要见各节标注的版本号）。
+
+| 能力 | 说明 |
+| :--- | :--- |
+| **原生入口** | 继续使用官方飞牛音乐 Web / App / 车机，无需换播放器；搜索严格本地优先，在线结果带来源标记（`[kuwo]` / `[migu]` / `[bilibili]` / `[music box]` 等） |
+| **三音源单选** | 网易云 musicbox（扫码登录）/ musicdl 聚合（57 平台）/ 洛雪自定义源，WebUI 秒级切换 |
+| **七档音质** | 标准(128k) / 较高 / 极高(320k) / 无损 / Hi-Res / 超清母带 / 沉浸声，缺档逐级下降不回升；播放与 App 下载分别设置 |
+| **红心自动下载** | 在线歌曲点红心即后台整轨下载落盘，写标签/歌词、内嵌封面，自动转官方收藏并持续对账——收藏全程不丢 |
+| **曲库管理** | 升级音质 / 换源修信息 / 物理删除三动作共用一曲库列表；「内嵌信息不全」筛选；只改 `audio_file` 一行，收藏刮削不受影响 |
+| **曲库目录整理** | 按「歌手/专辑/歌名」两层归位，规划预览→确认→执行；移动后同步官方库路径，**无需重扫、收藏/刮削保留**，官方 watcher 软删自动对账 |
+| **歌单与推荐** | 网易/QQ 歌单导入、最近常听、公共歌单（网易榜单+酷狗 TOP500）、网易账号歌单全音源常驻、大模型推荐（双协议+用量账本） |
+| **歌曲匹配** | 多平台（网易/QQ/酷狗/musicdl）搜索把歌词与封面写回官方数据；重复清理（简繁折叠、收藏/歌单引用迁移） |
+| **小爱音箱** | 口令播歌/点歌/停止/睡眠定时、正在播放显示、native 口令引擎；三步向导配置 |
+| **管理 WebUI** | 音源/音质/存储/推荐/LLM 全部图形化配置、热生效；深色主题、检查更新、音源测试 |
+| **直链输出** | 配置令牌后，车机/电视等外部播放器 302 直连源站 CDN |
+
+**先了解三点**：主音源三选一，并非同时聚合全部提供者；洛雪源脚本由使用者自行提供；安装扩展不等于获得第三方平台的会员或付费内容权限。
 
 ## 二次开发功能
 
-以下为本仓库在上游 v2.3.0 基础上新增/修改的能力（v2.3.1 起）：
+以下为本仓库在上游 v2.3.0 基础上新增/修改的能力（v2.3.1 起，实现细节见 [CHANGELOG.md](CHANGELOG.md)）。
 
-- **七档播放音质 + 大模型推荐升级 + 下载目录布局**（v3.7.6，移植上游 v2.11.0 / v2.12.0）：播放音质细化为七档并按音源能力逐级下降；大模型支持 Chat/Responses 双协议、每日 token 限额与用量账本（管理台「高级 · 大模型」看今日/累计/近 7 天趋势）；新下载可按 扁平/歌手/专辑/歌手+专辑 四种布局落盘，管理台「边听边存」页还能把已有文件按当前布局整理（歌词封面随行、占用检测、事务日志可恢复）；
-- **曲库目录整理**（v3.7.7）：「曲库管理」页新增「目录整理」卡片——把曲库文件按「歌手/专辑/歌名」两层目录归位，规划预览（汇总+逐首路径对照+冲突/缺失清单）确认后执行，移动后**立即同步官方库 `audio_file.path`**（guid/track 不动，收藏/刮削保留，无需重扫）；文件名解析歌手兜底、官方 watcher 软删自动对账；
-- **曲库管理**（v3.7.5 起，v3.7.6 合并为单页「曲库管理」）：**统一管理本地曲库**，三种动作共用同一列表与候选弹窗——**升级音质** / **换源修信息** / **删除选中**：①勾选多首**物理删除**（音频文件、同名 `.lrc`、歌词分片、库记录与收藏/歌单/播放历史引用一并移除，不进回收站；同一路径被其它在库曲目共享引用时自动拒绝，防误删重复收录）；②筛选「**内嵌信息不全**」（mutagen 读文件真实标签，缺标题/歌手/专辑/封面逐行「缺xx」徽标）；③**搜索替换**——勾选歌曲到酷我/咪咕找候选，按**信息完整度（infoScore 0~6）+ 音质档位**综合排序，允许同/低音质纯换源，替换后以候选的标题/歌手/专辑写回文件标签；替换链路复用音质升级（时长差>3s 拒绝、原文件备份 7 天可回滚、只改 `audio_file` 一行，收藏歌单不受影响）；
-- **曲库音质升级**（v3.7.3，v3.7.6 起并入「曲库管理」页的「升级音质」动作）——列出曲库全部本地歌曲及真实音质（格式/码率/采样率/位深/大小），勾选后到酷我/咪咕找更高音质的同名版本，**逐个确认候选**再替换，支持跨格式（mp3 → flac，实测 128kbps → 44.1kHz/24bit）。**收藏与刮削不受影响**：官方库 `track`（guid/专辑/封面/曲目号/刮削状态）与 `audio_file`（路径/技术参数）分层，功能只改 `audio_file` 一行、`track` 完全不动，guid 不变；新文件写全原标签，原文件移入 `sources-data/upgrade-backup/`（不在曲库内，官方扫描不会收录）保留 7 天、可单曲回滚；候选分「精确/疑似」两档，疑似项标注原因由人工判断，时长差超 3 秒直接拒绝；
-- **搜索音质优先 + fast-return 源能力门槛**（v3.6.0）：在线搜索结果按音质分档排序（无损 > 有损高码率 > 低码率，同档按源配置顺序），快源抢跑不再截断能出无损的慢源；
-- **收藏下载音质门槛**（v3.6.0）：`FNMUSIC_DOWNLOAD_MIN_QUALITY`（any/320/lossless）——红心自动下载落库前按内容实测分档，不达标先换源、仍不达标拒绝入库，管理台可选；
-- **直链输出（302）**（v3.6.0）：管理台「直链输出」页配置令牌后，外部播放器（车机/电视 App 等）经 `GET /direct?id=<源>:<id>&token=…` 直接播放在线曲库，302 到源站 CDN 直链；
-- **最近常听歌单**（v3.6.0）：播放历史（播放次数+新鲜度）驱动的只读虚拟歌单注入音乐页，数据全在本地；
-- **歌单导入（网易云 / QQ 音乐）**（v3.6.0）：管理台「歌单导入」页——粘贴歌单链接/ID，逐首在线匹配整轨下载（试听探针+音质门槛）、写标签内嵌封面，官方收录后自动加入目标歌单（支持自动新建与先导前 N 首）；
-- **小爱睡眠定时口令**（v3.6.0）：「半小时后停止播放」「定时30分钟」等到点自动停止，「取消定时」撤销，中文时长全支持；
-- **小爱音箱接管（fnmusic-xiaomusic 移植）**（v3.3.0）：把独立应用 [fnmusic-xiaomusic](https://github.com/superxyline/fnmusic-xiaomusic) 的桥接服务移植为 fnmusic-sources 容器内第 5 个 supervisor 进程（`xiaomusic-service/`，容器内 8005 → 宿主 8775）：
-  - xiaomusic 内嵌运行（pip 依赖并入统一镜像），小米账号登录/口令轮询/播放控制全链路保留；
-  - 管理台左侧菜单新增「小爱音箱」页：三步向导（小米账号密码/扫码登录 → 勾选小爱音箱 → 飞牛音乐地址自动扫描 + 账号验证）+ 状态页（收藏数/歌单数/推送状态/最近错误、**正在播放**（歌名 + 本地曲库/具体在线源来源徽标，5 秒自动刷新）、口令表、立即同步、重新配置）；
-  - 口令能力与独立版一致：14+ 种「播放收藏」变体、点歌兜底（收藏 → 本地曲库 → 在线源 ffmpeg 下载，不进收藏）、播完自动接歌单、5 分钟定时同步、自愈式口令推送；v3.5.0 起停止口令扩充到 30+ 口语化变体（`停下来吧`/`别放了`/`安静` 等，停止优先于点歌模糊匹配 + 未匹配兜底，杜绝"停一会又播下一首"）；v3.5.1 起支持「顺序播放本地歌曲」——按收藏进入歌单的先后（最新收藏在前）从第一首顺序播、整张循环；「播放周杰伦的本地收藏歌曲」等按歌手播出口令会把收藏里该歌手的歌随机打乱连播（不带「本地/收藏」的说法仍是点歌）；
-  - 数据独立落 `/data/xiaomusic/`（sources-data 卷内），升级不丢；开关 `FNMUSIC_XIAOMUSIC_ENABLED`（保存时自动起/停进程，默认关）；
-  - 音箱经 `http://<NAS_IP>:8775` 拉流（bridge `/proxy/music` → xiaomusic 代理 → 带认证取流飞牛音乐，经本扩展代理的增强搜索/在线取流）；
-  - 桥接自带页面保留作旁路（`http://<NAS_IP>:8775/`），主入口为管理台配置页；
-- **红心收藏自动下载**（v2.3.1）：对在线歌曲点红心（我喜爱）后，代理立即在后台把该曲目的**完整原文件**整轨下载落盘进本地曲库（定名"歌手 - 歌名"、写音频标签、歌词随迁），不再依赖完整试听触发；
-- **下载元数据兜底**（v2.3.2）：后台整轨下载拿不到搜索会话缓存时，用收藏快照里的歌名/歌手/专辑/歌词补齐元数据，保证落盘文件名与标签始终正确；
-- **自动转官方收藏 + 持续对账**（v2.3.2 / v2.3.4）：下载文件进入官方曲库索引后，代理自动用当前用户身份为对应本地曲目创建**官方红心**，并撤掉在线收藏条目（避免重复）；官方未及时索引时条目进入待关联集合，每次打开收藏页都会自愈重试，直到转换成功——收藏全程不丢；
-- **WebUI 收藏自动下载开关**（v2.3.3）：管理 WebUI「边听边存」页新增「收藏自动下载」开关（默认开，热生效），配置键 `FNMUSIC_FAVORITE_DOWNLOAD_ENABLED`；
-- **unknown 文件名三层修复**（v2.3.5）：musicdl 取流补 `/info` 元数据兜底、落盘前从音频自带 ID3 标签抢救定名、红心命中已落盘的 unknown 文件时按收藏快照自动改名（含 .lrc 随迁 / 路径记录 / 标签 / 触发重扫）；
-- **曲库/滚动缓存分治**（v2.3.6）：支持「关掉边听边存、只开收藏自动下载」的纯净用法——播放只留临时滚动缓存不进曲库；红心时区分三种情况：曲库已有（unknown 修复）、只在滚动缓存（定名挪进曲库，不重复下载）、都没有（后台下载）；
-- **收藏绑定缺口补齐（对照上游 #82）**（v3.5.0）：对齐上游 `4502fde` 修复，滚动缓存（官方扫描不索引 cache 目录）不再被误当已入库：
-  - 红心触达的滚动缓存先转存进曲库再绑定，转存时补拉歌词（`FNMUSIC_LYRIC_AUTO_DL` 开启时）且补拉排在官方扫描之前——入库即带歌词；
-  - 同 guid 在途去重（重复收藏/列表自愈并发只搬一次，搬运走线程池不阻塞事件循环）；官方绑定轮询按 (user, guid) 去重；同用户对账 per-user 锁串行，不重复打官方搜索/重复建官方红心；
-  - 待关联集合只认曲库文件（滚动缓存形态进了也永远匹配不上，只会每轮收藏列表反复打官方搜索）；列表自愈对滚动缓存命中先转存再绑定；元数据缺失转存不了时回退后台整轨下载，不以 unknown 入库；
-- **管理台深色主题 + 设置页**（v3.5.0，移植上游 PR #72）：管理台支持「跟随系统 / 浅色 / 深色」三档外观（设置 → 外观，存浏览器 localStorage，不进 .env）；嵌入飞牛时以宿主主题为准（`getPlatformConfig` 取初值 + `$on("os/theme")` 监听切换），直连或宿主不可用时回退 `prefers-color-scheme`；`theme-boot.js` 在样式表之前同步执行，深色用户不闪白底；CSS 重构为完整变量体系，hover 反馈不用 opacity/filter（保文字对比度）；
-- **顺序播放本地歌曲**（v3.5.1）：对小爱说「顺序播放本地歌曲」「顺序播放本地收藏」「按顺序播放本地收藏」等，按歌曲**进入收藏歌单的先后**（最新收藏在前）从第一首开始，**整张放完再从头循环**（区别于「播放收藏」的乱序）。歌单推送两份同曲（乱序 + 保序），口令在引擎分发里优先于上游默认词「顺序播放」判定；保序歌单用 `is_online_music` guard 躲开上游入库/取下一曲时的歌名重排（否则收藏顺序会被字典序覆盖，实测从「心痛2009」开始）；播放模式切 `PLAY_TYPE_ALL`（整张循环、触底回卷），第一首显式点名开播（上游 `_play_next` 恒取下一首、空位会跳过第一首）；之后的「播放收藏」自动切回随机模式；
-- **按歌手播本地收藏**：对小爱说「播放周杰伦的本地收藏歌曲」「来点五月天的收藏」「放几首林俊杰本地歌」等，把收藏里这位歌手的**所有歌随机打乱**成临时歌单连播（整张循环）；只认带「本地/收藏」限定的说法——「播放周杰伦的歌」仍是原点歌语义（收藏命中播收藏、没有搜在线源），泛指词（全部/所有/我的）不当歌手。口令先于上游「播放」模糊匹配判定；打乱顺序登记进 `_order_guard_names` 走同一套 `is_online_music` guard，不被上游歌名重排抹平；收藏里没有该歌手时明确播报；
-- **更新提示与升级入口改进**（v3.5.1）：① 修复"已是最新版仍提示 NEW"——检查更新的缓存命中时按当前版本重算结论，本地升级后进页面即熄灭，不再依赖重启或等缓存过期；② 升级弹窗提供 **GitHub / Gitee 双下载源**按钮自选；③ 关于页项目仓库/问题反馈同时列 GitHub 与 Gitee 入口；
-- **歌曲匹配（歌词/封面批量写回）**（v2.3.8）：管理 WebUI 新增「歌曲匹配」页面——从当前音源**多平台**搜索候选，把**歌词**与**封面**写回官方数据（music.db 的 lyric 表 + `lyric-sqlite` 分片库 + 封面文件），标题/歌手/专辑等信息字段不动；支持勾选批量、按「缺歌词/缺封面/缺任一」筛选后一键匹配、进度实时展示。写入与官方同构，飞牛官方页面立即可见。参考了 [kuilei0926/FnMusicEnhance](https://github.com/kuilei0926/FnMusicEnhance) 的匹配/写回思路，鸣谢！
-- **重复清理**（v2.3.11，v2.3.18 起支持简繁折叠）：WebUI「歌曲匹配」页可按**歌名**归组扫描曲库重复（忽略文件名差异；简繁标题折叠后「山水之间/山水之間」式孪生条目也能归组），组内保留音质最好的（无损 > 码率 > 大小），其余移入回收站（可找回），收藏/歌单/播放历史引用自动迁移到保留副本——重复文件不再占用空间，红心和歌单完好；
-- **上游 2.6.3 合并**（v2.4.0）：官方 9.25 兼容四件套（分页重复/trackGUIDs 删除/中文下载 500/端点透传）、自动封面内嵌（`FNMUSIC_AUTO_COVER`）、洛雪沙箱 CPU 治理、网易账号歌单（`FNMUSIC_NETEASE_MY_PLAYLISTS`）、每日推荐按账户隔离、在线专辑多源、切歌断点续传（`FNMUSIC_TEE_HANDOFF_MAX`）、取消收藏翻译（bind_registry）、musicdl 2.14.0——详见 CHANGELOG；
-- **App 1.0.2 搜索修复**（v2.4.1）：新版官方 App 搜索改调 `/search/tracks` 复数端点，官方后端无此路由、返回网页导致"搜索永远无结果"；代理现拦截该端点并按单数同款逻辑增强（本地优先 + 在线聚合），转发路径自动改写回官方支持的单数路由。可在 WebUI「搜索」页开关（`FNMUSIC_APP_V2_SEARCH` 默认开），并新增带关键词的搜索日志（`FNMUSIC_SEARCH_LOG_QUERY` 默认开）便于远程定位问题；
-- **公共歌单 + 关于页**（v3.2.0）：管理页「播放与推荐 → 公共歌单」可浏览网易官方的**排行榜 / 推荐歌单 / 分类歌单 / 精品歌单 / 账号推荐**，勾选后以只读虚拟歌单注入音乐页（最多 50 份，按选择顺序展示，`FNMUSIC_PUBLIC_PLAYLISTS_ENABLED`）。匿名可用、不要求扫码，musicbox 会按需常驻；歌单只读，加歌/移歌/删除都不回写网易。同版加入：
-  - **关于页与检查更新**：GitHub Release 优先、Gitee 兜底（成功缓存 6 小时），有新版时弹窗展示更新说明（v3.4.2 起导航红点已移除，不再常亮）；
-  - **`moo.json` 商店协议源索引**：fnOS 应用商店/第三方商店可直接据此安装与检查升级；
-  - **首播预热与共享取链（issue #56）**：metadata 请求时并行解析网易直链，同曲并发只出网一次、整条音质阶梯共用 30 秒预算，缓解"首播跳歌"；
-  - **流式禁缓冲（issue #49）**：所有媒体响应带 `X-Accel-Buffering: no`，并输出 Range 形态与首块/总耗时投递日志，根治反代下"起播等整段、拖进度条卡住"；
-  - **洛雪 UA 一致化（issue #54）**：播放与探活统一 Chrome 128 PC UA，失效直链 60 秒冷却快速失败；
-  - **可配置曲库命名模板（issue #47）**：`FNMUSIC_LIBRARY_NAME_PATTERN`，占位符 `{artist}` / `{title}` / `{source}`；
-  - **升级 musicdl 2.14.1**：平台表退役 50/54/56，新增 gequke / leedodo / heishan；
-- **B 站音源**（v3.1.0）：musicdl 新增自研 BilibiliMusicClient 平台——B 站免费歌曲 MV 抓 DASH 音轨（192k AAC，无需登录），实测搜索 0.4 秒级；**视频标题自动清洗为正经歌名+歌手**（飞牛刮削友好），WebUI 勾选即用；
-- **上游 2.8.x 精选移植**（v3.0.0）：在线封面同源直出（App 网易曲目整屏无封面根治，磁盘缓存+直链映射）、网易 VIP 封面缺失源头修复、边听边存同曲跨 guid 复用（不覆盖已有文件）、WebUI 静态资源 no-cache（WebView 升级缓存根治）；
-- **上游 2.7.0 A 级移植**（v2.5.0）：本地歌曲封面直读官方封面目录（`FNMUSIC_COVER_DIR`，根治占位图问题且加载更快）、搜索结果在线来源标记 `[music box]`/`[dl]`/`[lx]`（仅展示，入库标题纯净）、卸载默认保留音乐源数据（重装自动恢复）、WebUI 预览启动健康检查回滚与保存重试激活；
-- **网易账号歌单（全音源可用）**（v2.4.2）：任意音源（musicdl / 洛雪 / 网易盒子）下都可扫码登录网易云账号，账号歌单显示在音乐页「热门推荐」下方——自建歌单（含「我喜欢的音乐」）与收藏/关注的他人歌单（`FNMUSIC_NETEASE_SUBSCRIBED` 默认开）一起注入，点开即听（网易曲目走网易盒子取流）。开启开关即自动常驻拉起网易组件，搜索仍走所选音源；歌单只读，不回写网易。WebUI「音乐源」页扫码入口常显；
-- **匹配页 QQ / 酷狗音源**（v2.3.17）：「歌曲匹配」页在 musicdl/netease/洛雪之外新增 QQ（QRC 逐字歌词 + 3DES 解密）与酷狗（KRC XOR 解密）两路音源——冷门歌与翻译歌词的命中率和准确度明显提升，封面取 QQ/酷狗官方高清图库；默认开启（`FNMUSIC_QQ_ENABLED` / `FNMUSIC_KUGOU_ENABLED` 可关）、无需登录态、失败自动降级其余源，结果列显示命中音源。搜索内核取自 [kuilei0926/FnMusicEnhance](https://github.com/kuilei0926/FnMusicEnhance)（纯标准库），鸣谢！
-- **对账搜索根因修复**（v2.3.7）：对账改用官方搜索真正接受的 `q` 参数（此前 `keyword` 被 100002 拒绝导致转官方收藏从未成功过），并放行红心链路诊断日志（takeover 白名单）——**下载完成 → 打开收藏页 → 自动出现在收藏列表**的完整闭环由此打通。
+### 曲库管理
 
-### 推荐配置
+| 功能 | 说明 |
+| :--- | :--- |
+| **升级音质**（v3.7.3） | 列出曲库真实音质（格式/码率/采样率/位深），到酷我/咪咕找更高音质同名版本替换，支持 mp3 → flac；原文件备份 7 天可回滚，时长差 >3s 拒绝 |
+| **换源修信息**（v3.7.5） | 内嵌信息（标题/歌手/专辑）有错时换源替换，按信息完整度（infoScore 0~6）+音质排序，替换后写回候选标签；「内嵌信息不全」筛选（mutagen 实测，逐行「缺xx」徽标） |
+| **物理删除**（v3.7.5） | 勾选多首连文件带歌词/库记录/全部引用一并移除（不进回收站）；路径被重复收录共享时自动拒绝 |
+| **曲库目录整理**（v3.7.7） | 按「歌手/专辑/歌名」两层归位：规划预览（汇总+逐首路径对照+冲突/缺失清单）确认后执行；移动后**立即同步官方库路径**（guid/track 不动，无需重扫）；元数据兜底链（官方库→文件标签→文件名解析→未知歌手）；官方 watcher 批量软删自动对账 |
+| **重复清理**（v2.3.11） | 按歌名归组扫描（简繁折叠），组内保留音质最优，其余进回收站可找回，收藏/歌单/播放历史引用自动迁移 |
+
+### 收藏与下载
+
+| 功能 | 说明 |
+| :--- | :--- |
+| **红心自动下载**（v2.3.1） | 对在线歌曲点红心即后台整轨下载落盘（定名「歌手 - 歌名」、写标签、歌词随迁），不依赖完整试听触发；WebUI 开关热生效 |
+| **自动转官方收藏**（v2.3.2） | 落盘入库后自动建官方红心并撤在线条目；官方未及时索引时持续对账自愈，收藏全程不丢 |
+| **下载音质门槛**（v3.6.0） | `FNMUSIC_DOWNLOAD_MIN_QUALITY`（any/320/lossless）：落库前按内容实测分档，不达标先换源、仍不达标拒绝入库 |
+| **下载元数据兜底**（v2.3.2 / v2.3.5） | 收藏快照补元数据、ID3 抢救定名、unknown 文件按快照自动改名；曲库/滚动缓存分治——支持「关边听边存、只开收藏下载」的纯净用法 |
+
+### 在线播放与音质
+
+| 功能 | 说明 |
+| :--- | :--- |
+| **七档播放音质**（v3.7.6，移植上游 v2.12.0） | 标准/较高/极高/无损/Hi-Res/超清母带/沉浸声，缺档逐级下降不回升，旧配置自动迁移；播放与 App 下载音质分别设置 |
+| **搜索音质优先**（v3.6.0） | 在线结果按音质分档排序（无损 > 高码率 > 低码率，同档按源配置顺序），快源抢跑不截断能出无损的慢源 |
+| **直链输出**（v3.6.0） | 管理台配置令牌后 `GET /direct?id=<源>:<id>&token=…` 302 到源站 CDN，供车机/电视等外部播放器 |
+| **B 站音源**（v3.1.0） | musicdl 新增 BilibiliMusicClient：免费歌曲 MV 抓 DASH 音轨（192k AAC 免登录），视频标题自动清洗为正经歌名+歌手 |
+| **搜索修复与兼容**（v2.4.1 / v3.7.6） | App 1.0.2 复数端点拦截增强；飞牛音乐 1.1.19 搜索默认窗口 50→100 |
+
+### 歌单与推荐
+
+| 功能 | 说明 |
+| :--- | :--- |
+| **歌单导入**（v3.6.0） | 粘贴网易云/QQ 歌单链接或 ID，逐首在线匹配整轨下载（试听探针+音质门槛）、写标签内嵌封面，官方收录后自动加入目标歌单 |
+| **最近常听**（v3.6.0） | 播放历史（次数+新鲜度）驱动的只读虚拟歌单注入音乐页，数据全在本地 |
+| **公共歌单 + 酷狗榜单**（v3.2.0 / v3.7.3） | 网易官方榜单/推荐/分类/精品歌单勾选注入（匿名可用），另含酷狗 TOP500 等 20 个官方榜单 |
+| **网易账号歌单全音源可用**（v2.4.2） | 任意音源下都可扫码登录网易云，账号歌单（自建+收藏）注入音乐页；开启即常驻网易组件，搜索仍走所选音源 |
+| **大模型推荐升级**（v3.7.6，移植上游 v2.11.0） | Chat Completions / Responses 双协议、每日 token 限额、单次输出上限、用量账本（今日/累计/近 7 天趋势） |
+| **小爱睡眠定时**（v3.6.0） | 「半小时后停止播放」「定时30分钟」等到点自动停止，「取消定时」撤销 |
+
+### 小爱音箱（v3.3.0，可选）
+
+把独立应用 [fnmusic-xiaomusic](https://github.com/superxyline/fnmusic-xiaomusic) 移植为容器内桥接服务（端口 8775），管理台「小爱音箱」页三步向导配置。
+
+| 功能 | 说明 |
+| :--- | :--- |
+| **口令播放** | 「播放收藏」随机连播、「顺序播放本地歌曲」（按收藏先后整张循环）、「播放周杰伦的本地收藏歌曲」（按歌手打乱）；「播放晴天」点歌（收藏→本地→在线源，都不写收藏）；30+ 口语化停止变体 |
+| **正在播放**（v3.7.0） | 管理台实时显示歌名 + 本地/在线来源徽标，5 秒刷新 |
+| **native 口令引擎**（v3.4.0） | 自研编排 + 上游登录/设备组件复用；带屏设备后台预解析 audioID 落盘缓存（实测命中 96.7%），屏幕不再随机错歌 |
+| **数据与运维** | 数据独立落 `sources-data/`，升级不丢；`FNMUSIC_XIAOMUSIC_ENABLED` 开关，保存即起停 |
+
+### 界面与其他
+
+| 功能 | 说明 |
+| :--- | :--- |
+| **管理 WebUI**（8774） | 音源切换/平台勾选与音源测试/网易扫码/洛雪源配置（URL/上传/NAS 选择）/音质/存储/推荐/LLM，全部热生效；「关于」页检查更新（GitHub 优先 Gitee 兜底，升级弹窗双下载源） |
+| **深色主题**（v3.5.0） | 跟随系统/浅色/深色三档；嵌入飞牛时随宿主主题切换，深色不闪白底 |
+| **歌曲匹配多音源**（v2.3.17） | QQ（QRC 逐字歌词）/酷狗（KRC）搜索内核取自 [FnMusicEnhance](https://github.com/kuilei0926/FnMusicEnhance)，冷门歌与翻译歌词命中率显著提升 |
+| **上游移植持续跟进** | 封面直读/直出、来源标记、卸载数据保留、首播预热、流式禁缓冲、洛雪 UA 一致化、命名模板等 A 级项均已吸收，详见 CHANGELOG |
+| **ARM64 支持**（v3.7.2） | x86_64 与 arm64 共用一个包；依赖全预编译 wheel、镜像架构自动跟随宿主、构建失败自动装编译工具重试 |
+| **moo 商店** | `moo.json` 协议源索引，第三方应用商店可直接安装与升级 |
+
+<details>
+<summary><strong>推荐配置</strong></summary>
 
 WebUI「边听边存」页：**关闭边听边存、打开收藏自动下载**——只有点红心的歌会下载进曲库，文件名恒为「歌手 - 歌名」，下载完成打开收藏页即自动加入收藏列表。
 
-## 支持的 CPU 架构
+</details>
 
-**x86_64 与 arm64 通用同一个安装包**（fpk `manifest` 里 `platform = all`），不产出架构专属文件：
+## 快速开始
 
-- 镜像在目标机上 `docker compose build` 本地构建，基础镜像 `python:3.13-slim` 官方提供 `amd64 / arm64 / arm/v7 / riscv64` 等变体，架构自动跟随宿主；
-- 全部 Python 依赖在 arm64 上都有预编译 wheel（含 `curl_cffi` / `pillow` / `aiohttp` / `pycryptodome` 这些带 C 扩展的），构建不需要编译器；
-- `nodejs` / `ffmpeg` / `supervisor` 走 Debian apt，arm64 有官方包；
-- 万一将来某个依赖只发源码包，Dockerfile 会自动临时安装编译工具、装完立即卸掉（只走失败路径，正常运行零开销）；
-- 选定基础镜像前会校验 `.Architecture` 与宿主一致——部分国内镜像代理只缓存 amd64，直接构建会以 `exec format error` 收场、极难定位。
+### 前置条件
 
-已知差异（只影响首次安装体感）：ARM 设备算力与内存普遍低于 x86 小主机，首次构建约 **5–15 分钟**（建议内存 ≥2GB），安装脚本会先打印这条提示。飞牛 ARM 版要求系统 ≥ 1.2.0（ARM 公测版 1.2.0701 起满足）。
+1. fnOS 已在「应用中心」安装并启动官方**飞牛音乐**应用；
+2. fnOS 已安装 **Docker**（v2.0.0 起仅支持 Docker 部署音源，未安装 Docker 会直接报错退出）。
 
-> 以上为静态验证结论（依赖 wheel 可得性、基础镜像多架构、安装链路无架构专属二进制）。本项目目前**没有 ARM 真机实测记录**，如遇问题请带上 `docker compose build` 的日志反馈。
+### 安装（推荐：应用中心 fpk 包）
+
+从 [GitHub Releases](https://github.com/superxyline/fnos_music_ext/releases)（国内可用 [Gitee Releases](https://gitee.com/superxyline/fnos_music_ext/releases)）下载最新 `fnmusic-ext-<版本>.fpk`，在 fnOS「应用中心 → 手动安装」选择该文件，按向导选择**初始音源**即可自动完成安装并启用。
+
+- 桌面会出现「fnMusic 扩展管理」图标，点击即在飞牛桌面窗口内打开管理页；
+- 选洛雪音源时向导不索要任何源信息：装好后打开管理页，在「音乐源 → 洛雪自定义源」里粘贴脚本 URL、上传电脑 `.js` 文件或从 NAS 选择，测试可用后保存即激活；
+- 在应用中心可随时「停止」（秒级还原官方直连）与「启动」（恢复扩展）；
+- 卸载前会自动把配置与数据（.env、网易云登录、收藏、播放历史）备份为存储卷根目录的 `fnmusic-ext-backup-<时间戳>.tar.gz`；
+- 也可用命令行安装：`sudo appcenter-cli install-fpk fnmusic-ext-<版本>.fpk`。
+
+> 升级：应用中心内直接安装新版本 fpk（升级前自动备份用户数据，升级后恢复）。命令行 `install-fpk` 在已安装时不会升级，请在应用中心操作。
+
+### 安装（进阶：git clone 脚本安装）
+
+适合需要修改代码或精细控制参数的用户：
+
+```bash
+sudo apt-get update && sudo apt-get install -y python3 python3-venv git
+git clone https://github.com/superxyline/fnos_music_ext.git fnmusic_ext
+cd fnmusic_ext
+chmod +x install.sh extend.sh restore.sh proxy/run_proxy.sh
+./install.sh
+```
+
+向导依次引导：**音源三选一**（1 网易云 musicbox → 扫码登录；2 musicdl → 平台多选；3 洛雪 → 装后在管理页配置源脚本）→ **是否安装管理 WebUI**（默认否）→ 可选 LLM 推荐配置 → 自动执行 `./extend.sh` 接管验收。
+
+非交互示例：
+
+```bash
+# 网易云 + WebUI
+./install.sh --non-interactive --sources musicbox --webui --extend
+
+# musicdl（酷我+咪咕精选）
+./install.sh --non-interactive --sources musicdl --extend
+
+# 洛雪自定义源（URL 或本机 .js；不给则无源安装，装后在管理页配置）
+./install.sh --non-interactive --sources lxmusic \
+  --lx-source-url 'https://example.com/your-source.js' --extend
+```
+
+### 验证
+
+```bash
+# 组件健康状态
+curl -s --unix-socket /var/run/trim_music.socket http://localhost/_ext/healthz
+
+# WebUI（若安装）：浏览器打开 http://<NAS_IP>:8774
+# 小爱音箱桥接（若开启）：http://<NAS_IP>:8775/health
+```
+
+打开飞牛音乐 Web 端或 App，搜索「晴天」等关键词即可试听在线歌曲。
+
+### 日常运维
+
+```bash
+./extend.sh          # 重新启用/自检（改 .env 后重启容器并验收）
+./restore.sh         # 秒级还原官方直连（保留 .env 与全部数据）
+./restore.sh --full  # 彻底清理（连配置/登录态/缓存/收藏一并删除）
+```
+
+网易云扫码（musicbox 源）：终端 `./install.sh --qr`，或浏览器访问 `http://<NAS_IP>:8770/api/v1/auth/login/qr.png`。
+
+> 部署形态细节、单机多副本约束（`--adopt`）、洛雪源配置与故障排查见 [docs/INSTALL.md](docs/INSTALL.md)。
 
 ## 架构
 
@@ -125,82 +209,19 @@ WebUI「边听边存」页：**关闭边听边存、打开收藏自动下载**�
 └─────────────────────────────────────────────────────────┘
 ```
 
-核心代理必须在宿主机以 systemd 运行（接管 Socket）；三个音源 + WebUI 合并为一个 Docker 容器，镜像内由 supervisor 管理四个程序，启动时读取挂载的 `.env` 只拉起所选进程——常驻内存约 100-200MB。
+核心代理必须在宿主机以 systemd 运行（接管 Socket）；三个音源 + WebUI 合并为一个 Docker 容器，启动时读取挂载的 `.env` 只拉起所选进程——常驻内存约 100-200MB。
 
-## 快速开始
+<details>
+<summary><strong>支持的 CPU 架构（x86_64 / arm64 通用一个包）</strong></summary>
 
-### 前置条件
+- fpk `manifest` 里 `platform = all`，镜像在目标机上 `docker compose build` 本地构建，基础镜像 `python:3.13-slim` 官方提供多架构变体，架构自动跟随宿主；
+- 全部 Python 依赖在 arm64 上都有预编译 wheel（含 `curl_cffi` / `pillow` / `aiohttp` / `pycryptodome`），构建不需要编译器；`nodejs` / `ffmpeg` / `supervisor` 走 Debian apt，arm64 有官方包；
+- 万一某个依赖只发源码包，Dockerfile 会自动临时安装编译工具、装完立即卸掉（只走失败路径，正常运行零开销）；选定基础镜像前会校验 `.Architecture` 与宿主一致——部分国内镜像代理只缓存 amd64，直接构建会以 `exec format error` 收场、极难定位；
+- 已知差异（只影响首次安装体感）：ARM 设备首次构建约 **5–15 分钟**（建议内存 ≥2GB），安装脚本会先打印提示。飞牛 ARM 版要求系统 ≥ 1.2.0。
 
-1. fnOS 已在「应用中心」安装并启动官方**飞牛音乐**应用；
-2. fnOS 已安装 **Docker**（v2.0.0 起仅支持 Docker 部署音源，未安装 Docker 会直接报错退出）。
+> 以上为静态验证结论。本项目目前**没有 ARM 真机实测记录**，如遇问题请带上 `docker compose build` 的日志反馈。
 
-### 安装（推荐：应用中心 fpk 包）
-
-从 [GitHub Releases](https://github.com/superxyline/fnos_music_ext/releases)（国内可用 [Gitee Releases](https://gitee.com/superxyline/fnos_music_ext/releases)）下载最新 `fnmusic-ext-<版本>.fpk`，在 fnOS「应用中心 → 手动安装」选择该文件，按向导选择**初始音源**即可自动完成安装并启用。
-
-- 桌面会出现「fnMusic 扩展管理」图标，点击即在飞牛桌面窗口内打开管理页（音源切换/扫码登录/平台选择/洛雪源配置）；
-- 选洛雪音源时向导不索要任何源信息：装好后打开管理页，在「音乐源 → 洛雪自定义源」里粘贴脚本 URL、上传电脑 `.js` 文件或从 NAS 选择，测试可用后保存即激活；
-- 在应用中心可随时「停止」（秒级还原官方直连）与「启动」（恢复扩展）；
-- 卸载前会自动把配置与数据（.env、网易云登录、收藏、播放历史）备份为存储卷根目录的 `fnmusic-ext-backup-<时间戳>.tar.gz`，需要彻底清理时手动删除该文件即可；
-- 也可用命令行安装：`sudo appcenter-cli install-fpk fnmusic-ext-<版本>.fpk`。
-
-> 升级：应用中心内直接安装新版本 fpk（升级前自动备份用户数据，升级后恢复）。命令行 `install-fpk` 在已安装时不会升级，请在应用中心操作。
-
-### 安装（进阶：git clone 脚本安装）
-
-适合需要修改代码或精细控制参数的用户：
-
-```bash
-sudo apt-get update && sudo apt-get install -y python3 python3-venv git
-git clone https://github.com/superxyline/fnos_music_ext.git fnmusic_ext
-cd fnmusic_ext
-chmod +x install.sh extend.sh restore.sh proxy/run_proxy.sh
-./install.sh
-```
-
-向导依次引导：**音源三选一**（1 网易云 musicbox → 扫码登录；2 musicdl → 平台多选；3 洛雪 → 直接安装，源脚本装后在管理页配置）→ **是否安装管理 WebUI**（默认否）→ 可选 LLM 推荐配置 → 自动执行 `./extend.sh` 接管验收。
-
-非交互示例：
-
-```bash
-# 网易云 + WebUI
-./install.sh --non-interactive --sources musicbox --webui --extend
-
-# musicdl（酷我+咪咕精选）
-./install.sh --non-interactive --sources musicdl --extend
-
-# 洛雪自定义源（可选直接给源：http(s) URL 或本机 .js 文件路径；
-# 不给则无源安装，装好在管理页 WebUI 里配置 URL / 上传 .js / NAS 选择）
-./install.sh --non-interactive --sources lxmusic \
-  --lx-source-url 'https://example.com/your-source.js' --extend
-./install.sh --non-interactive --sources lxmusic \
-  --lx-source-url "$HOME/scripts/my-source.js" --extend   # 本机路径自动复制进数据卷
-./install.sh --non-interactive --sources lxmusic --webui --extend  # 无源安装
-```
-
-### 验证
-
-```bash
-# 组件健康状态
-curl -s --unix-socket /var/run/trim_music.socket http://localhost/_ext/healthz
-
-# WebUI（若安装）：浏览器打开 http://<NAS_IP>:8774
-# 小爱音箱桥接（若开启）：http://<NAS_IP>:8775/health
-```
-
-打开飞牛音乐 Web 端或 App，搜索「晴天」等关键词即可试听在线歌曲。
-
-### 日常运维
-
-```bash
-./extend.sh          # 重新启用/自检（改 .env 后重启容器并验收）
-./restore.sh         # 秒级还原官方直连（保留 .env 与全部数据）
-./restore.sh --full  # 彻底清理（连配置/登录态/缓存/收藏一并删除）
-```
-
-网易云扫码（musicbox 源）：终端 `./install.sh --qr`，或浏览器访问 `http://<NAS_IP>:8770/api/v1/auth/login/qr.png`。
-
-> 部署形态细节、单机多副本约束（`--adopt`）、洛雪源配置与故障排查见 [docs/INSTALL.md](docs/INSTALL.md)。
+</details>
 
 ## 配置参考
 
@@ -211,87 +232,41 @@ curl -s --unix-socket /var/run/trim_music.socket http://localhost/_ext/healthz
 | `FNMUSIC_MUSICDL_ENABLED` / `FNMUSIC_NETEASE_ENABLED` / `FNMUSIC_LX_ENABLED` | 单选 | 三音源互斥开关，只能一个为 `true`（热重载） |
 | `FNMUSIC_AUTO_COVER` | `true` | 下载歌曲落库后把源站封面内嵌进音频（飞牛只认内嵌图；热重载） |
 | `FNMUSIC_LYRIC_AUTO_DL` | `false` | 下载歌曲落库后自动下载同名 .lrc 到同目录（热重载） |
-| `FNMUSIC_TEE_HANDOFF_MAX` | `3` | 切歌续传后台并发上限（0=关，热重载） |
-| `FNMUSIC_NETEASE_MY_PLAYLISTS` | `false` | 网易账号自建歌单只读注入音乐页（需网易源扫码；热重载） |
-| `FNMUSIC_NETEASE_PLAYLIST_RESIDENT` | *(未配置)* | 网易云歌单常驻：切到其它音源时也保活 musicbox 供数（未配置＝有需求即常驻） |
-| `FNMUSIC_PUBLIC_PLAYLISTS_ENABLED` | `false` | 公共歌单开关：管理页勾选网易榜单/推荐/分类歌单后注入音乐页（匿名可用；热重载） |
-| `FNMUSIC_PUBLIC_PLAYLISTS_SELECTION` | *(空)* | 已选公共歌单（JSON 数组，管理页自动维护；空＝默认四大榜，`[]`＝不注入） |
-| `FNMUSIC_LIBRARY_NAME_PATTERN` | `{artist} - {title}` | 曲库文件命名模板，占位符 `{artist}` / `{title}` / `{source}`（对新落盘歌曲生效） |
-| `FNMUSIC_UPGRADE_LOG` | *(自动)* | 音质升级台账（jsonl，记录每次替换的原路径/备份/技术参数，回滚与过期清理依据）；留空落在 repo 同级 `sources-data/upgrade-log.jsonl` |
-| `FNMUSIC_UPGRADE_BACKUP_ROOT` | *(自动)* | 升级备份根目录；留空落在 repo 同级 `sources-data/upgrade-backup/`。**不要指向曲库目录内**——官方扫描器不跳过 `.` 开头的目录，备份会被当成新曲目收录 |
-| `FNMUSIC_QQ_ENABLED` / `FNMUSIC_KUGOU_ENABLED` | `true` | 歌曲匹配页 QQ/酷狗音源开关（与三音源开关独立，热重载；QQ 用 QRC 逐字歌词、酷狗用 KRC，均无需登录态） |
-| `FNMUSIC_WEBUI_ENABLED` | `false` | 管理 WebUI 开关（端口 8774，无鉴权） |
-| `FNMUSIC_XIAOMUSIC_ENABLED` | `false` | 小爱音箱接管开关（v3.3.0；桥接进程随容器按需起停，保存即生效；与三音源开关互斥无关，可任意叠加） |
-| `LX_SOURCE_URL` | *(空)* | 洛雪自定义源脚本地址：`http(s)://` URL 或 `file:///data/lxmusic/uploads/<名字>.js`（管理页上传/NAS 选择生成）；建议在 WebUI 里「测试并保存」 |
-| `LX_SOURCES` | `kg,wy,mg,kw` | lxmusic 启用的平台（kg/wy/mg/kw/tx） |
-| `FNMUSIC_ONLINE_SOURCES` / `MUSICDL_SOURCES` | 酷我+咪咕 | musicdl 平台白名单（短名/全名均可） |
-| `FNMUSIC_PLAY_QUALITY` | 跟随旧键自动迁移 | 播放音质七档：`standard` / `higher` / `exhigh` / `lossless` / `hires` / `jymaster` / `sky`（热重载；旧 `FNMUSIC_QUALITY_MODE` 自动迁移，显式值优先） |
+| `FNMUSIC_PLAY_QUALITY` | 跟随旧键自动迁移 | 播放音质七档：`standard` / `higher` / `exhigh` / `lossless` / `hires` / `jymaster` / `sky`（热重载） |
 | `FNMUSIC_DOWNLOAD_QUALITY` | `app` | APP 下载音质：`app`=跟随 APP，或七档之一（热重载） |
+| `FNMUSIC_DOWNLOAD_MIN_QUALITY` | `any` | 收藏下载音质门槛：`any` / `320` / `lossless` |
 | `FNMUSIC_DOWNLOAD_LAYOUT` | `flat` | 新下载落盘布局：`flat` / `artist` / `album` / `artist_album`（热重载） |
-| `FNMUSIC_LLM_PROTOCOL` | `chat` | 大模型接口协议：`chat`（Chat Completions）/ `responses`（Responses，GPT-5 / o 系列推理模型） |
-| `FNMUSIC_LLM_DAILY_TOKEN_LIMIT` | `1000000` | 大模型每日 token 上限，`0`=不限；超限在请求前拦截并记入账本 |
-| `FNMUSIC_LLM_MAX_OUTPUT_TOKENS` | `4096` | 大模型单次输出 token 上限 |
 | `FNMUSIC_TEE_SAVE_ENABLED` | `true` | 边听边存开关；`FNMUSIC_TEE_SAVE_DIR` 留空自动探测飞牛共享曲库 |
-| `FNMUSIC_TEE_CACHE_MAX` | `2` | 关闭边听边存时滚动保留的试听缓存条数（仅关闭时生效） |
-| `FNMUSIC_RECOMMEND_HOT` / `FNMUSIC_RECOMMEND_DAILY` | `true` | 「热门推荐」/「每日推荐」两个独立歌单的开关（热重载） |
-| `FNMUSIC_COVER_ENRICH` | `true` | 缺失封面用网易曲库补全（热重载） |
-| `FNMUSIC_LLM_BASE_URL` 等 | *(空)* | 大模型每日推荐兜底（OpenAI 兼容，热重载） |
+| `FNMUSIC_FAVORITE_DOWNLOAD_ENABLED` | `true` | 收藏自动下载开关（热重载） |
+| `FNMUSIC_LIBRARY_NAME_PATTERN` | `{artist} - {title}` | 曲库文件命名模板，占位符 `{artist}` / `{title}` / `{source}` |
+| `FNMUSIC_NETEASE_MY_PLAYLISTS` | `false` | 网易账号歌单只读注入音乐页（需扫码；热重载） |
+| `FNMUSIC_PUBLIC_PLAYLISTS_ENABLED` | `false` | 公共歌单开关（网易榜单/推荐/分类 + 酷狗榜单；热重载） |
+| `FNMUSIC_QQ_ENABLED` / `FNMUSIC_KUGOU_ENABLED` | `true` | 歌曲匹配页 QQ/酷狗音源开关（无需登录态，热重载） |
+| `FNMUSIC_LLM_PROTOCOL` | `chat` | 大模型接口协议：`chat` / `responses`（GPT-5 / o 系列推理模型） |
+| `FNMUSIC_LLM_DAILY_TOKEN_LIMIT` | `1000000` | 大模型每日 token 上限，`0`=不限 |
+| `FNMUSIC_WEBUI_ENABLED` | `false` | 管理 WebUI 开关（端口 8774，无鉴权，仅限可信内网） |
+| `FNMUSIC_XIAOMUSIC_ENABLED` | `false` | 小爱音箱接管开关（保存即生效，可与任意音源叠加） |
+| `LX_SOURCE_URL` | *(空)* | 洛雪自定义源脚本地址（管理页上传/NAS 选择生成） |
+| `FNMUSIC_ONLINE_SOURCES` / `MUSICDL_SOURCES` | 酷我+咪咕 | musicdl 平台白名单（短名/全名均可） |
 | `FNMUSIC_ENV_WATCH` | `true` | .env 热重载总开关 |
-
-## 从 v1.x 升级
-
-v2.0.0 是**架构级重构**：部署形态（三容器→单容器）、数据目录（`musicbox-data/`→`sources-data/`）、配置键（`LX_THIRD_PARTY` 移除）均有变化。**推荐先还原再安装**，让升级从干净状态开始（`.env` 与全部数据保留，不会丢配置）：
-
-```bash
-cd /path/to/fnmusic_ext
-git pull
-./restore.sh      # 先还原官方直连并清理旧部署（v2 的 restore 兼容清理 v1.x 旧容器/宿主机服务）
-./install.sh      # 全新安装 v2.0.0，按向导三选一
-```
-
-直接原地升级（`git pull && ./install.sh`）同样支持——安装器会自动迁移数据目录、清理旧三容器，遇到多源并存的旧 `.env` 会要求重新三选一。但机器状态复杂时（曾混用 host/Docker 模式、历经多次版本升级），先 `./restore.sh` 再安装更稳妥省心。
-
-另注意两点行为变化：
-
-1. **三音源互斥**：旧版多音源并存的 `.env` 会被要求重新单选（想换源时在 WebUI 里秒切）；
-2. **`LX_THIRD_PARTY` 移除**：lxmusic 不再内置第三方聚合解析链，播放解析完全由你的洛雪自定义源脚本提供（安装或 WebUI 中配置）。
-
-平台编号变化：`53`（zhuolin）、`50`（LivePOO）、`54`（LiziYY）、`56`（ITingWa）已随上游 musicdl 下线退役，编号永久空缺不再复用；新增 `64`（yinyueku）、`65`（gequke）、`66`（leedodo）、`67`（heishan）。
 
 ## 常见问题
 
 - **WebUI 打不开 / 提醒**：WebUI 无鉴权，仅限可信内网使用；确认安装时选择了 WebUI，或设置 `FNMUSIC_WEBUI_ENABLED=true` 后运行 `./extend.sh`。
 - **洛雪源播放失败**：源脚本由第三方提供，在容器内 Node 沙箱中运行——请在 WebUI 中用「测试」按钮验证源可用性，失败时更换源 URL 或重新上传脚本文件。
 - **musicdl 某平台搜索为空**：上游接口变化所致，不影响其他平台；可升级 musicdl（`>=2.13.11`）后重建镜像。
-- **切源后内存没有变化**：切换在容器内完成，`docker stats fnmusic-sources` 稍等片刻后查看；未启用音源进程会被停止而非休眠。
 - **改了 `.env` 不生效**：热重载仅覆盖白名单键（音源开关/音质/推荐/边听边存/LLM 等）；路径、端口、平台白名单类改动需执行 `./extend.sh` 重启容器。
 
-### 重启 NAS 后小爱音箱桥接不可达（3.6.1 已修）
+<details>
+<summary><strong>小爱音箱常见问题</strong></summary>
 
-3.6.1 之前的镜像缺桥接的 `audio_id_resolver.py` 与 `native/` 目录，重启（容器按镜像重建）后 xiaomusic 进程启动即崩（8775 不可达）。3.6.1 起 Dockerfile 已补齐；旧版本遇到此问题请升级或手动重装最新 fpk。
+- **口令喊了没反应**：先看管理台「小爱音箱」页状态行——「口令轮询未开启」＝桥接的 `enable_pull_ask` 被关了；「小米账号登录已失效」＝passToken 被吊销/顶号，点「重新配置」重新扫码即可；某台音箱单独不灵多为设备标识没对上，「重新配置」重新勾选。
+- **「音箱访问本机的地址」必须填 NAS 局域网 IP**（如 `192.168.x.x`，与音箱同网段），不能填容器网关（`172.x.x.x`）——填错时口令收得到但拉不到音频流，向导已拦截此值。
+- **点歌时小爱会先抢答一句**：口令须经小爱云端路由，1~2 秒内被接管切换为飞牛曲库版本。想减少抢答可用「播放**本地**晴天」句式，或在米家 App 关闭该音箱的音乐技能。
+- **重启 NAS 后桥接不可达**：3.6.1 之前的镜像缺桥接依赖文件，升级或重装最新 fpk 即可。
+- **常用口令**：`播放收藏` / `播放本地收藏歌曲` / `播放周杰伦的本地收藏歌曲` / `顺序播放本地歌曲`、`播放晴天`（点歌：收藏→本地→在线源，都不写收藏）、`下一首` / `上一首` / `暂停` / `停止播放`（`停下来吧` 等口语说法同样生效）、`刷新列表`。
 
-### 小爱音箱（v3.3.0）
-
-- **口令喊了没反应、音箱自己放歌**：先看管理台「小爱音箱」页完成区的状态行。①「口令轮询未开启」＝桥接的 `enable_pull_ask` 被关了（正常应是开启）；②「小米账号登录已失效」＝小米的 passToken 被吊销/顶号，点「重新配置」重新扫码登录即可（新凭证会写盘，重启后不会再连续失败）；③ 若某台音箱单独不灵，多半是设备标识没对上——点「重新配置」重新勾选，设备列表里灰色不可勾选的那台点「刷新设备」重试。
-- **「音箱访问本机的地址」必须填 NAS 局域网 IP**（如 `192.168.x.x`，与音箱同网段），不能填容器网关（`172.x.x.x`）——填错时口令收得到但拉不到音频流。向导已拦截此值并给出提示。
-- **点歌时小爱会先抢答一句**：口令必须经小爱云端路由，说「播放周杰伦的晴天」时小爱自带音乐技能可能先回「网易云暂无合适版本，播放 QQ 音乐试听版」，随后 1~2 秒内被接管、切换为飞牛曲库里的版本（播放器日志可见 `group_force_stop_xiaoai` → `【周杰伦 - 晴天】已经开始播放了`）。想减少抢答可用「播放**本地**晴天」这类句式，或在米家 App 关闭该音箱的音乐技能。
-- **想换小米账号 / 重选设备**：完成页点「重新配置」＝完全重置（退出小米登录、清飞牛配置、桥接重启回第一步），确认后需重新扫码并重新勾选设备。
-- **常用口令**：`播放收藏` / `播放本地收藏歌曲` / `放几首本地歌`（随机打乱播放收藏）、`播放晴天` / `播放周杰伦的晴天`（点歌：收藏优先；不在收藏则本地曲库直接播 / 在线源下载，**都不写入收藏**）、`下一首` / `上一首` / `暂停` / `停止播放`（`停下来吧` / `别放了` / `安静` / `停一下` 等口语说法同样生效，停止后不会自动续播）、`随机播放` / `全部循环` / `单曲循环`、`刷新列表`。
-
-### 口令引擎（v3.4.0 起为单一 native 引擎）
-
-口令引擎为自研的 **native** 实现（`xiaomusic-service/native/`），复用 xiaomusic 的登录/设备/轮询/播放组件（`miservice`/`AuthManager`/`MiJiaAPI`/`DeviceManager`/`ConversationPoller`/`MusicLibrary`/`XiaoMusicDevice`/`Config`），编排与命令分发为自己实现：
-
-- 不挂载 xiaomusic 的 HTTP api 子应用，向导/歌单/取流全走桥接自身端点；
-- `web_music_proxy=False`：音箱直连桥接 `/play` 取流，不经代理（少一跳）；
-- 口令匹配移植自上游 `command_handler`（完全匹配 + 模糊匹配 + 激活口令过滤 + 多匹配「第几个」）；
-- 小米登录 100% 使用上游代码（`miservice` + `AuthManager` + `MiJiaAPI` 扫码），未做任何改动；
-- 已于 v3.3.4 在真实设备完成全链路验证（X4B/L05B/LX06 三台：口令播放、点歌三段路径、全部口令、TTS 确认音、播完接歌单、登录失效自愈）；
-- v3.4.0 起移除此前的 xiaomusic 引擎（XiaoMusic 主类 + `/xm/*` api 子应用）与引擎切换开关，并对 xiaomusic 改 `--no-deps` 安装 + 精选依赖（`requirements-core.txt`），镜像不再携带 yt-dlp（25M）/sentry-sdk/apscheduler/watchdog 等不在运行路径上的重依赖。
-
-- 带屏设备（X4B 等，v3.4.1）：播放界面歌名/歌手/封面/歌词由小米曲库 audioID 决定，桥接在歌单重建后**后台预解析**全部条目的 audioID 并落盘缓存（双格式拆名 + 繁简归一 + 三级匹配），播放时直接命中——实测 275 首命中 96.7%，屏幕不再随机显示错歌；曲库确实没有的歌显示默认占位（与上游一致）。
-
-`/health` 暴露 `pull_ask_on`/`poll_degraded`/`pull_ask_sec`/`mi_logged`/`audio_id_cache` 等观测字段。
+</details>
 
 ## 开发与测试
 
@@ -299,30 +274,21 @@ git pull
 python3 -m pytest        # 全量测试（无需 Docker/飞牛环境）
 ```
 
-仓库结构：`proxy/`（核心代理）、`musicdl-service/`、`musicbox-service/`、`lxmusic-service/`、`xiaomusic-service/`（小爱音箱桥接，v3.3.0；`native/`＝native 口令引擎，v3.3.3）、`webui-service/`（管理界面）、`container/`（单容器构建与编排）、`packaging/fpk/`（应用中心 fpk 打包）。
+仓库结构：`proxy/`（核心代理）、`musicdl-service/`、`musicbox-service/`、`lxmusic-service/`、`xiaomusic-service/`（小爱音箱桥接，`native/`＝native 口令引擎）、`webui-service/`（管理界面）、`container/`（单容器构建与编排）、`packaging/fpk/`（应用中心 fpk 打包）。
 
-### fpk 打包与发布
+<details>
+<summary><strong>fpk 打包与发布（维护者）</strong></summary>
 
 ```bash
 ./packaging/fpk/build.sh   # 本地打包：组装 + fnpack 校验 → dist/fnmusic-ext-<版本>.fpk
 ```
 
 - 版本号唯一来源为根目录 `VERSION`，打包时注入 manifest（本仓库无 CI，发布由本地脚本完成）；
-- 发布流程（维护者）：
-  ```bash
-  ./packaging/fpk/build.sh                     # 产物 dist/fnmusic-ext-<版本>.fpk + .sha256
-  git tag -a v<版本> -m "v<版本>" && git push github main --tags && git push gitee main --tags
-  gh release create v<版本> dist/fnmusic-ext-<版本>.fpk dist/*.sha256 --title v<版本> --notes-file <说明>
-  python3 tools/update_moo_index.py            # 刷新 moo.json（只收正式版，版本降序）
-  ```
-  Gitee 侧在仓库「发行版」页面用同名 tag 手工上传同一个 `.fpk`；
-- 打包结构由 `packaging/tests/test_fpk_pack.py` 离线校验（含 fnpack 实测校验规则）；
-- Windows 上打出的 fpk 可能丢失 `cmd/*` 的可执行位，安装前用 `zipfile` 检查一遍（`0o755`），必要时重打包；
-- 实机安装/卸载自动测试（需在飞牛设备上以 root 运行）：
+- 发布流程：`./packaging/fpk/build.sh` → `git tag -a v<版本>` → 双端 push → GitHub/Gitee Release 挂 fpk 附件 → `python3 tools/update_moo_index.py` 刷新 `moo.json`；
+- 打包结构由 `packaging/tests/test_fpk_pack.py` 离线校验；Windows 打包注意 `cmd/*` 可执行位；
+- 实机安装/卸载自动测试（需在飞牛设备上以 root 运行）：`sudo python3 tests/integration/fpk_lifecycle.py --auto-restore`。
 
-```bash
-sudo python3 tests/integration/fpk_lifecycle.py --auto-restore
-```
+</details>
 
 ## 免责与版权声明
 
@@ -336,5 +302,3 @@ sudo python3 tests/integration/fpk_lifecycle.py --auto-restore
 - **[javycoder/fnos_music_ext](https://github.com/javycoder/fnos_music_ext) 原项目及作者 [@javycoder](https://github.com/javycoder)**：本仓库是其二开版本，Socket 接管架构、三音源体系、管理 WebUI、在线收藏/歌单/播放历史等所有基础能力均出自原项目，没有原作者的工作就没有这个二开版，特此致谢！
 - **[kuilei0926/FnMusicEnhance](https://github.com/kuilei0926/FnMusicEnhance)**：歌曲匹配页 QQ/酷狗音源的搜索/解密内核（`proxy/enhance_search/`）取自该项目，特此致谢！
 - 上游致谢：[CharlesPikachu/musicdl](https://github.com/CharlesPikachu/musicdl)、[darknessomi/musicbox](https://github.com/darknessomi/musicbox)、洛雪音乐（LX Music）社区及其自定义源规范。
-
-## 免责与版权声明

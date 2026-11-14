@@ -281,6 +281,7 @@ python3 -m pytest        # 全量测试（无需 Docker/飞牛环境）
 
 - **[javycoder/fnos_music_ext](https://github.com/javycoder/fnos_music_ext) 原项目及作者 [@javycoder](https://github.com/javycoder)**：本仓库是其二开版本，Socket 接管架构、三音源体系、管理 WebUI、在线收藏/歌单/播放历史等所有基础能力均出自原项目，没有原作者的工作就没有这个二开版，特此致谢！
 - **[kuilei0926/FnMusicEnhance](https://github.com/kuilei0926/FnMusicEnhance)**：歌曲匹配页 QQ/酷狗音源的搜索/解密内核（`proxy/enhance_search/`）取自该项目，特此致谢！
+- **[hanxi/xiaomusic](https://github.com/hanxi/xiaomusic)**：小爱音箱桥接的登录/设备/会话轮询/播放组件（`miservice`、`AuthManager`、`MiJiaAPI`、`DeviceManager`、`ConversationPoller` 等）全部复用该项目，native 口令引擎在其组件之上编排实现，特此致谢！
 - 上游致谢：[CharlesPikachu/musicdl](https://github.com/CharlesPikachu/musicdl)、[darknessomi/musicbox](https://github.com/darknessomi/musicbox)、洛雪音乐（LX Music）社区及其自定义源规范。
 
 <p align="center">

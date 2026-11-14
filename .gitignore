@@ -40,3 +40,7 @@ packaging/fpk/.build/
 # 本地交接文档（含部署细节/凭据，绝不入库；误加过一次，见 2026-10-19 事故）
 HANDOFF_*.md
 AGENTS.md
+
+# 内部工作文档/一次性运维脚本（对开源用户无价值，本地保留，不入库）
+docs/UPSTREAM_PORT_PLAN_*.md
+scripts/repair_unknown_*.py

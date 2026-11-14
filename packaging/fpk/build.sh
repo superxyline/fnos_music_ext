@@ -87,7 +87,7 @@ if command -v rsync >/dev/null 2>&1; then
         --exclude='musicbox-data/' --exclude='musicdl_outputs/' \
         --exclude='recommend_cache/' --exclude='play_history/' \
         --exclude='online_favorites/' --exclude='online_favorites.json' \
-        --exclude='*.fpk' \
+        --exclude='*.fpk' --exclude='*.tar' --exclude='*.tar.gz' \
         "${REPO_ROOT}/" "${STAGE}/app/repo/"
     [ -f "${REPO_ROOT}/.env.example" ] && cp "${REPO_ROOT}/.env.example" "${STAGE}/app/repo/.env.example"
 else
@@ -108,7 +108,7 @@ else
         --exclude='./musicbox-data' --exclude='./musicdl_outputs' \
         --exclude='./recommend_cache' --exclude='./play_history' \
         --exclude='./online_favorites' --exclude='./online_favorites.json' \
-        --exclude='*.fpk' \
+        --exclude='*.fpk' --exclude='*.tar' --exclude='*.tar.gz' \
         . ) | ( cd "${STAGE}/app/repo" && tar -xf - )
     if [ -f "${REPO_ROOT}/.env.example" ]; then
         cp "${REPO_ROOT}/.env.example" "${STAGE}/app/repo/.env.example"

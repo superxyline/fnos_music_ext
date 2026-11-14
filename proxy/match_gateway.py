@@ -11,6 +11,7 @@
   POST /api/match/run        {guids:[], wants:["lyric","cover"]} → {taskId}
   GET  /api/match/task/{id}                        任务进度
   GET  /api/match/lyric?guid=                      单曲歌词预览
+  POST /api/manage/organize {layout, dryRun}  曲库目录整理（挪文件+同步 DB 路径）
 """
 from __future__ import annotations
 
@@ -316,12 +317,18 @@ def _organize_default_root() -> str:
 
 @app.post("/api/manage/organize")
 async def manage_organize(request: Request):
-    """按布局整理现有曲库文件（移动音频+同名歌词/封面，官方重扫后路径自然更新）。"""
+    """按布局整理现有曲库文件（移动音频+同名歌词/封面）并同步 audio_file.path。
+
+    二开执行器（library_organize）：搬完立即回写官方库 audio_file.path，
+    guid/track 行不动，收藏/歌单/歌词绑定/刮削状态保留，**无需官方重扫**。
+    dryRun=true 只做规划不挪文件。
+    """
     global _ORGANIZE_TASK
     try:
         body = await request.json()
     except Exception:
         body = {}
+    import library_organize as lib_org
     import organize as org
 
     layout = str(body.get("layout") or "").strip() or "flat"
@@ -334,8 +341,10 @@ async def manage_organize(request: Request):
         running = next((j for j in _ORGANIZE_JOBS.values() if j.get("status") == "running"), None)
         return {"code": 0, "msg": "", "data": {"busy": True, "job": running}}
     runtime = _OrganizeRuntime(root, layout)
+    runtime.job["dryRun"] = bool(body.get("dryRun"))
     _ORGANIZE_JOBS[runtime.job["id"]] = runtime.job
-    _ORGANIZE_TASK = asyncio.get_running_loop().create_task(org.run_organize(runtime, runtime.job))
+    _ORGANIZE_TASK = asyncio.get_running_loop().create_task(
+        lib_org.run_library_organize(runtime, runtime.job))
     return {"code": 0, "msg": "", "data": {"busy": False, "jobId": runtime.job["id"], "job": runtime.job}}
 
 

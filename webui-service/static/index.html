@@ -6,7 +6,7 @@
   <title>fnmusic-ext 管理台</title>
   <!-- 先定主题再加载样式，深色模式下避免首屏白闪 -->
   <script src="/app/fnmusic-ext/static/theme-boot.js"></script>
-  <link rel="stylesheet" href="/app/fnmusic-ext/static/style.css?v=3.7.6-o1">
+  <link rel="stylesheet" href="/app/fnmusic-ext/static/style.css?v=3.7.7">
   <link rel="icon" type="image/png" href="/app/fnmusic-ext/static/icon.png">
 </head>
 <body>
@@ -246,11 +246,11 @@
           </label>
           <p class="hint">缓存数仅在关闭边听边存时生效；restore 还原时会一并清理这些滚动缓存。</p>
           <div class="btn-row" style="margin-top:12px">
-            <button class="btn" id="tee-organize" type="button">按布局整理现有文件</button>
+            <button class="btn" id="tee-organize" type="button">整理现有文件</button>
             <span class="muted" id="tee-organize-info"></span>
           </div>
           <div id="tee-organize-detail" class="muted"></div>
-          <p class="hint">把保存路径下已有的歌曲移动到当前布局对应的子目录（音频与同名歌词/封面一起移动，已有同曲文件保持原位不重复）。整理前请确认飞牛音乐没有在扫描/播放这些文件；完成后在飞牛音乐里重新扫描曲库即可。新下载的歌曲始终按当前布局直接落盘。</p>
+          <p class="hint">把保存路径下已有的歌曲移动到当前布局对应的子目录（音频与同名歌词/封面一起移动，同名冲突自动加序号）。移动后会同步曲库数据库路径，收藏/歌单/刮削状态保留，<b>无需</b>在飞牛音乐里重扫。整理前请确认飞牛音乐没有在扫描/播放这些文件。新下载的歌曲始终按当前布局直接落盘。</p>
         </div>
         <div class="card">
           <label class="field"><span>官方绑定等待（秒） <b id="bind-timeout-label"></b></span>
@@ -370,6 +370,16 @@
             <button class="btn" id="up-next">下一页</button>
           </div>
           <div id="up-progress" class="report" hidden></div>
+        </div>
+
+        <div class="card" style="margin-top:14px">
+          <div class="card-title">目录整理</div>
+          <p class="hint">把曲库文件按「<b>歌手/专辑/歌名</b>」两层目录归位：音频与同名歌词/封面一起移动，移动后立即同步曲库数据库路径——<b>收藏、歌单、播放记录、封面刮削全部保留</b>，无需在飞牛音乐里重扫。同名文件冲突自动加序号；文件正被播放/下载时跳过；文件缺失的留在原地；缺歌手/专辑信息的歌归入「未知歌手/未知专辑」。整理前请确认飞牛音乐没有在扫描曲库。先「规划预览」看清单，确认无误再执行。</p>
+          <div class="btn-row">
+            <button class="btn" id="up-org-plan" type="button">规划预览</button>
+            <span class="muted" id="up-org-info"></span>
+          </div>
+          <div id="up-org-detail" class="muted"></div>
         </div>
 
         <div class="card" style="margin-top:14px">
@@ -570,8 +580,24 @@
     </div>
   </div>
 
+  <div class="modal-mask" id="org-modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="org-modal-title"
+         style="width:min(920px,100%);max-height:min(86vh,780px)">
+      <div class="modal-head">
+        <div class="card-title" id="org-modal-title">目录整理预览</div>
+        <span class="muted" id="org-modal-sum"></span>
+      </div>
+      <div class="modal-body" id="org-modal-body"></div>
+      <div class="modal-foot">
+        <span class="muted" id="org-modal-note" style="margin-right:auto"></span>
+        <button class="btn" id="org-modal-cancel" type="button">取消</button>
+        <button class="btn primary" id="org-modal-run" type="button">开始整理</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast" hidden></div>
 
-  <script src="/app/fnmusic-ext/static/app.js?v=3.7.6-o1"></script>
+  <script src="/app/fnmusic-ext/static/app.js?v=3.7.7"></script>
 </body>
 </html>

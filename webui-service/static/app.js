@@ -2609,44 +2609,132 @@ $$('[data-page="llm"]').forEach((btn) => btn.addEventListener("click", llmLoadUs
 $("#llm-usage-refresh").addEventListener("click", llmLoadUsage);
 
 
-/* ---- 下载目录布局整理（走匹配网关 /api/manage/organize） ---- */
+/* ---- 曲库目录整理（走匹配网关 /api/manage/organize：挪文件+同步 DB 路径，
+   收藏/刮削状态保留，无需官方重扫）。两页共用：规划预览 → 确认 → 执行 ---- */
 let organizeTimer = null;
+let organizeLayout = "flat";
+
+function orgJobSummary(job) {
+  const running = job.status === "running";
+  if (running) return `整理中：${job.phase || ""}`;
+  if (job.status === "completed" && job.dryRun && job.plan) {
+    const p = job.plan;
+    return `规划完成 · 共 ${p.total || 0} 首 · 将移动 ${p.toMove || 0} · 已在目标位置 ${p.unchanged || 0} · 文件缺失 ${p.missing || 0} · 冲突 ${(p.conflicts || []).length}`;
+  }
+  return `上次整理：${job.status === "completed" ? "完成" : job.status} · 移动 ${job.moved || 0} · 跳过 ${job.skipped || 0} · 失败 ${job.failed || 0}`;
+}
+
 async function organizePoll() {
   try {
     const body = await api("/api/manage/organize/status");
     const job = (body.data || {}).job;
-    const info = $("#tee-organize-info");
-    const detail = $("#tee-organize-detail");
-    if (!job) { info.textContent = ""; detail.textContent = ""; return; }
+    const teeInfo = $("#tee-organize-info");
+    const teeDetail = $("#tee-organize-detail");
+    const upInfo = $("#up-org-info");
+    const upDetail = $("#up-org-detail");
+    if (!job) { teeInfo.textContent = ""; teeDetail.textContent = ""; return; }
     const running = job.status === "running";
-    info.textContent = running ? `整理中：${job.phase || ""}` : `上次整理：${job.status === "completed" ? "完成" : job.status} · 移动 ${job.moved || 0} · 跳过 ${job.skipped || 0} · 失败 ${job.failed || 0}`;
+    teeInfo.textContent = running ? `整理中：${job.phase || ""}` : (job.dryRun ? "" : orgJobSummary(job));
+    upInfo.textContent = orgJobSummary(job);
     const errs = (job.errors || []).slice(0, 5).map((e) => `${e.path}: ${e.error}`).join("；");
-    detail.textContent = errs ? `失败明细：${errs}` : "";
+    teeDetail.textContent = errs ? `失败明细：${errs}` : "";
+    upDetail.textContent = errs ? `失败明细：${errs}` : "";
     if (running) {
       clearTimeout(organizeTimer);
       organizeTimer = setTimeout(organizePoll, 2000);
+    } else if (job.status === "completed" && job.dryRun && job.plan && !$("#org-modal").hidden) {
+      orgRenderPlan(job.plan, job.errors || []);
     }
   } catch (_) { /* 网关短暂不可达 */ }
 }
-$("#tee-organize").addEventListener("click", async () => {
-  if (!window.confirm("将把保存路径下已有歌曲按当前布局移动到子目录（音频与歌词/封面一起移动）。继续？")) return;
-  const btn = $("#tee-organize");
+
+async function organizeStart(layout) {
+  organizeLayout = layout;
+  $("#org-modal").hidden = false;
+  $("#org-modal-title").textContent = "目录整理预览";
+  $("#org-modal-sum").textContent = "";
+  $("#org-modal-body").innerHTML = '<div class="muted">规划中，读取曲库与文件信息…（文件较多时需要一点时间）</div>';
+  $("#org-modal-note").textContent = "";
+  $("#org-modal-run").disabled = true;
+  const btn = layout === "artist_album" ? $("#up-org-plan") : $("#tee-organize");
+  const oldText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "规划中…";
+  try {
+    const body = await api("/api/manage/organize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ layout, dryRun: true }),
+    });
+    const d = body.data || {};
+    if (d.busy) {
+      $("#org-modal").hidden = true;
+      toast("已有整理任务在运行，请等它结束", "fail");
+      return;
+    }
+    organizePoll();
+  } catch (e) {
+    $("#org-modal").hidden = true;
+    toast("启动规划失败：" + e.message, "fail");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
+function orgRenderPlan(plan, errors) {
+  const sum = $("#org-modal-sum");
+  const body = $("#org-modal-body");
+  const note = $("#org-modal-note");
+  sum.textContent = `共 ${plan.total || 0} 首 · 将移动 ${plan.toMove || 0} · 已在目标位置 ${plan.unchanged || 0} · 歌手文件夹 ${(plan.artists || []).length} 个`;
+  const rows = (plan.preview || []).map((p) => {
+    const name = (p.path || "").split("/").pop();
+    return `<tr><td>${escapeHtml(name)}</td><td class="muted">${escapeHtml(p.artist || "")} / ${escapeHtml(p.album || "")}</td><td>${escapeHtml(p.path)}</td><td>→ ${escapeHtml(p.target)}</td></tr>`;
+  }).join("");
+  const conflicts = (plan.conflicts || []).slice(0, 10).map((c) =>
+    `<div>· ${escapeHtml(c.path)}</div>`).join("");
+  const skipped = (plan.missingPaths || []).slice(0, 10).map((p) =>
+    `<div>· ${escapeHtml(p)}</div>`).join("");
+  const errs = (errors || []).slice(0, 5).map((e) => `${e.path}: ${e.error}`).join("；");
+  body.innerHTML = `
+    <p class="hint">将按「${plan.layout === "artist_album" ? "歌手/专辑/歌名" : plan.layout}」布局移动文件，同步曲库数据库路径，收藏/歌单/刮削保留，无需重扫。共 ${plan.total || 0} 首中将移动 <b>${plan.toMove || 0}</b> 首、新建歌手文件夹 ${(plan.artists || []).length} 个；${plan.unchanged || 0} 首已在目标位置不动；${plan.missing || 0} 首文件缺失留在原地；缺歌手/专辑信息的歌归入「未知歌手/未知专辑」；${plan.outside || 0} 首不在整理根目录内。</p>
+    ${conflicts ? `<p class="hint">⚠ 目标位置存在同名文件（将自动加序号）：${conflicts}</p>` : ""}
+    ${skipped ? `<p class="hint">跳过（缺文件/信息）：${skipped}</p>` : ""}
+    ${errs ? `<p class="hint">错误：${escapeHtml(errs)}</p>` : ""}
+    ${rows ? `<div class="match-wrap"><table class="match-table fit"><thead><tr><th>文件</th><th>歌手 / 专辑</th><th>当前路径</th><th>目标路径</th></tr></thead><tbody>${rows}</tbody></table></div><p class="hint">仅显示前 ${(plan.preview || []).length} 条，实际以执行为准。</p>` : '<p class="hint">没有需要移动的文件。</p>'}`;
+  note.textContent = plan.toMove ? "确认后开始移动文件（同名冲突自动加序号）" : "";
+  $("#org-modal-run").disabled = !plan.toMove;
+}
+
+function orgModalClose() { $("#org-modal").hidden = true; }
+
+$("#org-modal-cancel").addEventListener("click", orgModalClose);
+$("#org-modal").addEventListener("click", (ev) => { if (ev.target === $("#org-modal")) orgModalClose(); });
+
+$("#org-modal-run").addEventListener("click", async () => {
+  const btn = $("#org-modal-run");
   btn.disabled = true;
   btn.textContent = "启动中…";
   try {
     const body = await api("/api/manage/organize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ layout: $("#tee-layout").value || "flat" }),
+      body: JSON.stringify({ layout: organizeLayout, dryRun: false }),
     });
     const d = body.data || {};
-    if (d.busy) { $("#tee-organize-info").textContent = "已有整理任务在运行"; }
+    if (d.busy) { toast("已有整理任务在运行", "fail"); return; }
+    orgModalClose();
+    toast("目录整理已开始", "ok");
     organizePoll();
   } catch (e) {
     toast("启动整理失败：" + e.message, "fail");
   } finally {
     btn.disabled = false;
-    btn.textContent = "按布局整理现有文件";
+    btn.textContent = "开始整理";
   }
 });
+
+$("#up-org-plan").addEventListener("click", () => organizeStart("artist_album"));
+$("#tee-organize").addEventListener("click", () => organizeStart($("#tee-layout").value || "flat"));
 $$('[data-page="tee"]').forEach((btn) => btn.addEventListener("click", organizePoll));
+$$('[data-page="upgrade"]').forEach((btn) => btn.addEventListener("click", organizePoll));

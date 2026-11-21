@@ -42,3 +42,16 @@ def _isolate_netease_resolution(monkeypatch):
     monkeypatch.setattr(pa, "_NETEASE_PREFETCH", set())
     monkeypatch.setattr(pa, "_NETEASE_PREHEATED_PINS", {})
     monkeypatch.setattr(pa, "_NETEASE_URL_CONFIG", None)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_lyric_search(monkeypatch):
+    """歌词搜索（3.8.0）默认隔离：本地分片目录指空 + 在线歌词源关闭。
+
+    聚合搜索的歌词源懒建网易公开接口 client 且会以候选歌名二跳复调音源，
+    不隔离会让搜索类用例凭空多一个源（出网/计数/时长全被扰动）；歌词
+    专项用例（test_lyric_search.py）自行打开对应 CONF 项。"""
+    from proxy import app as pa
+
+    monkeypatch.setitem(pa.CONF, "lyric_sqlite_dir", "")
+    monkeypatch.setitem(pa.CONF, "lyric_online_enabled", False)

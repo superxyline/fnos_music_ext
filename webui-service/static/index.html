@@ -200,6 +200,10 @@
       <section class="page" id="page-search">
         <h2>搜索</h2>
         <div class="card">
+          <label class="switch-row"><span>歌词搜索<div class="sub">搜索框输入歌词片段也能找到歌：本地按官方歌词库逐行匹配，命中的就是曲库里的歌，点击直接本地播放；已搜到的那首不会重复出现。默认开启。</div></span><input type="checkbox" id="lyric-search"></label>
+          <label class="switch-row"><span>歌词搜索 · 在线音源<div class="sub">经网易歌词搜索把歌词片段转成候选歌名，再去已启用的在线音源（musicdl / 洛雪）找可播放版本，附在搜索结果后面；同名翻唱已按歌手过滤。网易接口不可用时自动静默跳过，不影响正常搜索。需先开启「歌词搜索」，保存后立即生效。</div></span><input type="checkbox" id="lyric-search-online"></label>
+        </div>
+        <div class="card">
           <label class="switch-row"><span>逐曲探活(beta)<div class="sub">搜索时预先对候选歌曲进行直链解析与网络探活，确保“搜得到必能播”；但由于第三方音源解析较慢，开启后容易造成搜索超时甚至无法搜出结果，建议保持关闭。</div></span><input type="checkbox" id="search-probe"></label>
         </div>
         <div class="card">

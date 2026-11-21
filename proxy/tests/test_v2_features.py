@@ -141,7 +141,7 @@ _HOT_ENV_KEYS = [
     "musicdl_enabled", "netease_enabled", "lx_enabled", "online_sources", "lx_sources",
     "quality_mode", "tee_save_enabled", "tee_save_dir", "tee_cache_max",
     "recommend_hot", "recommend_daily", "cover_enrich", "llm_base_url", "llm_model",
-    "search_timeout",
+    "search_timeout", "lyric_search_enabled", "lyric_online_enabled",
 ]
 
 
@@ -187,6 +187,8 @@ def test_env_hot_reload_whitelist_updates_conf_and_environ(tmp_path, conf_guard)
         "FNMUSIC_LLM_API_KEY='sk-test'\n"
         "FNMUSIC_LLM_BASE_URL=https://llm.example.com/v1/\n"
         "FNMUSIC_SEARCH_TIMEOUT=20\n"
+        "FNMUSIC_LYRIC_SEARCH_ENABLED=false\n"
+        "FNMUSIC_LYRIC_ONLINE_ENABLED=false\n"
         "FNMUSIC_MUSIC_DB=/should/not/apply.db\n",
         encoding="utf-8",
     )
@@ -202,6 +204,9 @@ def test_env_hot_reload_whitelist_updates_conf_and_environ(tmp_path, conf_guard)
     assert os.environ.get("FNMUSIC_LLM_API_KEY") == "sk-test"
     assert CONF["llm_base_url"] == "https://llm.example.com/v1"
     assert CONF["search_timeout"] == 20.0
+    # 歌词搜索开关（3.8.0）走同一热重载白名单
+    assert CONF["lyric_search_enabled"] is False
+    assert CONF["lyric_online_enabled"] is False
     # 非白名单键不动
     assert CONF["music_db"] != "/should/not/apply.db"
     # 幂等：再跑一次无变化

@@ -173,6 +173,19 @@ CONF = {
     # 真机在官方 App 手动点一次扫描、从代理请求日志捕获真实路径后填入启用
     "library_scan_path": (os.environ.get("FNMUSIC_LIBRARY_SCAN_PATH", "") or "").strip(),
     "merge_suggest": os.environ.get("FNMUSIC_MERGE_SUGGEST", "false").lower() in ("true", "1", "yes"),
+    # 歌词搜索（3.8.0）：搜索框输入歌词片段也能找到歌。本地=扫官方歌词分片库
+    # 注入本地段尾部；在线=网易公开歌词搜索（type=1006）拿歌名，二跳搜已启用的
+    # musicdl/lx 音源（产物走现有播放/下载/收藏链路）。失败一律静默跳过。
+    "lyric_search_enabled": os.environ.get("FNMUSIC_LYRIC_SEARCH_ENABLED", "true").lower() in ("true", "1", "yes"),
+    "lyric_online_enabled": os.environ.get("FNMUSIC_LYRIC_ONLINE_ENABLED", "true").lower() in ("true", "1", "yes"),
+    "lyric_sqlite_dir": os.environ.get("FNMUSIC_LYRIC_SQLITE_DIR", "/var/apps/trim.music/meta/lyric-sqlite"),
+    # 最短关键词长度：1 个字会全库命中无意义结果
+    "lyric_search_min_len": int(os.environ.get("FNMUSIC_LYRIC_SEARCH_MIN_LEN", "2")),
+    # 本地歌词命中上限：防超短词/高频词刷爆本地段
+    "lyric_search_max_local": int(os.environ.get("FNMUSIC_LYRIC_SEARCH_MAX_LOCAL", "20")),
+    # 在线歌词源的候选=不同歌名数（同歌名多翻唱合并成一次搜索；音源 gate 同用户
+    # 串行，候选歌名越多二跳越慢，默认 2 次串行 ~8s 可赶上聚合 deadline）
+    "lyric_online_candidates": int(os.environ.get("FNMUSIC_LYRIC_ONLINE_CANDIDATES", "2")),
     "online_sources": os.environ.get("FNMUSIC_ONLINE_SOURCES", "KuwoMusicClient,MiguMusicClient"),
     # lx 平台白名单（同 .env 的 LX_SOURCES；install.sh --sources lx-<平台> 写入）；
     # 空 = 不限制。GUID 第 3 段携带平台（online:lx:kg:xxx），据此过滤与透传 ?sources=
@@ -534,6 +547,9 @@ _ENV_WATCH_KEYS: dict[str, tuple[str, str]] = {
     "FNMUSIC_SEARCH_PROBE": ("search_probe", "bool"),
     "FNMUSIC_APP_V2_SEARCH": ("app_v2_search", "bool"),
     "FNMUSIC_SEARCH_LOG_QUERY": ("search_log_query", "bool"),
+    # 歌词搜索（3.8.0）：管理台「搜索」页开关，.env 热重载即时生效
+    "FNMUSIC_LYRIC_SEARCH_ENABLED": ("lyric_search_enabled", "bool"),
+    "FNMUSIC_LYRIC_ONLINE_ENABLED": ("lyric_online_enabled", "bool"),
     "FNMUSIC_QUALITY_MODE": ("quality_mode", "quality_mode"),
     "FNMUSIC_PLAY_QUALITY": ("play_quality", "play_quality"),
     "FNMUSIC_DOWNLOAD_LAYOUT": ("download_layout", "download_layout"),
@@ -2407,31 +2423,38 @@ async def fetch_upstream_envelope(request: Request, client: httpx.AsyncClient) -
     return payload
 
 
+async def _musicdl_search_request(client: httpx.AsyncClient, keyword: str, limit: int, sources: str | None = None) -> dict | None:
+    """musicdl 搜索的原始请求（不过 gate）。gate 路径走 fetch_musicdl_search；
+    歌词源二跳直调本函数——二跳词是合成词非用户词，无新旧词竞态，且须避开
+    gate 的同用户串行排队才能在聚合 deadline 内完成。"""
+    params: dict[str, Any] = {"keyword": keyword, "limit": limit}
+    selected_sources = CONF["online_sources"] if sources is None else sources
+    if selected_sources:
+        params["sources"] = selected_sources
+    timeout = max(1.0, float(CONF.get("search_timeout") or 15))
+    try:
+        r = await client.get("/search", params=params, timeout=timeout)
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, dict):
+                if data.get("errors"):
+                    logger.warning("musicdl search partial errors: %s", data.get("errors"))
+                raw_items = data.get("items")
+                if isinstance(raw_items, list):
+                    data["items"] = [it for it in raw_items if is_playable_online_track(it)]
+                return data
+    except Exception as e:
+        logger.warning("Failed to fetch online search from musicdl: %s", e)
+    return None
+
+
 async def fetch_musicdl_search(client: httpx.AsyncClient, keyword: str, limit: int, sources: str | None = None) -> dict | None:
     if not keyword:
         return None
     scope = _FETCH_SCOPE.get()
 
     async def _query():
-        params: dict[str, Any] = {"keyword": keyword, "limit": limit}
-        selected_sources = CONF["online_sources"] if sources is None else sources
-        if selected_sources:
-            params["sources"] = selected_sources
-        timeout = max(1.0, float(CONF.get("search_timeout") or 15))
-        try:
-            r = await client.get("/search", params=params, timeout=timeout)
-            if r.status_code == 200:
-                data = r.json()
-                if isinstance(data, dict):
-                    if data.get("errors"):
-                        logger.warning("musicdl search partial errors: %s", data.get("errors"))
-                    raw_items = data.get("items")
-                    if isinstance(raw_items, list):
-                        data["items"] = [it for it in raw_items if is_playable_online_track(it)]
-                    return data
-        except Exception as e:
-            logger.warning("Failed to fetch online search from musicdl: %s", e)
-        return None
+        return await _musicdl_search_request(client, keyword, limit, sources)
 
     return await _MUSICDL_SEARCH_GATE.run(scope, keyword, _query)
 
@@ -3883,11 +3906,16 @@ async def search_track(request: Request):
             entry["ts"] = time.time()
             task.cancel()
     local_list = ensure_search_list(upstream_json)
+    # 歌词搜索：官方只按标题/歌手索引，歌词命中的本地歌曲补进本地段尾部。
+    # 追加条数并入本地段 total（在线段起点/分页切片都按该值计算，须同步）。
+    lyric_added = _inject_lyric_local_hits(local_list, keyword)
     local_keys = {(title_from_track(x), artist_from_track(x)) for x in local_list}
     total_online = sum(1 for x in entry["items"] if (title_from_track(x), artist_from_track(x)) not in local_keys)
     original_total = upstream_json.get("data", {}).get("total", len(local_list))
     if not isinstance(original_total, int):
         original_total = len(local_list)
+    if lyric_added:
+        original_total += lyric_added
     # 官方搜索越界页不返回空列表而是钳制回第 1 页（total=4 时 page=2 仍返回
     # 同样 4 条，收藏/歌单条目接口无此行为）。本页全局起点已越过官方段时必须
     # 清空官方列表，否则官方条目会拼上在线切片在每个后续页重复出现。
@@ -3913,6 +3941,370 @@ async def search_track(request: Request):
     return JSONResponse(content=disguise_client_json(merged), status_code=upstream_resp.status_code, headers=resp_headers)
 
 
+# ---------------------------------------------------------------------------
+# 歌词搜索（3.8.0）：搜索框输入歌词片段也能找到歌。
+# 本地：官方搜索只按标题/歌手索引，这里扫官方歌词分片库（meta/lyric-sqlite/
+# lyric-0*.db，content 为 LRC bytes——SQLite LIKE 对 BLOB 不生效，须 CAST 成
+# TEXT）按歌词命中反查官方库，构造官方同构条目追加进本地段尾部；
+# 在线：网易公开歌词搜索（type=1006，匿名直连）拿歌名+歌手候选，二跳搜已
+# 启用的 musicdl/lx 音源，按候选匹配过滤后作为普通在线条目进入聚合。
+# ---------------------------------------------------------------------------
+
+_LRC_TIMESTAMP_RE = re.compile(r"\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\]")
+_LRC_META_LINE_RE = re.compile(
+    r"^\s*\[(ti|ar|al|by|au|offset|re|ve|hash|total|encoding|kana|contra):", re.IGNORECASE
+)
+
+
+def _norm_lyric_text(value) -> str:
+    return re.sub(r"\s+", "", str(value or "")).lower()
+
+
+def _lyric_text_hits(content, keyword: str) -> bool:
+    """行级精确判定：剥掉 LRC 时间戳与元数据行后正文包含关键词（忽略大小写）。
+
+    [00:12.34] 与 [ti:/ar:/by:] 等标签行不参与匹配，防「词在标签里」误命中。"""
+    if isinstance(content, (bytes, bytearray)):
+        text = bytes(content).decode("utf-8", "ignore")
+    else:
+        text = str(content or "")
+    kw = _norm_lyric_text(keyword)
+    if not kw:
+        return False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or _LRC_META_LINE_RE.match(line):
+            continue
+        if kw in _norm_lyric_text(_LRC_TIMESTAMP_RE.sub("", line)):
+            return True
+    return False
+
+
+def _search_lyric_local(keyword: str) -> list[dict]:
+    """扫官方歌词分片库，返回歌词含关键词的本地歌曲（官方同构条目）。
+
+    曲库千首量级：SQL 粗筛（CAST+LIKE）+ 行级复核，毫秒级；上限
+    lyric_search_max_local 条防超短词全库命中。"""
+    if not CONF.get("lyric_search_enabled"):
+        return []
+    kw = (keyword or "").strip()
+    min_len = max(1, int(CONF.get("lyric_search_min_len") or 2))
+    if len(kw) < min_len:
+        return []
+    max_hits = max(1, int(CONF.get("lyric_search_max_local") or 20))
+    lyric_dir = str(CONF.get("lyric_sqlite_dir") or "")
+    if not lyric_dir or not os.path.isdir(lyric_dir):
+        return []
+    esc = kw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%{esc}%"
+    hits: list[str] = []
+    for name in sorted(os.listdir(lyric_dir)):
+        if not name.endswith(".db"):
+            continue
+        path = os.path.join(lyric_dir, name)
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+            try:
+                rows = conn.execute(
+                    "SELECT guid, content FROM lyric_content "
+                    "WHERE CAST(content AS TEXT) LIKE ? ESCAPE '\\' LIMIT ?",
+                    (pattern, max(1, (max_hits - len(hits)) * 3)),
+                ).fetchall()
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.debug("lyric shard scan failed %s: %s", name, e)
+            continue
+        for guid, content in rows:
+            if _lyric_text_hits(content, kw):
+                hits.append(str(guid))
+                if len(hits) >= max_hits:
+                    break
+        if len(hits) >= max_hits:
+            break
+    if not hits:
+        return []
+    return _local_tracks_for_lyric(hits)
+
+
+# JOIN/列集合照抄 match_core._LIST_SQL（生产验证过的官方库形状），只加
+# lyric.stored_guid 反查入口；size/format 不依赖未知列，从文件 stat/后缀取。
+_LYRIC_TRACK_SQL = """
+SELECT t.guid AS guid, t.title AS title, t.cover_guid AS cover_guid,
+       t.duration_ms AS duration_ms, af.path AS path,
+       COALESCE(al.name, '') AS album,
+       COALESCE(GROUP_CONCAT(ar.name, ' / '), '') AS artist
+FROM lyric l
+JOIN track t ON t.id = l.track_id
+JOIN audio_file af ON af.id = t.audio_file_id
+LEFT JOIN album al ON al.id = t.album_id
+LEFT JOIN track_artist ta ON ta.track_id = t.id
+LEFT JOIN artist ar ON ar.id = ta.artist_id
+WHERE t.is_admin_deleted = 0 AND t.is_audio_file_deleted = 0
+  AND l.stored_guid IN (%(ph)s)
+GROUP BY t.id ORDER BY t.title
+"""
+
+
+def _local_tracks_for_lyric(stored_guids: list[str]) -> list[dict]:
+    """按 stored_guid 反查官方库，构造与官方本地条目同构的 track JSON。
+
+    字段清单对齐 build_online_track（新版客户端缺 createdAt/score/artist
+    时间戳会丢整条目）；guid 用真实曲库 guid，audioSpec.path 用真实文件路径，
+    客户端点击后走官方本地播放链路，收藏/歌词/封面与曲库行为一致。"""
+    db_path = str(CONF.get("music_db") or "")
+    if not db_path or not os.path.exists(db_path):
+        return []
+    ph = ",".join("?" for _ in stored_guids)
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(_LYRIC_TRACK_SQL % {"ph": ph}, stored_guids).fetchall()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning("lyric local track lookup failed: %s", e)
+        return []
+    now_ts = int(time.time())
+    out = []
+    for r in rows:
+        guid = str(r["guid"] or "")
+        title = str(r["title"] or "")
+        artist = str(r["artist"] or "")
+        album = str(r["album"] or "")
+        path = str(r["path"] or "")
+        duration_ms = int(r["duration_ms"] or 0)
+        ext = os.path.splitext(path)[1].lstrip(".").lower()
+        fmt = ext if ext in ("mp3", "flac", "wav", "aac", "ogg", "ape", "m4a", "wv", "aiff") else "mp3"
+        try:
+            file_size = int(os.stat(path).st_size) if path and os.path.exists(path) else 0
+        except OSError:
+            file_size = 0
+        cover_id = "track_" + (str(r["cover_guid"] or "") or guid)
+        artists_list = ([{
+            "name": artist, "guid": f"{guid}:artist",
+            "coverId": None, "createdAt": now_ts, "updatedAt": now_ts,
+        }] if artist else [])
+        album_obj = {
+            "name": album, "guid": f"{guid}:album", "artists": artists_list,
+            "coverId": guid, "releaseDate": None, "barcode": None,
+            "createdAt": now_ts, "updatedAt": now_ts,
+        }
+        audio_spec = {
+            "path": path, "format": fmt, "codec": fmt, "container": fmt,
+            "duration": duration_ms, "size": file_size,
+            "channel": 2, "sampleRate": 44100,
+            "bitDepth": 16 if fmt in ("wav", "flac", "aiff") else None,
+            "bitrate": 1411000 if fmt in ("flac", "wav", "ape", "wv") else 320000,
+        }
+        audio_spec = {k: v for k, v in audio_spec.items() if v is not None}
+        out.append({
+            "guid": guid, "id": guid, "title": title, "name": title,
+            "artist": artist, "artists": artists_list,
+            "album": album_obj, "albumName": album,
+            "audioSpec": audio_spec, "duration": duration_ms,
+            "duration_ms": duration_ms, "durationMs": duration_ms,
+            "codec": fmt, "codecName": fmt, "format": fmt,
+            "size": file_size, "file_size": file_size,
+            "coverId": cover_id, "coverUrl": "", "coverURL": "",
+            "source": "", "is_online": False, "isFavorite": False,
+            "isCue": False, "hasLyric": True, "genres": [],
+            "accessStatus": 0, "score": 0.0,
+            "createdAt": now_ts, "updatedAt": now_ts,
+            "discNo": None, "trackNo": None, "isrc": None, "year": None,
+        })
+    return out
+
+
+def _inject_lyric_local_hits(local_list: list, keyword: str) -> int:
+    """把歌词命中的本地歌曲追加进官方结果尾部，返回实际追加条数。
+
+    与官方已有条目 (title, artist) 重叠的命中跳过（官方按标题已搜到的那首
+    不重复出现）；调用方须把返回值加进本地段 total，在线段起点才能对齐。"""
+    if not keyword or not CONF.get("lyric_search_enabled"):
+        return 0
+    try:
+        hits = _search_lyric_local(keyword)
+    except Exception as e:
+        logger.warning("lyric local search failed: %s", e)
+        return 0
+    if not hits:
+        return 0
+    seen = {(title_from_track(x), artist_from_track(x)) for x in local_list}
+    added = 0
+    for it in hits:
+        key = (title_from_track(it), artist_from_track(it))
+        if key in seen:
+            continue
+        local_list.append(it)
+        seen.add(key)
+        added += 1
+    return added
+
+
+_LYRIC_NETEASE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Referer": "https://music.163.com/",
+}
+
+
+def get_lyric_net_client(fastapi_app: FastAPI) -> httpx.AsyncClient:
+    """网易公开歌词搜索专用 client（匿名直连，与 musicbox 服务无关）。"""
+    client = getattr(fastapi_app.state, "lyric_net_client", None)
+    if client is None:
+        client = httpx.AsyncClient(
+            base_url="https://music.163.com", timeout=10.0,
+            headers=_LYRIC_NETEASE_HEADERS, follow_redirects=True,
+        )
+        fastapi_app.state.lyric_net_client = client
+    return client
+
+
+async def _netease_lyric_candidates(client: httpx.AsyncClient, keyword: str, limit: int) -> list[dict]:
+    """网易公开歌词搜索（/api/search/get/web type=1006）：返回 [{title, artist}]。
+
+    匿名接口，限频/改版/网络失败一律返回空——歌词源整体静默跳过，
+    不影响正常搜索。"""
+    try:
+        r = await client.get("/api/search/get/web", params={
+            "s": keyword, "type": 1006, "limit": max(1, limit), "offset": 0,
+        })
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        songs = data.get("result", {}).get("songs") if isinstance(data, dict) else None
+        if not isinstance(songs, list):
+            return []
+        out = []
+        for s in songs:
+            if not isinstance(s, dict):
+                continue
+            name = str(s.get("name") or "").strip()
+            artist = ""
+            artists = s.get("artists")
+            if isinstance(artists, list) and artists and isinstance(artists[0], dict):
+                artist = str(artists[0].get("name") or "").strip()
+            if name:
+                out.append({"title": name, "artist": artist})
+        return out
+    except Exception as e:
+        logger.debug("netease lyric search failed: %s", e)
+        return []
+
+
+def _lyric_candidate_match(item: dict, cand_group: dict) -> int:
+    """二跳结果与候选歌名组对齐，返回匹配强度：0=不匹配 1=仅标题 2=标题+歌手。
+
+    标题归一相等或互含（容忍平台名带 Live/括号后缀）；歌手命中候选组内任一
+    歌手加分——网易歌词搜索给出的多是翻唱候选，用户要找的原版歌手不同但
+    标题一致，只该降序不该毙掉（同名不同歌由标题过滤兜底）。"""
+    t = _norm_lyric_text(item.get("title") or item.get("name"))
+    ct = _norm_lyric_text(cand_group.get("title"))
+    if not t or not ct:
+        return 0
+    if t != ct and ct not in t and t not in ct:
+        return 0
+    a = _norm_lyric_text(item.get("artist"))
+    if not a:
+        return 1
+    for artist in cand_group.get("artists") or []:
+        ca = _norm_lyric_text(artist)
+        if ca and (ca in a or a in ca):
+            return 2
+    return 1
+
+
+_LYRIC_TITLE_PAREN_RE = re.compile(r"[\(（\[【][^\)）\]】]*[\)）\]】]")
+
+
+def _strip_lyric_title_suffix(title: str) -> str:
+    """剥歌名尾部版本括号段（翻唱变体标注）：「晴天(深情版)」→「晴天」。
+
+    网易歌词搜索对同一首歌返回大量版本变体候选，剥掉括号后缀按纯歌名分组/
+    搜索，既让同名候选合并成一组（省 gate 串行请求），也让二跳 q 更干净。"""
+    out = str(title or "").strip()
+    prev = None
+    while prev != out:
+        prev = out
+        out = _LYRIC_TITLE_PAREN_RE.sub("", out, count=1).strip()
+    return out.rstrip(")）]】 ").strip()
+
+
+async def fetch_lyric_online_search(request: Request, keyword: str) -> list[dict]:
+    """在线歌词源：网易歌词搜索 → 候选歌名二跳搜已启用的 musicdl/lx 音源。
+
+    候选按「剥版本后缀的纯歌名」去重（同歌名的原版+各翻唱候选合并），每个
+    歌名一次搜索、不带歌手（limit 拉全后本地过滤）——音源 gate 对同用户串行
+    排队，请求次数直接决定歌词源能否赶上聚合 deadline。歌手命中的条目排前，
+    仅标题命中的排后。"""
+    if not CONF.get("lyric_search_enabled") or not CONF.get("lyric_online_enabled"):
+        return []
+    nclient = get_lyric_net_client(request.app)
+    cands = await _netease_lyric_candidates(
+        nclient, keyword, int(CONF.get("lyric_online_candidates") or 2) * 4)
+    if not cands:
+        return []
+    # 按剥后缀纯歌名聚组：同名候选（原版+各翻唱）的歌手并进同一组
+    groups: dict[str, dict] = {}
+    for cand in cands:
+        base = _strip_lyric_title_suffix(cand.get("title"))
+        if not base:
+            continue
+        key = _norm_lyric_text(base)
+        group = groups.setdefault(key, {"title": base, "artists": []})
+        artist = str(cand.get("artist") or "").strip()
+        if artist and artist not in group["artists"]:
+            group["artists"].append(artist)
+    # 网易候选按相关性排序，截到 lyric_online_candidates 个不同歌名
+    max_groups = max(1, int(CONF.get("lyric_online_candidates") or 2))
+    top_groups = list(groups.values())[:max_groups]
+    if not top_groups:
+        return []
+    coros = []
+    for group in top_groups:
+        # 二跳绕过搜索 gate 直调音源：gate 对同用户串行排队（主搜索先行 5-7s，
+        # 排队二跳累计 15-20s 必超聚合 deadline）；二跳词是合成词非用户词，无
+        # 新旧词竞态，音源服务端自带熔断保护
+        if CONF.get("musicdl_enabled"):
+            coros.append(_musicdl_search_request(get_musicdl_client(request.app), group["title"], 15))
+        if CONF.get("lx_enabled"):
+            coros.append(_lx_search_request(
+                get_lx_client(request.app), group["title"], 15, None, _FETCH_SCOPE.get()))
+    if not coros:
+        return []
+    try:
+        # 并发直调 2 组 ~6s 完成；预算 14s（聚合 deadline 16s 内收手，避免被
+        # 聚合器整任务 cancel 丢结果）
+        raw_results = await asyncio.wait_for(
+            asyncio.gather(*coros, return_exceptions=True), timeout=14.0)
+    except asyncio.TimeoutError:
+        return []
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return []
+    hits: list[dict] = []
+    tail: list[dict] = []
+    seen: set[str] = set()
+    for res in raw_results:
+        if isinstance(res, BaseException):
+            continue
+        items = res.get("items", []) if isinstance(res, dict) else (res if isinstance(res, list) else [])
+        for it in items:
+            if not isinstance(it, dict) or not is_playable_online_track(it, require_id=True):
+                continue
+            strength = max((_lyric_candidate_match(it, g) for g in top_groups), default=0)
+            if strength == 0:
+                continue
+            key = str(it.get("id") or it.get("guid") or "")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            (hits if strength == 2 else tail).append(it)
+    return hits + tail
+
+
 async def _aggregate_search(request: Request, keyword: str, entry: dict) -> None:
     scope = entry.get("credentials") or _credential_scope(request)
     if _user_search_stale(entry, scope):
@@ -3934,6 +4326,8 @@ async def _aggregate_search(request: Request, keyword: str, entry: dict) -> None
         sources.append(fetch_musicdl_search(get_musicdl_client(request.app), keyword, CONF["online_limit"]))
     if CONF.get("lx_enabled"):
         sources.append(fetch_lx_search(get_lx_client(request.app), keyword, CONF["lx_search_limit"]))
+    if CONF.get("lyric_search_enabled") and CONF.get("lyric_online_enabled"):
+        sources.append(fetch_lyric_online_search(request, keyword))
     tasks = [asyncio.create_task(coro) for coro in sources]
     pending = set(tasks)
     partial = False

@@ -136,6 +136,8 @@ SCHEMA: dict[str, dict] = {
     "FNMUSIC_SEARCH_PROBE": {"kind": "bool", "default": "false", "group": "search", "reload": "hot", "label": "逐曲探活(beta)"},
     "FNMUSIC_APP_V2_SEARCH": {"kind": "bool", "default": "true", "group": "search", "reload": "hot", "label": "App 新版搜索端点兼容"},
     "FNMUSIC_SEARCH_LOG_QUERY": {"kind": "bool", "default": "true", "group": "search", "reload": "hot", "label": "搜索请求日志带关键词"},
+    "FNMUSIC_LYRIC_SEARCH_ENABLED": {"kind": "bool", "default": "true", "group": "search", "reload": "hot", "label": "歌词搜索"},
+    "FNMUSIC_LYRIC_ONLINE_ENABLED": {"kind": "bool", "default": "true", "group": "search", "reload": "hot", "label": "歌词搜索 · 在线音源"},
     "FNMUSIC_NETEASE_MY_PLAYLISTS": {"kind": "bool", "default": "false", "group": "source", "reload": "hot", "label": "网易账号歌单"},
     "FNMUSIC_NETEASE_SUBSCRIBED": {"kind": "bool", "default": "true", "group": "source", "reload": "hot", "label": "网易收藏歌单"},
     "FNMUSIC_NETEASE_PLAYLIST_RESIDENT": {"kind": "bool", "default": "", "group": "source", "reload": "hot", "label": "网易云歌单常驻"},

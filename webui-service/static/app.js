@@ -260,6 +260,10 @@ function applyConfigToForm() {
   $("#search-probe").checked = v.FNMUSIC_SEARCH_PROBE === "true";
   $("#app-v2-search").checked = v.FNMUSIC_APP_V2_SEARCH !== "false";
   $("#search-log-query").checked = v.FNMUSIC_SEARCH_LOG_QUERY !== "false";
+  // 歌词搜索（3.8.0）：默认开；在线子开关依赖总开关（关总开关时置灰）
+  $("#lyric-search").checked = v.FNMUSIC_LYRIC_SEARCH_ENABLED !== "false";
+  $("#lyric-search-online").checked = v.FNMUSIC_LYRIC_ONLINE_ENABLED !== "false";
+  updateLyricOnlineAvailability();
   $("#netease-my-playlists").checked = v.FNMUSIC_NETEASE_MY_PLAYLISTS === "true";
   $("#netease-subscribed").checked = v.FNMUSIC_NETEASE_SUBSCRIBED !== "false";
   // 三态常驻开关：未配置（老配置）时按「是否有需求」回填——账号歌单或公共歌单都算需求
@@ -306,6 +310,8 @@ function collectConfig() {
     FNMUSIC_SEARCH_PROBE: $("#search-probe").checked,
     FNMUSIC_APP_V2_SEARCH: $("#app-v2-search").checked,
     FNMUSIC_SEARCH_LOG_QUERY: $("#search-log-query").checked,
+    FNMUSIC_LYRIC_SEARCH_ENABLED: $("#lyric-search").checked,
+    FNMUSIC_LYRIC_ONLINE_ENABLED: $("#lyric-search-online").checked,
     FNMUSIC_NETEASE_MY_PLAYLISTS: $("#netease-my-playlists").checked,
     FNMUSIC_NETEASE_SUBSCRIBED: $("#netease-subscribed").checked,
     FNMUSIC_PUBLIC_PLAYLISTS_ENABLED: $("#public-playlists-enabled").checked,
@@ -1375,11 +1381,20 @@ $("#dedup-run").addEventListener("click", async () => {
 ["#tee-dir", "#tee-layout", "#tee-max", "#llm-base", "#llm-key", "#llm-model", "#llm-protocol", "#llm-daily-limit", "#llm-max-tokens", "#lx-url", "#search-timeout", "#bind-timeout", "#handoff-max", "#scan-path"].forEach((sel) =>
   $(sel).addEventListener("input", () => markDirty()));
 $$("input[name=quality]").forEach((el) => el.addEventListener("change", () => markDirty("音质偏好需保存后生效")));
-["#recommend-hot", "#recommend-daily", "#history-playlist", "#public-playlists-enabled", "#search-probe", "#app-v2-search", "#search-log-query", "#tee-enabled", "#fav-download-enabled", "#auto-cover", "#lyric-auto-dl", "#netease-my-playlists", "#netease-subscribed", "#netease-resident"].forEach((sel) =>
+["#recommend-hot", "#recommend-daily", "#history-playlist", "#public-playlists-enabled", "#search-probe", "#app-v2-search", "#search-log-query", "#lyric-search", "#lyric-search-online", "#tee-enabled", "#fav-download-enabled", "#auto-cover", "#lyric-auto-dl", "#netease-my-playlists", "#netease-subscribed", "#netease-resident"].forEach((sel) =>
   $(sel).addEventListener("change", () => markDirty()));
+// 歌词搜索子开关可用态：总开关关闭时置灰并取消勾选（保存条提示一次）
+$("#lyric-search").addEventListener("change", () => updateLyricOnlineAvailability());
 // 小爱音箱接管开关：2026-10-29 用户反馈「勾上后提示保存却找不到按钮」——
 // 保存条只在 markDirty() 后才从底部弹出，这个 checkbox 当时没接事件，所以永不出现。
 $("#xm-enabled").addEventListener("change", () => markDirty("小爱音箱接管需保存后生效"));
+
+// 歌词搜索在线子开关可用态：总开关关闭时置灰（勾选状态保留，重开即恢复）
+function updateLyricOnlineAvailability() {
+  const box = $("#lyric-search-online");
+  if (!box) return;
+  box.disabled = !$("#lyric-search").checked;
+}
 
 // 常驻开关可用态：账号歌单，或「公共歌单已开且选了网易歌单」任一成立即可勾选；
 // 两者都无需求时置灰（已勾选状态保留，重开即恢复）

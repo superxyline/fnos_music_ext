@@ -14,6 +14,7 @@ online_favorites/
 online_favorites.json
 album_registry.json
 bind_registry.json
+llm_usage.json
 playlist_tracks/
 __pycache__/
 *.pyc

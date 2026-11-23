@@ -32,6 +32,7 @@ from .keywords import (
     SINGER_FAV_PATTERNS,
     SINGER_FAV_STOPWORDS,
     SINGER_FAV_STOPWORD_PARTS,
+    is_lyric_query,
 )
 
 # 点歌意图词：Query 含这些词说明"要放歌"。与停止口令冲突时按位置判：
@@ -206,6 +207,12 @@ class CommandDispatcher:
 
     def match_cmd(self, device, query, ctrl_panel):
         """返回 (动作名, 参数)，未匹配返回 (None, None)。"""
+        # -0) 「搜歌词 xxx」：搜索框（App/管理台）才支持歌词搜索，音箱端不支持。
+        #     必须在所有模糊匹配之前拦下——否则「播放搜歌词 某人」会被「播放」
+        #     抢走，把「搜歌词 某人」整串当歌名送进搜索链路（2026-11-23 用户需求）。
+        if is_lyric_query(query):
+            self.log.info(f"[native] 搜歌词口令：音箱端不支持. query:{query}")
+            return "lyric_search_unsupported", ""
         # -1) 睡眠定时：必须先于停止口令——「半小时后停止播放」含停止词，
         #     走到这里就立刻停了，定时无从谈起。取消口令先判（「取消定时」
         #     含「定时」二字，先到先得）。

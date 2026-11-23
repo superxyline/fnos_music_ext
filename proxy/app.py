@@ -26,7 +26,7 @@ from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from copy import deepcopy
 from typing import Any, AsyncGenerator, Callable, Coroutine
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlencode
 from uuid import uuid4
 
 import httpx
@@ -176,6 +176,10 @@ CONF = {
     # 歌词搜索（3.8.0）：搜索框输入歌词片段也能找到歌。本地=扫官方歌词分片库
     # 注入本地段尾部；在线=网易公开歌词搜索（type=1006）拿歌名，二跳搜已启用的
     # musicdl/lx 音源（产物走现有播放/下载/收藏链路）。失败一律静默跳过。
+    # 3.8.1 起：默认只按歌名/歌手搜，**不再**自动按歌词匹配；要按歌词搜需要在
+    # 搜索框写「搜歌词 xxx」（前缀词见 LYRIC_QUERY_PREFIXES）。关闭本开关则
+    # 恢复旧行为（任何关键词都会触发歌词搜索）。
+    "lyric_prefix_required": os.environ.get("FNMUSIC_LYRIC_PREFIX_REQUIRED", "true").lower() in ("true", "1", "yes"),
     "lyric_search_enabled": os.environ.get("FNMUSIC_LYRIC_SEARCH_ENABLED", "true").lower() in ("true", "1", "yes"),
     "lyric_online_enabled": os.environ.get("FNMUSIC_LYRIC_ONLINE_ENABLED", "true").lower() in ("true", "1", "yes"),
     "lyric_sqlite_dir": os.environ.get("FNMUSIC_LYRIC_SQLITE_DIR", "/var/apps/trim.music/meta/lyric-sqlite"),
@@ -993,6 +997,52 @@ def extract_keyword(request: Request) -> str:
     """前端打包用 q，部分调用/验收用 keyword。"""
     params = request.query_params
     return (params.get("keyword") or params.get("q") or params.get("query") or "").strip()
+
+
+# 「按歌词搜」前缀词（2026-11-23 用户需求）：
+#   - 直接输入「某人」            → 只按歌名/歌手搜（不再歌词撞词）
+#   - 输入「搜歌词 某人」        → 关键词=某人，启用歌词搜索
+# 前缀后没有内容时按普通关键词处理，避免只打「搜歌词」搜出空结果。
+LYRIC_QUERY_PREFIXES = ("搜歌词", "按歌词搜", "歌词搜索", "歌词搜")
+
+
+def split_lyric_keyword(keyword: str) -> tuple[str, bool]:
+    """拆「搜歌词」前缀 → (干净关键词, 是否歌词模式)。
+
+    lyric_prefix_required=False 时恢复 3.8.0 旧行为：关键词原样、歌词搜索常开。
+    """
+    kw = (keyword or "").strip()
+    if not kw:
+        return kw, False
+    if not CONF.get("lyric_prefix_required"):
+        return kw, bool(CONF.get("lyric_search_enabled"))
+    for prefix in LYRIC_QUERY_PREFIXES:
+        if kw.startswith(prefix):
+            rest = kw[len(prefix):].lstrip(" :：,，、-—")
+            if rest.strip():
+                return rest.strip(), True
+    return kw, False
+
+
+def rewrite_query_keyword(query: str, keyword: str) -> str:
+    """上游查询串里的 q/keyword/query 换成干净关键词，其余参数原样保留。
+
+    前缀词不能直接透传给官方（官方会按「搜歌词 某人」去搜，什么都搜不到）。
+    """
+    if not query:
+        return query
+    pairs = parse_qsl(query, keep_blank_values=True)
+    out: list[tuple[str, str]] = []
+    replaced = False
+    for key, value in pairs:
+        if key in ("q", "keyword", "query"):
+            out.append((key, keyword))
+            replaced = True
+        else:
+            out.append((key, value))
+    if not replaced:
+        out.append(("q", keyword))
+    return urlencode(out)
 
 
 def online_guid_from_item(item: dict) -> str:
@@ -3804,7 +3854,9 @@ async def search_track(request: Request):
         return await forward_to_upstream(request, upstream_client)
     musicdl_client = get_musicdl_client(request.app)
     musicbox_client = get_musicbox_client(request.app)
-    keyword = extract_keyword(request)
+    raw_keyword = extract_keyword(request)
+    # 默认只按歌名/歌手搜；「搜歌词 xxx」才启用歌词搜索（3.8.1）
+    keyword, lyric_mode = split_lyric_keyword(raw_keyword)
     if keyword:
         _note_user_keyword(_credential_scope(request), keyword)
 
@@ -3837,7 +3889,11 @@ async def search_track(request: Request):
     if url_path.startswith("/music/api/v1/search/tracks"):
         url_path = url_path.replace("/music/api/v1/search/tracks", "/music/api/v1/search/track", 1)
     if request.url.query:
-        url_path = f"{url_path}?{request.url.query}"
+        query = request.url.query
+        if keyword and keyword != raw_keyword:
+            # 「搜歌词 xxx」不能原样透传：官方按整串搜不到东西
+            query = rewrite_query_keyword(query, keyword)
+        url_path = f"{url_path}?{query}"
     headers = copy_incoming_headers(request)
 
     req = upstream_client.build_request("GET", url_path, headers=headers)
@@ -3881,6 +3937,7 @@ async def search_track(request: Request):
                  "scope": _search_scope(request), "credentials": scope, "config": _source_config(), "task": None}
         _set_search_cache(key, entry)
     entry["gen"] = _USER_SEARCH_GEN.get(scope, 0)
+    entry["lyric_mode"] = lyric_mode
     entry["superseded"] = False
     entry["accessed"] = time.time()
     task = entry.get("task")
@@ -3908,7 +3965,13 @@ async def search_track(request: Request):
     local_list = ensure_search_list(upstream_json)
     # 歌词搜索：官方只按标题/歌手索引，歌词命中的本地歌曲补进本地段尾部。
     # 追加条数并入本地段 total（在线段起点/分页切片都按该值计算，须同步）。
-    lyric_added = _inject_lyric_local_hits(local_list, keyword)
+    # 歌词搜索：必须同时满足「搜歌词」前缀 + 设置里的歌词搜索开关。
+    # 关掉开关时，即使写「搜歌词 xxx」也只按普通关键词搜（前缀已被剥离）。
+    lyric_added = (
+        _inject_lyric_local_hits(local_list, keyword)
+        if lyric_mode and CONF.get("lyric_search_enabled")
+        else 0
+    )
     local_keys = {(title_from_track(x), artist_from_track(x)) for x in local_list}
     total_online = sum(1 for x in entry["items"] if (title_from_track(x), artist_from_track(x)) not in local_keys)
     original_total = upstream_json.get("data", {}).get("total", len(local_list))
@@ -4326,7 +4389,7 @@ async def _aggregate_search(request: Request, keyword: str, entry: dict) -> None
         sources.append(fetch_musicdl_search(get_musicdl_client(request.app), keyword, CONF["online_limit"]))
     if CONF.get("lx_enabled"):
         sources.append(fetch_lx_search(get_lx_client(request.app), keyword, CONF["lx_search_limit"]))
-    if CONF.get("lyric_search_enabled") and CONF.get("lyric_online_enabled"):
+    if entry.get("lyric_mode") and CONF.get("lyric_search_enabled") and CONF.get("lyric_online_enabled"):
         sources.append(fetch_lyric_online_search(request, keyword))
     tasks = [asyncio.create_task(coro) for coro in sources]
     pending = set(tasks)

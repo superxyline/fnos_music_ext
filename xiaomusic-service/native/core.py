@@ -42,6 +42,7 @@ from xiaomusic.music_library import MusicLibrary
 from xiaomusic.utils.text_utils import chinese_to_number
 
 from .dispatch import CommandDispatcher
+from .now_playing import clean_display_name, resolve_current_guid
 from .qrlogin import QRLogin
 
 
@@ -384,14 +385,32 @@ class NativeCore:
         else:
             await self.do_tts(did, "当前没有睡眠定时")
 
+    def current_play_guid(self, did: str = "") -> tuple[str, str]:
+        """当前播放曲目的 (guid, 歌名)：设备上报曲目反查桥接 URL 优先。
+
+        不能只信 last_played_guid：上游「随机列表播完一轮」时会在后台预缓存
+        下一首，预缓存也请求桥接 /play 取流，把 last_played 覆盖成下一首
+        （2026-11-23 实测：点《就是爱你》30 秒后「收藏这首歌」收藏到
+        《分手季节》）。解析逻辑见 native/now_playing.py。
+        """
+        lib = getattr(self, "music_library", None)
+        dm = getattr(self, "device_manager", None)
+        return resolve_current_guid(
+            getattr(dm, "devices", {}) or {},
+            (getattr(lib, "all_music", {}) or {}) if lib is not None else {},
+            getattr(self, "last_played_guid", ""),
+            getattr(self, "last_played_title", ""),
+            did,
+        )
+
     async def fav_current(self, did="", arg1="", **kwargs):
         """口令:收藏这首歌——收藏当前播放歌曲到飞牛音乐账号。
 
-        guid 来自桥接 /play（或点歌在线下载）记录的"最后取流"。官方 guid
-        直接建官方红心；在线 guid 走代理的红心自动下载链路（整轨落库→官方
-        收录→转官方红心，音质门槛自动生效）。已在收藏中则不重复写。"""
-        guid = str(getattr(self, "last_played_guid", "") or "")
-        title = str(getattr(self, "last_played_title", "") or "")
+        guid 取「设备上报当前曲目」（current_play_guid），不用 last_played_guid：
+        后者会被上游的下一首预缓存请求污染。官方 guid 直接建官方红心；在线
+        guid 走代理的红心自动下载链路（整轨落库→官方收录→转官方红心，音质
+        门槛自动生效）。已在收藏中则不重复写。"""
+        guid, title = self.current_play_guid(did)
         if not guid:
             await self.do_tts(did, "没有正在播放的歌曲，先点首歌吧")
             return
@@ -401,34 +420,68 @@ class NativeCore:
             self.log.warning("[native] 收藏当前歌曲失败：桥接客户端未就绪")
             await self.do_tts(did, "收藏服务还没就绪，稍后再试")
             return
-        label = f"《{title}》" if title else "这首歌"
-        # 已收藏判断：官方 guid 才有精确快照；在线 guid 无快照，直接走收藏
-        # →代理自动下载转正（重复收藏由代理的绑定/去重机制兜底）
-        favs = {
-            str(t.get("guid") or "")
-            for t in (getattr(bridge, "favorites", None) or [])
-            if isinstance(t, dict)
-        }
-        if guid in favs:
-            self.log.info("[native] 收藏口令：%s 已在收藏中", guid[:24])
-            await self.do_tts(did, f"{label}已经在收藏里啦")
-            return
+        # 展示名去掉音源标记（「[kuwo]就是爱你」→「就是爱你」），避免 TTS 念英文
+        display = clean_display_name(title)
+        label = f"《{display}》" if display else "这首歌"
+        # 不再用"已收藏"提前返回：官方 isFavorite 与 App 显示可能不一致
+        # （2026-11-23 实测：接口列表明确 isFavorite=true、App 却显示未收藏，
+        # 用户被"已经在收藏里了"卡住，无法完成收藏这个动作本身）。实测
+        # add_favorite 幂等——已收藏再调返回成功、收藏数不变，所以统一执行
+        # 收藏再回查，答复与用户的操作意图一致。
         try:
             await fn.add_favorite(guid)
         except Exception as e:  # noqa: BLE001
             self.log.warning("[native] 收藏当前歌曲失败 guid=%s: %s", guid[:24], e)
             await self.do_tts(did, f"收藏{label}失败了，请稍后再试")
             return
-        self.log.info("[native] 收藏当前歌曲成功 guid=%s", guid[:24])
-        # 快照即时补一条：紧跟的重复口令不误判；官方同步循环稍后全量校正
+        self.log.info("[native] 收藏接口已受理 guid=%s，回查确认", guid[:24])
+        if guid.startswith("online:"):
+            # 在线 guid：走代理红心链路异步下载转正，无法立即回查
+            await self.do_tts(did, f"好的，正在收藏{label}，下载完成后自动加入收藏")
+            return
+        # 官方 guid：回查收藏列表确认真的落库。接口 code=0 不等于一定可见
+        # （2026-11-23 用户反馈：提示已收藏，但 App 里看不到）。确认后才敢
+        # 说"已收藏"，并直接用官方列表刷新本地快照——绝不伪造条目，
+        # 否则下一句口令会误判"已在收藏中"而永不重试。
+        if await self._confirm_favorite(fn, bridge, guid):
+            await self.do_tts(did, f"好的，已收藏{label}")
+        else:
+            self.log.warning("[native] 收藏回查未命中 guid=%s", guid[:24])
+            await self.do_tts(did, f"收藏请求已提交，收藏列表还没同步出来，稍后刷新看看")
+
+    async def _live_favorite_guids(self, fn, bridge):
+        """实时拉官方收藏 guid 集合并刷新本地快照；失败返回 None（调用方退回快照）。"""
         try:
-            bridge.favorites = list(bridge.favorites or []) + [{"guid": guid}]
+            favs = await fn.get_favorites()
+        except Exception as e:  # noqa: BLE001
+            self.log.warning("[native] 收藏列表实时查询失败: %s", e)
+            return None
+        try:
+            bridge.favorites = favs
         except Exception:  # noqa: BLE001
             pass
-        if guid.startswith("online:"):
-            await self.do_tts(did, f"好的，正在收藏{label}，下载完成后自动加入收藏")
-        else:
-            await self.do_tts(did, f"好的，已收藏{label}")
+        return {str(t.get("guid") or "") for t in favs}
+
+    async def _confirm_favorite(self, fn, bridge, guid: str) -> bool:
+        """回查官方收藏列表确认落库（带一次短暂重试，官方索引可能有延迟）。"""
+        for attempt in (1, 2):
+            live = await self._live_favorite_guids(fn, bridge)
+            if live and guid in live:
+                self.log.info("[native] 收藏回查命中 guid=%s（第 %d 次）", guid[:24], attempt)
+                return True
+            if attempt == 1:
+                await asyncio.sleep(0.8)
+        self.log.warning("[native] 收藏回查未命中 guid=%s（官方列表里没有）", guid[:24])
+        return False
+
+    async def lyric_search_unsupported(self, did="", arg1="", **kwargs):
+        """口令「搜歌词 xxx」：音箱端不支持歌词搜索，明确提示，不触发任何搜索。
+
+        歌词搜索只在 App/管理台搜索框可用（网关按「搜歌词」前缀处理）；
+        音箱这边如果放进去，整串会被当歌名搜，什么都搜不到，还会误触发
+        网关的歌词搜索。直接拒掉更清楚（2026-11-23 用户需求）。
+        """
+        await self.do_tts(did, "小爱音箱不支持按歌词搜歌，请直接说歌名")
 
     async def play_music_list_index(self, did="", arg1="", **kwargs):
         """口令:播放列表第几个xx（移植自 XiaoMusic.play_music_list_index）"""

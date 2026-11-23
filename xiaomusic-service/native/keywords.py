@@ -18,6 +18,17 @@ KEYWORDS_PLAYLOCAL_DEFAULT = "播放下载歌曲"
 # 且不会抢占「播放本地歌曲」等更长词（它们在顺序里更靠前）
 USER_KEY_WORD_DICT_DEFAULT = {"播放": "play"}
 
+# 「搜歌词 xxx」前缀（2026-11-23 用户需求）：
+# 搜索框（App/管理台）支持这个前缀按歌词搜；**音箱端不支持**——口令命中后
+# 直接播报提示，绝不透传给搜索，避免把「搜歌词」当成歌名去搜。
+LYRIC_QUERY_PREFIXES = ("搜歌词", "按歌词搜", "歌词搜索", "歌词搜")
+LYRIC_QUERY_RE = re.compile("^\\s*(?:" + "|".join(LYRIC_QUERY_PREFIXES) + ")")
+
+
+def is_lyric_query(text: str) -> bool:
+    """口令/歌名是否以「搜歌词」类前缀开头。"""
+    return bool(LYRIC_QUERY_RE.match((text or "").strip()))
+
 # 停止口令（上游默认值 + 口语化变体）。
 # 上游 XIAOMUSIC_KEYWORDS_STOP 默认「关机,暂停,停止,停止播放,关闭,退出,关掉音乐」，
 # 全是两字以上规范词；「停下来吧」「别放了」这类口语一个字都不含，

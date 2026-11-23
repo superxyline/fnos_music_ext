@@ -44,11 +44,14 @@ from audio_id_resolver import (
     resolve_audio_ids,
     search_audio_id,
     DEFAULT_AUDIO_ID,
+    normalize_text,
+    strip_tags,
 )
 from native.keywords import (
     KEYWORDS_PLAYLIST_DEFAULT,
     KEYWORDS_PLAYLOCAL_DEFAULT,
     USER_KEY_WORD_DICT_DEFAULT,
+    is_lyric_query,
 )
 
 # ---------------- 配置 ----------------
@@ -329,6 +332,8 @@ async def lifespan(_app):
     patch_poll_watchdog()
     # 3.7 audio_id 解析：带屏设备屏幕显示正确的歌曲信息（见 patch docstring）
     patch_audio_id_resolver()
+    # 3.75 TTS 定时器：播报结束取消上游的"到点停止"，避免播报后把音乐停掉
+    patch_tts_timer()
     # 3.8 轮询间隔守卫：登录态变化时把 pull_ask_sec 在 1s / 60s 之间切换
     asyncio.create_task(poll_guard_loop())
     # 3.9 本地音乐文件服务（/music/*）：
@@ -476,21 +481,127 @@ def patch_playlist_behavior():
 
 
 # ---------------- 点歌兜底：搜索飞牛并自动收藏 ----------------
+# 2026-11-23 用户反馈：点「陶喆的就是爱你」被播成张杰《这就是爱》。官方
+# /search/track 是歌名+歌手+**歌词**全文匹配，歌词撞词的本地条目会排在前面；
+# 旧实现只按「整串 vs 歌名」的 difflib 相似度排序（「就是爱你 / 这就是爱」
+# 相似度正好 0.75），没有任何歌名校验就播了错歌。现改为歌名级确定性匹配：
+# 只认歌名，本地优先、本地没有才走在线源。手机 App / 网页端搜索走官方接口，
+# 不经过本文件，行为不变。
+
+# 来源标签前缀：本地曲库里带音源标记的歌名（「[kuwo]就是爱你」），匹配前剥掉。
+# 只认开头、ASCII 短标签，避免误伤歌名里本身带方括号的情况。
+_SOURCE_TAG_RE = re.compile(r"^\s*[\[【]\s*[A-Za-z0-9_\-]{1,12}\s*[\]】]\s*")
+
+# 标点剥离：「这,就是爱」这类官方歌名带标点，点歌口令通常不带（真机实测）
+_PUNCT_RE = re.compile(r"[\s,，.。、·!！?？:：;；'\"“”‘’()（）\[\]【】<>《》\-–—_/\\|~]+")
+
+
+def _norm_title(s: str) -> str:
+    """歌名归一化：繁→简 / 全角→半角 / 去来源标签 / 去版本后缀 / 去标点 / 小写。"""
+    return _PUNCT_RE.sub("", strip_tags(_SOURCE_TAG_RE.sub("", normalize_text(s or ""))))
+
+
+def _track_artists(t: dict) -> list[str]:
+    return [
+        (a.get("name") or "").strip()
+        for a in (t.get("artists") or [])
+        if (a.get("name") or "").strip()
+    ]
+
+
+def _track_full_name(t: dict) -> str:
+    """搜索条目的完整名（「歌手 - 歌名」），与歌单条目格式一致。"""
+    artists = " / ".join(_track_artists(t))
+    title = (t.get("title") or "").strip()
+    return f"{artists} - {title}" if artists else title
+
+
+def _title_hit(query: str, title: str) -> bool:
+    """判定候选歌名是否真的对应点歌口令（确定性规则，不做模糊相似度）。
+
+    口令通常是「歌手 + 歌名」（「陶喆的就是爱你」「周杰伦的晴天」）：
+      - 歌名 == 口令                              → 命中
+      - 歌名是口令子串（去掉歌手前缀即得歌名）    → 命中
+      - 口令是歌名子串且相差不超 6 字（Live/伴奏等）→ 命中
+    反例：「就是爱你」与「这就是爱」互不为子串 → 不命中（不再因歌词误播）。
+    单字歌名（如《爱》）只接受完全相等，避免「爱」撞进任何长口令。
+    """
+    q, t = _norm_title(query), _norm_title(title)
+    if not q or not t:
+        return False
+    if q == t:
+        return True
+    if len(t) == 1:
+        return False
+    if t in q:
+        return True
+    if q in t and len(t) - len(q) <= 6:
+        return True
+    return False
+
+
+def _artist_in_query(query: str, t: dict) -> bool:
+    """候选歌手是否出现在口令里（「陶喆的就是爱你」含「陶喆」）。仅用于排序加权。"""
+    q = normalize_text(query).replace(" ", "")
+    if not q:
+        return False
+    for name in _track_artists(t):
+        n = normalize_text(name).replace(" ", "")
+        if n and n in q:
+            return True
+    return False
+
+
+# 次选版本标记：同歌名的现场/伴奏/纯音乐/DJ 版排在录音室版之后（只影响排序）
+_LOW_PRIORITY_VERSION_RE = re.compile(
+    r"(live|伴奏|纯音乐|karaoke|ktv|dj|剧场|remix|cover|翻唱)", re.I
+)
+
+
+def _version_rank(title: str) -> int:
+    """0=常规版本，1=现场/伴奏等次选版本。"""
+    return 1 if _LOW_PRIORITY_VERSION_RE.search(title or "") else 0
+
+
 def _match_favorite(name: str):
-    """在收藏里宽松匹配歌名，命中返回可精确搜索的完整歌名，未命中返回 None"""
-    n = (name or "").replace(" ", "").lower()
+    """在收藏里按**歌名**匹配口令，返回可精确播放的完整名（歌手 - 歌名）。
+
+    只认歌名（用户要求：小爱点歌只匹配歌曲名，不因歌词/歌手误命中）。多个
+    候选时取「歌名完全相等 → 歌名更长（更具体）」的那一首——旧实现返回第一个
+    宽松命中，收藏里《晴天娃娃》会抢在《晴天》前面。未命中返回 None。
+    """
+    n = _norm_title(name)
     if not n:
         return None
+    best = None  # (score, full)
     for t in STATE.favorites:
         title = (t.get("title") or "").strip()
-        artists = " / ".join(
-            (a.get("name") or "").strip() for a in (t.get("artists") or []) if a.get("name")
-        )
-        title_n = title.replace(" ", "").lower()
-        artist_n = artists.replace(" ", "").lower()
-        if n in title_n or title_n in n or (artist_n and n in artist_n):
-            return f"{artists} - {title}" if artists else title
-    return None
+        if not _title_hit(name, title):
+            continue
+        score = (0 if _norm_title(title) == n else 1, -len(_norm_title(title)))
+        if best is None or score < best[0]:
+            best = (score, _track_full_name(t))
+    return best[1] if best else None
+
+
+def _artist_favorite_pick(name: str):
+    """口令恰好是某位歌手名 → 随机播该歌手一首收藏（歌名匹配失败时的唯一例外）。
+
+    「播放陶喆」这类没有歌名的口令保留原有便利；歌名匹配命中优先，这里只做
+    兜底。必须是歌手名完全相等，不做包含匹配，避免又变成模糊点歌。
+    """
+    n = normalize_text(name or "").replace(" ", "")
+    if not n:
+        return None
+    pool = [
+        t for t in STATE.favorites
+        if any(normalize_text(a).replace(" ", "") == n for a in _track_artists(t))
+    ]
+    if not pool:
+        return None
+    full = _track_full_name(random.choice(pool))
+    log.info("[play] 「%s」是收藏里的歌手名，随机选播该歌手一曲：%s", name, full)
+    return full
 
 
 async def _resolve_song(name: str):
@@ -514,13 +625,6 @@ async def _resolve_song(name: str):
     def _is_online(t):
         return str(t.get("guid") or "").startswith("online:")
 
-    def _full_name(t):
-        artists = " / ".join(
-            (a.get("name") or "").strip() for a in (t.get("artists") or []) if a.get("name")
-        )
-        title = (t.get("title") or "").strip()
-        return f"{artists} - {title}" if artists else title
-
     keywords = [name]
     if "的" in name:
         keywords.append(name.replace("的", " "))  # 「周杰伦的晴天」→「周杰伦 晴天」
@@ -528,39 +632,47 @@ async def _resolve_song(name: str):
     online_track = None
     for kw in keywords:
         try:
-            tracks = await fn.search_track(kw)
+            # 窗口给到 50：正主可能被歌词撞词的条目挤到 20 条之外
+            tracks = await fn.search_track(kw, page_size=50)
         except Exception as e:
             log.warning("[play] 搜索 %r 失败: %s", kw, e)
             continue
         if not tracks:
             continue
-        # 按标题相似度排序（搜索源返回顺序不一定最相关）
-        import difflib
-        tracks = sorted(
-            tracks,
-            key=lambda t: difflib.SequenceMatcher(
-                None, name.lower(), (t.get("title") or "").lower()
-            ).ratio(),
-            reverse=True,
-        )
-        # 优先本地曲库结果（guid 非 online: 前缀）：注入内存播放列表直接播，
-        # 绝不写入飞牛收藏（点歌≠收藏；旧实现 add_favorite 会污染用户收藏）
-        for t in tracks:
-            if not _is_online(t):
-                guid = t.get("guid") or ""
-                if not guid:
-                    continue
-                full = _inject_to_playlist(_full_name(t), guid)
-                if not full:
-                    continue
-                log.info("[play] 本地曲库命中「%s」，已注入播放列表（不入收藏）", full)
-                return "ready", full
-        # 本地没有，记住相似度最高的在线结果，继续下一变体（也可能变体有本地结果）
+        # 只保留**歌名真正对应**的结果：官方搜索是歌名+歌手+歌词全文匹配，
+        # 歌词撞词的条目（点「就是爱你」返回《这就是爱》）必须在这里剔除，
+        # 否则后面无论怎么排序都会播出错歌（2026-11-23 用户反馈的根因）。
+        hits = [t for t in tracks if _title_hit(name, t.get("title") or "")]
+        if not hits:
+            log.info(
+                "[play] 搜索 %r 返回 %d 条，歌名均不匹配「%s」，跳过",
+                kw, len(tracks), name,
+            )
+            continue
+        # 本地优先 → 歌名完全相等 → 歌手一致 → 录音室版优先于 Live/伴奏
+        #（后三项只排序，不是命中条件）
+        hits.sort(key=lambda t: (
+            1 if _is_online(t) else 0,
+            0 if _norm_title(t.get("title") or "") == _norm_title(name) else 1,
+            0 if _artist_in_query(name, t) else 1,
+            _version_rank(t.get("title") or ""),
+        ))
+        # 本地曲库命中：注入内存播放列表直接播，绝不写入飞牛收藏
+        # （点歌≠收藏；旧实现 add_favorite 会污染用户收藏）
+        for t in hits:
+            if _is_online(t):
+                continue
+            guid = t.get("guid") or ""
+            if not guid:
+                continue
+            full = _inject_to_playlist(_track_full_name(t), guid)
+            if not full:
+                continue
+            log.info("[play] 本地曲库命中「%s」，已注入播放列表（不入收藏）", full)
+            return "ready", full
+        # 本地没有，记住歌名匹配的在线结果，继续下一变体（也可能变体有本地结果）
         if online_track is None:
-            for t in tracks:
-                if _is_online(t):
-                    online_track = t
-                    break
+            online_track = next((t for t in hits if _is_online(t)), None)
 
     # 本地曲库没有 → 在线歌：经 proxy /track/stream 下载到本地音乐目录（不进收藏）
     if online_track is not None:
@@ -572,7 +684,7 @@ async def _resolve_song(name: str):
                 XM.last_played_guid = online_track.get("guid") or ""
                 XM.last_played_title = (online_track.get("title") or "").strip()
                 XM.last_played_at = time.time()
-            return "downloaded", _full_name(online_track)
+            return "downloaded", _track_full_name(online_track)
     log.info("[play] 搜索「%s」无可用结果", name)
     return None, None
 
@@ -699,10 +811,11 @@ def patch_play_search():
     再播放——点歌绝不写入飞牛收藏。
 
     「播放晴天」经 user_key_word_dict 匹配到 play 动作（arg1=晴天）。
-    这里包装 XM.play：先在收藏里宽松匹配（命中则用完整歌名精确播放），
-    未命中调 fnmusicext 搜索：
-      - 本地曲库命中 → 注入内存播放列表直接播（v3.3.5 起，旧版会 add_favorite）
-      - 在线歌命中 → ffmpeg 下载到本地音乐目录后播（不入收藏）
+    这里包装 XM.play：先在收藏里**按歌名**匹配（命中则用完整歌名精确播放），
+    口令恰好是歌手名时随机播该歌手一首收藏，仍未命中调 fnmusicext 搜索：
+      - 本地曲库歌名命中 → 注入内存播放列表直接播（v3.3.5 起，旧版会 add_favorite）
+      - 本地没有 → 在线源同名歌下载到本地音乐目录后播（不入收藏）
+      - 歌名都对不上 → TTS「没有找到」，宁可不播也不播错歌
     """
     if XM is None:
         return
@@ -710,9 +823,21 @@ def patch_play_search():
 
     async def patched_play(did="", arg1="", **kwargs):
         name = (arg1 or "").strip()
+        if name and is_lyric_query(name):
+            # 「播放搜歌词 某人」这类：dispatch 已拦下纯前缀口令，这里兜住
+            # 被「播放」抢走的情况——绝不把歌词口令送进搜索链路
+            log.info("[play] 搜歌词口令：音箱端不支持，提示后返回. arg=%r", name)
+            try:
+                await XM.do_tts(did, "小爱音箱不支持按歌词搜歌，请直接说歌名")
+            except Exception as e:  # noqa: BLE001
+                log.warning("[play] TTS 失败: %s", e)
+            return
         if name:
             cmd_snapshot = getattr(XM, "last_cmd", "")
             exact = _match_favorite(name)
+            if exact is None:
+                # 歌名匹配失败时的唯一例外：口令恰好是收藏里的歌手名
+                exact = _artist_favorite_pick(name)
             if exact is None:
                 log.info("[play] 收藏中没有「%s」，解析本地曲库/在线下载", name)
                 mode, exact = await _resolve_song(name)
@@ -836,6 +961,96 @@ def patch_audio_id_resolver():
     log.info("[audio_id] 屏幕音频ID解析已生效（缓存 %s）", AUDIO_ID_CACHE.stats())
 
 
+def patch_tts_timer():
+    """TTS 优先走设备**原生语音通道**：不打断音乐、播完自然续播且不丢进度。
+
+    2026-11-23 实测 edge-tts 路径的三个坑（都是 `play_by_music_url`
+    → `REPLACE_ALL` 替换了媒体队列导致的）：
+      - 上游 TTS 定时器到点 stop → 播报后音乐被暂停；
+      - 取消定时器 → 设备把 TTS mp3 当单曲循环，同一句无限重复；
+      - 拦截 stop 改成重播原曲 → 能放，但从头开始（进度丢失）。
+    原生 TTS（miio 自定义命令 / mina text_to_speech）是设备"说话"通道，
+    不占播放队列，音乐继续、进度保持。
+
+    策略：优先原生；原生失败（无 mina 服务 / 硬件不支持）回退 edge-tts，
+    回退路径保留 stop("notts") 拦截，至少把音乐接回来。
+    """
+    try:
+        from miservice import miio_command
+        from xiaomusic.const import TTS_COMMAND
+        from xiaomusic.device_player import XiaoMusicDevice
+    except ImportError:
+        log.info("[tts] 无 xiaomusic 环境，跳过 TTS 包装")
+        return
+
+    original_tts = XiaoMusicDevice.text_to_speech
+    original_edge = getattr(XiaoMusicDevice, "_text_to_speech_edge_tts", None)
+    original_stop = XiaoMusicDevice.stop
+
+    # 家庭屏 mini 上报型号是 X4B，miio 命令族与 ASX4B 相同（TTS_COMMAND 里只有 ASX4B）
+    _TTS_ALIAS = {"X4B": "ASX4B"}
+
+    async def _native_tts(dev, value: str) -> bool:
+        """原生播报，成功返回 True（不占用播放队列）。
+
+        只走 **miio 自定义命令**（L05B/LX06 等实测可靠）。不再尝试 mina
+        `text_to_speech`：2026-11-23 实测家庭屏 mini 返回 code=0 但设备
+        完全无声（该固件 mina 是空壳，与项目里 get_ask_by_mina=False 的
+        结论一致）。没有可用命令就返回 False，交给 edge-tts 回退——宁可
+        打断音乐，也不能没声音。
+        """
+        # 应急开关：置 FNMUSIC_NATIVE_TTS=0 全部退回 edge-tts
+        if os.getenv("FNMUSIC_NATIVE_TTS", "1") == "0":
+            return False
+        try:
+            hardware = getattr(dev, "hardware", "") or ""
+            cmd = TTS_COMMAND.get(hardware) or TTS_COMMAND.get(_TTS_ALIAS.get(hardware, ""))
+            if not cmd:
+                return False
+            await miio_command(
+                dev.auth_manager.miio_service, dev.did,
+                f"{cmd} {value.replace(' ', ',')}",
+            )
+            dev.log.info("[tts] 原生 miio 播报（不打断音乐）: %s", value)
+            return True
+        except Exception as e:  # noqa: BLE001
+            dev.log.warning("[tts] 原生播报失败，回退 edge-tts: %s", e)
+            return False
+
+    async def patched_text_to_speech(self, value):
+        if not value:
+            return
+        if await _native_tts(self, value):
+            return
+        return await original_tts(self, value)
+
+    async def patched_edge_tts(self, value):
+        # 回退路径：记录 TTS 前的播放状态，定时器到点时据此恢复原曲
+        try:
+            playing = bool(getattr(self, "is_playing", False))
+            self._tts_resume_music = self.get_cur_music() if playing else ""
+        except Exception:  # noqa: BLE001
+            self._tts_resume_music = ""
+        return await original_edge(self, value)
+
+    async def patched_stop(self, arg1=""):
+        resume = getattr(self, "_tts_resume_music", "") if arg1 == "notts" else ""
+        if resume:
+            self._tts_resume_music = ""
+            try:
+                self.log.info("[tts] 回退路径：播报结束，恢复播放《%s》", resume)
+                return await self._play(resume)
+            except Exception as e:  # noqa: BLE001
+                self.log.warning("[tts] 恢复播放失败，回退停止: %s", e)
+        return await original_stop(self, arg1=arg1)
+
+    XiaoMusicDevice.text_to_speech = patched_text_to_speech
+    if original_edge is not None:
+        XiaoMusicDevice._text_to_speech_edge_tts = patched_edge_tts
+    XiaoMusicDevice.stop = patched_stop
+    log.info("[tts] 原生播报优先已生效（不打断音乐；edge-tts 回退带恢复）")
+
+
 # ---------------- 当前播放（管理台「小爱音箱」页展示） ----------------
 # 歌单条目 URL 形如 /play?guid=<guid>；在线源 guid 为 online:<源>:<id>，
 # 走自定义音源（lx）时多一层平台段 online:lx:<平台>:<id>（kw/kg/tx/wy/mg）。
@@ -941,13 +1156,22 @@ async def play(request: Request, guid: str):
     """带认证请求飞牛音乐取流，跟随 302，流式回传（支持 Range）"""
     if not CFG.get("wizard_done"):
         return JSONResponse({"error": "尚未完成安装向导"}, status_code=503)
-    # 口令收藏（fav_current）：音箱开播哪首就来取哪首的流，这里即"当前播放"
+    # 口令收藏（fav_current）：音箱开播哪首就来取哪首的流，这里即"当前播放"。
+    # 但上游在列表播完一轮时会**后台预缓存下一首**，预缓存也会打这个端点——
+    # 来源是容器内部（127.0.0.1 或 docker 网关），不能当"当前播放"记录，
+    # 否则「收藏这首歌」会收藏到下一首（2026-11-23 实测：《就是爱你》被记成
+    # 《分手季节》）。真正的音箱取流来源是局域网 IP。
+    client_host = (request.client.host if request.client else "") or ""
     if XM is not None:
-        XM.last_played_guid = guid
-        # 顺带反查歌名（收藏快照命中才有值）；在线源流拿不到名字，靠设备当前曲兜底
-        XM.last_played_title = _favorite_display_name(guid) or ""
-        XM.last_played_at = time.time()
-        log.info("[play] 记录当前播放 guid=%s", guid[:40])
+        if client_host in ("127.0.0.1", "::1") or client_host == GATEWAY_IP:
+            log.info("[play] 预缓存取流（内部来源 %s）guid=%s，不记为当前播放",
+                     client_host, guid[:40])
+        else:
+            XM.last_played_guid = guid
+            # 顺带反查歌名（收藏快照命中才有值）；在线源流拿不到名字，靠设备当前曲兜底
+            XM.last_played_title = _favorite_display_name(guid) or ""
+            XM.last_played_at = time.time()
+            log.info("[play] 记录当前播放 guid=%s（来源 %s）", guid[:40], client_host)
     STATE.fn = STATE.fn or new_fn_client()
     range_header = request.headers.get("range")
     try:

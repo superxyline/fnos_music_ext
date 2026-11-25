@@ -1534,16 +1534,42 @@ async function loadLogs() {
     }
     listEl.innerHTML = files.map((f) => {
       const name = escapeHtml(f.name || "");
-      const href = `/api/logs/download?name=${encodeURIComponent(f.name || "")}`;
-      return `<a class="state-line" href="${href}" download="${name}">${name} · ${formatBytes(f.size)}</a>`;
+      return `<a class="state-line" href="#" data-log="${name}">${name} · ${formatBytes(f.size)}</a>`;
     }).join("");
+    listEl.querySelectorAll("[data-log]").forEach((el) => {
+      el.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        const name = el.dataset.log || "";
+        downloadFile(`${APP_BASE}/api/logs/download?name=${encodeURIComponent(name)}`, name)
+          .catch((err) => toast(`日志下载失败：${err.message || err}`, "err"));
+      });
+    });
   } catch (err) {
     if (dirEl) dirEl.textContent = `日志目录加载失败：${err.message || err}`;
   }
 }
 
+// 管理台挂在 APP_BASE 下且嵌在飞牛桌面 iframe 里：直接 window.location 跳到
+// /api/... 会把 iframe 导航到非页面响应，飞牛壳显示「这里暂时没有装入页面」。
+// 统一 fetch + blob + a[download]，页面不跳转。
+async function downloadFile(url, filename) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const blob = await resp.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 3000);
+}
+
 $("#logs-export").addEventListener("click", () => {
-  window.location.href = "/api/logs/export";
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  downloadFile(`${APP_BASE}/api/logs/export`, `fnmusic-logs-${stamp}.zip`)
+    .catch((err) => toast(`日志打包失败：${err.message || err}`, "err"));
 });
 $("#logs-refresh").addEventListener("click", () => {
   loadLogs();

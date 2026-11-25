@@ -954,6 +954,13 @@ chown -R 1000:1000 "${SOURCES_DATA_DIR}" 2>/dev/null || true
 find "${SOURCES_DATA_DIR}" -type d -exec chmod 0700 {} + 2>/dev/null || true
 find "${SOURCES_DATA_DIR}" -type f -exec chmod 0600 {} + 2>/dev/null || true
 
+# 运行日志目录（repo/logs，容器 /repo/logs 同一目录）：宿主 proxy 以 root 写、
+# 容器内 webui/xiaomusic/lxmusic 以 appuser(1000) 写，必须让 1000 可写；
+# setgid 让新建文件自动归 1000 组，管理台「关于 → 运行日志」才能下载到。
+mkdir -p "${BASE_DIR}/logs"
+chown 1000:1000 "${BASE_DIR}/logs" 2>/dev/null || chmod 0777 "${BASE_DIR}/logs" 2>/dev/null || true
+chmod 2775 "${BASE_DIR}/logs" 2>/dev/null || true
+
 # 归一化服务源码权限：umask 077 环境检出的文件为 600，会导致镜像内 appuser 读不到 app.py
 chmod 0644 \
     "${BASE_DIR}/musicdl-service/app.py" "${BASE_DIR}/musicdl-service/hardening.py" \

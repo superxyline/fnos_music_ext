@@ -37,6 +37,25 @@ from proxy.env_merge import (  # noqa: E402
 logger = logging.getLogger("webui_service")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
+# 运行日志落盘（logs/webui.log）：与 proxy 共用 fnlog，容器内读的是同一个 /repo/logs
+try:
+    from proxy.fnlog import (
+        export_bundle as fn_export_bundle,
+        list_logs as fn_list_logs,
+        log_dir as fn_log_dir,
+        log_enabled as fn_log_enabled,
+        resolve_log_file as fn_resolve_log_file,
+        setup_logging as _fn_setup_logging,
+        write_env_snapshot as _fn_env_snapshot,
+    )
+
+    _fn_setup_logging("", "webui")
+    _fn_env_snapshot("container")
+except Exception as _e:  # noqa: BLE001
+    logger.warning("文件日志初始化失败（仅 stdout）: %s", _e)
+    fn_export_bundle = fn_list_logs = fn_log_dir = fn_log_enabled = fn_resolve_log_file = None
+    fn_write_env_snapshot = None
+
 SERVICE_VERSION = "2.0.0"
 
 CONF = {
@@ -138,6 +157,7 @@ SCHEMA: dict[str, dict] = {
     "FNMUSIC_SEARCH_LOG_QUERY": {"kind": "bool", "default": "true", "group": "search", "reload": "hot", "label": "搜索请求日志带关键词"},
     "FNMUSIC_LYRIC_SEARCH_ENABLED": {"kind": "bool", "default": "true", "group": "search", "reload": "hot", "label": "歌词搜索"},
     "FNMUSIC_LYRIC_ONLINE_ENABLED": {"kind": "bool", "default": "true", "group": "search", "reload": "hot", "label": "歌词搜索 · 在线音源"},
+    "FNMUSIC_LOG_ENABLED": {"kind": "bool", "default": "true", "group": "settings", "reload": "hot", "label": "记录运行日志"},
     "FNMUSIC_NETEASE_MY_PLAYLISTS": {"kind": "bool", "default": "false", "group": "source", "reload": "hot", "label": "网易账号歌单"},
     "FNMUSIC_NETEASE_SUBSCRIBED": {"kind": "bool", "default": "true", "group": "source", "reload": "hot", "label": "网易收藏歌单"},
     "FNMUSIC_NETEASE_PLAYLIST_RESIDENT": {"kind": "bool", "default": "", "group": "source", "reload": "hot", "label": "网易云歌单常驻"},
@@ -774,6 +794,52 @@ async def api_about():
         "deploy_mode": values.get("FNMUSIC_DEPLOY_MODE", "docker"),
         **ABOUT,
     }
+
+
+# ------------------------------------------------------------------ 运行日志 --
+# 落盘由 proxy/fnlog 负责（按天/50MB 滚动、保留 3 天、敏感值打码），这里只做
+# 清单、单文件下载与一键打包——别人遇到问题时不用 SSH 敲命令就能把日志拿出来。
+@app.get("/api/logs")
+async def api_logs():
+    if fn_list_logs is None:
+        return {"ok": False, "enabled": False, "files": [], "note": "日志模块不可用"}
+    return {
+        "ok": True,
+        "enabled": bool(fn_log_enabled()) if fn_log_enabled else False,
+        "dir": str(fn_log_dir()) if fn_log_dir else "",
+        "retention_days": 3,
+        "files": fn_list_logs(),
+    }
+
+
+@app.get("/api/logs/download")
+async def api_logs_download(name: str = Query("", description="日志文件名")):
+    path = fn_resolve_log_file(name) if fn_resolve_log_file else None
+    if path is None:
+        raise HTTPException(status_code=404, detail="日志文件不存在")
+    return FileResponse(path, filename=path.name, media_type="text/plain")
+
+
+@app.get("/api/logs/export")
+async def api_logs_export():
+    if fn_export_bundle is None:
+        raise HTTPException(status_code=503, detail="日志模块不可用")
+    try:
+        if fn_write_env_snapshot is not None:
+            fn_write_env_snapshot("container")
+    except Exception:  # noqa: BLE001
+        pass
+    path = fn_export_bundle()
+    if path is None:
+        raise HTTPException(status_code=404, detail="还没有日志文件")
+    from starlette.background import BackgroundTask
+
+    return FileResponse(
+        path,
+        filename=f"fnmusic-logs-{time.strftime('%Y%m%d-%H%M%S')}.zip",
+        media_type="application/zip",
+        background=BackgroundTask(lambda: path.unlink(missing_ok=True)),
+    )
 
 
 @app.get("/api/update-check")

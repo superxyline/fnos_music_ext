@@ -76,6 +76,44 @@ def log_dir() -> Path:
     return Path("/repo/logs")
 
 
+_ENABLED_CACHE: dict = {"ts": 0.0, "value": True}
+_ENABLED_TTL = 5.0
+
+
+def _env_file_path() -> Path:
+    override = (os.environ.get("FNMUSIC_ENV_FILE") or "").strip()
+    if override:
+        return Path(override)
+    return log_dir().parent / ".env"
+
+
+def log_enabled() -> bool:
+    """是否把运行日志落盘（管理台「设置 → 运行日志」开关，默认开）。
+
+    判定顺序：进程环境变量（proxy 热重载/服务启动时注入）→ .env 文件（5 秒
+    缓存）。之所以还要读文件：webui 保存开关后，容器内 xiaomusic/lxmusic 等
+    独立进程的 os.environ 不会变，只有读文件才能"保存即生效"，否则要重启。
+    关闭时不删除历史日志，只是 handler 丢弃新记录（仍可在「关于」页下载，
+    满 3 天由 purge_stale 清理）。
+    """
+    raw = (os.environ.get("FNMUSIC_LOG_ENABLED") or "").strip()
+    if raw:
+        return raw.lower() in ("true", "1", "yes", "on")
+    now = time.time()
+    if now - float(_ENABLED_CACHE.get("ts") or 0) < _ENABLED_TTL:
+        return bool(_ENABLED_CACHE.get("value"))
+    value = True
+    try:
+        kv = dict(parse_env_file(str(_env_file_path()))[0])
+        raw = str(kv.get("FNMUSIC_LOG_ENABLED") or "").strip()
+        if raw:
+            value = raw.lower() in ("true", "1", "yes", "on")
+    except Exception:  # noqa: BLE001
+        pass
+    _ENABLED_CACHE.update({"ts": now, "value": value})
+    return value
+
+
 def _open_log_file(filename: str | Path, mode: str = "a", encoding: str = "utf-8",
                    errors: str | None = None):
     """Open a regular, single-link log safely; only chmod files owned by this uid.
@@ -126,6 +164,15 @@ class _BoundedTimedRotatingFileHandler(logging.handlers.TimedRotatingFileHandler
 
     def _open(self):
         return _open_log_file(self.baseFilename, self.mode, self.encoding, self.errors)
+
+    def emit(self, record: logging.LogRecord) -> None:  # noqa: D102
+        # 「设置 → 运行日志」关闭时立即停写（log_enabled 带 5 秒缓存，不逐行读文件）
+        try:
+            if not log_enabled():
+                return
+        except Exception:  # noqa: BLE001
+            pass
+        super().emit(record)
 
     def computeRollover(self, current_time):  # noqa: N802
         if self.when != "MIDNIGHT":
@@ -202,8 +249,13 @@ _SET_UP: set[str] = set()
 
 
 def setup_logging(logger_name: str, service: str, level: int = logging.INFO) -> logging.Logger:
-    """给服务 logger 挂文件 handler（logs/<service>.log），幂等；失败静默跳过。"""
+    """给服务 logger 挂文件 handler（logs/<service>.log），幂等；失败静默跳过。
+
+    handler 始终挂载，是否真正写盘由 `emit` 里的 `log_enabled()` 决定——这样
+    「设置 → 运行日志」开关保存后（最多 5 秒）双向即时生效，不用重启进程。
+    """
     lg = logging.getLogger(logger_name)
+    lg.setLevel(level)
     key = f"{logger_name}:{service}"
     if key not in _SET_UP:
         _SET_UP.add(key)
@@ -221,7 +273,6 @@ def setup_logging(logger_name: str, service: str, level: int = logging.INFO) -> 
         except Exception:  # noqa: BLE001
             pass
         purge_stale()
-    lg.setLevel(level)
     return lg
 
 
@@ -471,3 +522,66 @@ def write_env_snapshot(context: str = "host") -> bool:
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+_LOG_NAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+
+
+def list_logs() -> list[dict]:
+    """日志目录清单（name/size/mtime），供管理台「关于」页展示与下载白名单。"""
+    directory = log_dir()
+    items: list[dict] = []
+    if not directory.is_dir():
+        return items
+    try:
+        entries = sorted(directory.iterdir(), key=lambda p: p.name)
+    except OSError:
+        return items
+    for path in entries:
+        if not path.is_file():
+            continue
+        name = path.name
+        # 只暴露日志与快照：proxy.log / proxy.log.2026-11-25 / env_snapshot.txt
+        if ".log" not in name and not name.endswith(".txt"):
+            continue
+        try:
+            stat_info = path.stat()
+        except OSError:
+            continue
+        items.append({"name": name, "size": stat_info.st_size, "mtime": int(stat_info.st_mtime)})
+    return items
+
+
+def resolve_log_file(name: str) -> "Path | None":
+    """按名称定位日志文件：严格白名单，拒绝任何路径分隔符与 `..`。"""
+    raw = (name or "").strip()
+    if not raw or not _LOG_NAME_RE.fullmatch(raw):
+        return None
+    if "/" in raw or "\\" in raw or ".." in raw:
+        return None
+    if ".log" not in raw and not raw.endswith(".txt"):
+        return None
+    path = log_dir() / raw
+    return path if path.is_file() else None
+
+
+def export_bundle() -> "Path | None":
+    """把日志目录打成 zip（含 env_snapshot.txt），返回临时文件路径；无日志返回 None。"""
+    items = list_logs()
+    if not items:
+        return None
+    try:
+        import tempfile
+        import zipfile
+
+        fd, raw_path = tempfile.mkstemp(prefix="fnmusic-logs-", suffix=".zip")
+        os.close(fd)
+        path = Path(raw_path)
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for item in items:
+                src = resolve_log_file(str(item.get("name") or ""))
+                if src is not None:
+                    zf.write(src, arcname=f"fnmusic-logs/{src.name}")
+        return path
+    except Exception:  # noqa: BLE001
+        return None

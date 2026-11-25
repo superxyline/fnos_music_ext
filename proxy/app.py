@@ -64,6 +64,19 @@ except ImportError:  # uvicorn --app-dir proxy
 logger = logging.getLogger("fnmusic_proxy")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
+# 运行日志落盘（logs/proxy.log，按天/50MB 滚动、保留 3 天、敏感值打码）。
+# 管理台「设置 → 运行日志」关闭时 setup_logging 不挂文件 handler，只留 stdout。
+# 环境快照写一次，供「关于 → 运行日志 → 打包下载」附带，排查时不用再逐项问配置。
+try:
+    try:
+        from .fnlog import setup_logging as _fn_setup_logging, write_env_snapshot as _fn_env_snapshot
+    except ImportError:
+        from fnlog import setup_logging as _fn_setup_logging, write_env_snapshot as _fn_env_snapshot  # type: ignore
+    _fn_setup_logging("", "proxy")
+    _fn_env_snapshot("host")
+except Exception as _e:  # noqa: BLE001
+    logger.warning("文件日志初始化失败（仅 stdout）: %s", _e)
+
 _HOME = dailyrec.home_dir()
 
 

@@ -24,6 +24,7 @@ import asyncio
 import logging
 import random
 import re
+import time
 from pathlib import Path
 
 from xiaomusic.auth import AuthManager
@@ -170,14 +171,58 @@ class NativeCore:
 
     # ---------------- 命令入口（移植自 XiaoMusic，去掉用不到的分支） ----------------
 
+    def _safe_list_name(self, list_name: str) -> str:
+        """把口令里的歌单名解析成真实歌单名；解析不到返回空串（调用方负责提示）。
+
+        上游 `find_real_music_list_name` 内部是 `find_best_match(...)[0]`，
+        匹配不到时不返回空串而是直接 IndexError（2026-11-25 实测：重新配置后
+        歌单名变成「收藏歌单」，说「播放本地收藏歌单」直接越界，异常冒到
+        poller 把整个口令轮询打死，桥接从此听不到任何指令）。这里兜住：
+        歌单表为空（首次同步未完成）或匹配失败都返回空串，由调用方 TTS 提示。
+        """
+        music_list = getattr(self.music_library, "music_list", None) or {}
+        if not music_list:
+            self.log.info("[native] 歌单表为空，跳过匹配 %r", list_name)
+            return ""
+        real = ""
+        try:
+            real = self.music_library.find_real_music_list_name(list_name)
+        except Exception as e:  # noqa: BLE001
+            self.log.warning("[native] 歌单名匹配失败 %r: %s", list_name, e)
+        if real and real in music_list:
+            return real
+        self.log.info("[native] 歌单名 %r 未命中（现有 %d 个）", list_name, len(music_list))
+        try:
+            return self._fallback_collect_list(list_name)
+        except Exception as e:  # noqa: BLE001
+            self.log.warning("[native] 歌单回落失败 %r: %s", list_name, e)
+            return ""
+
+    def _fallback_collect_list(self, wanted: str) -> str:
+        """口令名匹配不上时按语义回落：含「收藏」的口令 → 唯一的收藏歌单。
+
+        实测场景（2026-11-25）：配置里歌单叫「收藏歌单」，用户喊「播放本地
+        收藏歌单」，上游模糊匹配达不到阈值 → 越界。这里在**唯一**候选时回落，
+        有多个含「收藏」的歌单（乱序 + 顺序两份）就放弃，交给调用方提示，
+        宁可让用户换个说法也不要播错歌单。
+        """
+        if "收藏" not in (wanted or ""):
+            return ""
+        music_list = getattr(self.music_library, "music_list", None) or {}
+        cands = [n for n in music_list if "收藏" in n and "顺序" not in n]
+        if len(cands) == 1:
+            self.log.info("[native] 歌单名 %r 回落为 %r", wanted, cands[0])
+            return cands[0]
+        return ""
+
     async def play_music_list(self, did="", arg1="", **kwargs):
         parts = (arg1 or "").split("|")
-        list_name = parts[0]
+        wanted = parts[0]
         music_name = parts[1] if len(parts) > 1 else ""
         # 模糊匹配歌单名（空串返回第一个歌单，委托 music_library）
-        list_name = self.music_library.find_real_music_list_name(list_name)
-        if list_name not in self.music_library.music_list:
-            await self.do_tts(did, f"播放列表{list_name}不存在")
+        list_name = self._safe_list_name(wanted)
+        if not list_name:
+            await self.do_tts(did, f"没有找到歌单{wanted}，请稍后再试" if wanted else "没有找到歌单")
             return
         await self.device_manager.devices[did].play_music_list(list_name, music_name)
 
@@ -285,7 +330,13 @@ class NativeCore:
 
     async def do_check_cmd(self, did="", query="", ctrl_panel=True, **kwargs):
         self.last_cmd = query
-        await self.dispatcher.dispatch(did, query, ctrl_panel)
+        try:
+            await self.dispatcher.dispatch(did, query, ctrl_panel)
+        except Exception as e:  # noqa: BLE001
+            # 单条口令异常绝不能冒到 poller：那会让整个轮询任务退出，桥接
+            # 从此收不到任何口令、管理台也不再更新"正在播放"（2026-11-25
+            # 实测：歌单名匹配 IndexError 直接打死轮询）。只记日志，继续轮询。
+            self.log.warning("[native] 口令处理异常 query=%r: %s", query, e, exc_info=True)
 
     async def reset_timer_when_answer(self, answer_length, did):
         dev = self.device_manager.devices.get(did)
@@ -491,10 +542,11 @@ class NativeCore:
             return await self.play_music_list(did, arg1)
 
         chinese_index, list_name = matcharg.groups()
-        list_name = self.music_library.find_real_music_list_name(list_name)
-        if list_name not in self.music_library.music_list:
-            await self.do_tts(did, f"播放列表{list_name}不存在")
+        real_name = self._safe_list_name(list_name)
+        if not real_name:
+            await self.do_tts(did, f"没有找到歌单{list_name}，请稍后再试")
             return
+        list_name = real_name
 
         index = chinese_to_number(chinese_index)
         play_list = self.music_library.music_list[list_name]
@@ -534,13 +586,40 @@ class NativeCore:
     # ---------------- 生命周期 ----------------
 
     async def run_forever(self):
-        """主循环（照搬 XiaoMusic.run_forever 的相关部分）。"""
+        """主循环（照搬 XiaoMusic.run_forever）+ 轮询守护。
+
+        轮询是桥接的命根子：`run_conversation_loop` 一旦异常退出，口令就再也
+        收不到、管理台「正在播放」也不再更新，只能重启进程（2026-11-25 实测：
+        一句歌单口令的 IndexError 就把轮询打死了）。这里做成守护循环——
+        异常或意外退出后按退避重建，连续正常运行超过 60 秒则重置退避。
+        """
         self.log.info("[native] run_forever start")
         self.music_library.try_gen_all_music_tag()
-        await self.auth_manager.init_all_data()
-        await self.conversation_poller.run_conversation_loop(
-            self.do_check_cmd, self.reset_timer_when_answer
-        )
+        try:
+            await self.auth_manager.init_all_data()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            # 登录失败不阻断轮询（轮询内部按登录态自行退避），只记录
+            self.log.error("[native] 初始化登录失败: %s", e, exc_info=True)
+
+        backoff = 2
+        while True:
+            started = time.monotonic()
+            try:
+                await self.conversation_poller.run_conversation_loop(
+                    self.do_check_cmd, self.reset_timer_when_answer
+                )
+                self.log.warning("[native] 口令轮询循环退出，%d 秒后重建", backoff)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                self.log.error("[native] 口令轮询异常退出: %s，%d 秒后重建",
+                               e, backoff, exc_info=True)
+            if time.monotonic() - started > 60:
+                backoff = 2  # 跑稳过一阵再崩的，从最小退避重来
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 30)
 
     async def cancel_all_tasks(self):
         for t in list(self.running_task):

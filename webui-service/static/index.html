@@ -505,6 +505,16 @@
           <div class="stack" id="about-links"></div>
         </div>
         <div class="card">
+          <div class="card-title">运行日志</div>
+          <div class="hint" id="logs-dir">日志目录：—</div>
+          <div class="stack" id="logs-list"></div>
+          <div class="btn-row">
+            <button class="btn" id="logs-export">打包下载</button>
+            <button class="btn" id="logs-refresh">刷新</button>
+          </div>
+          <div class="hint">打包内容含各服务日志与环境快照（系统/网络/飞牛配置摘要，密钥已自动打码），出问题时可整体发给维护者排查。</div>
+        </div>
+        <div class="card">
           <div class="card-title">免责声明</div>
           <p class="hint">本扩展仅用于个人合法拥有/授权内容的播放与管理，不提供任何音源内容存储。
           在线音源的可用性、合法性与版权归属由提供方负责；请勿用于任何商业用途，
@@ -522,6 +532,10 @@
             <label><input type="radio" name="theme" value="light"><div><b>浅色</b><span>始终使用浅色界面</span></div></label>
             <label><input type="radio" name="theme" value="dark"><div><b>深色</b><span>始终使用深色界面</span></div></label>
           </div>
+        </div>
+        <div class="card">
+          <div class="card-title">运行日志</div>
+          <label class="switch-row"><span>记录运行日志<div class="sub">写入应用目录 <code>logs/</code>（proxy / webui / xiaomusic / lxmusic 各一份），按天与 50MB 自动轮转、保留 3 天，密钥类内容自动打码。排查问题时可到「关于 → 运行日志」一键打包下载，不用 SSH。关闭后只在 <code>docker logs</code> 里输出。</div></span><input type="checkbox" id="log-enabled"></label>
         </div>
       </section>
     </main>

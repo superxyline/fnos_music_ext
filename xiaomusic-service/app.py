@@ -91,6 +91,15 @@ GATEWAY_IP = _default_gateway()
 NAS_IP = os.getenv("NAS_IP") or GATEWAY_IP or "127.0.0.1"
 
 log = logging.getLogger("bridge")
+# 运行日志落盘（logs/xiaomusic.log）：与 proxy 共用 fnlog，容器内共享 /repo/logs
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # /srv：复用 proxy/fnlog
+    from proxy.fnlog import setup_logging as _fn_setup_logging, write_env_snapshot as _fn_env_snapshot
+
+    _fn_setup_logging("", "xiaomusic")
+    _fn_env_snapshot("container")
+except Exception as _e:  # noqa: BLE001
+    log.warning("文件日志初始化失败（仅 stdout）: %s", _e)
 
 DEFAULT_CONFIG = {
     "nas_ip": NAS_IP,

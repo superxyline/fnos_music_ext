@@ -263,6 +263,7 @@ function applyConfigToForm() {
   // 歌词搜索（3.8.0）：默认开；在线子开关依赖总开关（关总开关时置灰）
   $("#lyric-search").checked = v.FNMUSIC_LYRIC_SEARCH_ENABLED !== "false";
   $("#lyric-search-online").checked = v.FNMUSIC_LYRIC_ONLINE_ENABLED !== "false";
+  $("#log-enabled").checked = v.FNMUSIC_LOG_ENABLED !== "false";
   updateLyricOnlineAvailability();
   $("#netease-my-playlists").checked = v.FNMUSIC_NETEASE_MY_PLAYLISTS === "true";
   $("#netease-subscribed").checked = v.FNMUSIC_NETEASE_SUBSCRIBED !== "false";
@@ -312,6 +313,7 @@ function collectConfig() {
     FNMUSIC_SEARCH_LOG_QUERY: $("#search-log-query").checked,
     FNMUSIC_LYRIC_SEARCH_ENABLED: $("#lyric-search").checked,
     FNMUSIC_LYRIC_ONLINE_ENABLED: $("#lyric-search-online").checked,
+    FNMUSIC_LOG_ENABLED: $("#log-enabled").checked,
     FNMUSIC_NETEASE_MY_PLAYLISTS: $("#netease-my-playlists").checked,
     FNMUSIC_NETEASE_SUBSCRIBED: $("#netease-subscribed").checked,
     FNMUSIC_PUBLIC_PLAYLISTS_ENABLED: $("#public-playlists-enabled").checked,
@@ -1381,7 +1383,7 @@ $("#dedup-run").addEventListener("click", async () => {
 ["#tee-dir", "#tee-layout", "#tee-max", "#llm-base", "#llm-key", "#llm-model", "#llm-protocol", "#llm-daily-limit", "#llm-max-tokens", "#lx-url", "#search-timeout", "#bind-timeout", "#handoff-max", "#scan-path"].forEach((sel) =>
   $(sel).addEventListener("input", () => markDirty()));
 $$("input[name=quality]").forEach((el) => el.addEventListener("change", () => markDirty("音质偏好需保存后生效")));
-["#recommend-hot", "#recommend-daily", "#history-playlist", "#public-playlists-enabled", "#search-probe", "#app-v2-search", "#search-log-query", "#lyric-search", "#lyric-search-online", "#tee-enabled", "#fav-download-enabled", "#auto-cover", "#lyric-auto-dl", "#netease-my-playlists", "#netease-subscribed", "#netease-resident"].forEach((sel) =>
+["#recommend-hot", "#recommend-daily", "#history-playlist", "#public-playlists-enabled", "#search-probe", "#app-v2-search", "#search-log-query", "#lyric-search", "#lyric-search-online", "#log-enabled", "#tee-enabled", "#fav-download-enabled", "#auto-cover", "#lyric-auto-dl", "#netease-my-playlists", "#netease-subscribed", "#netease-resident"].forEach((sel) =>
   $(sel).addEventListener("change", () => markDirty()));
 // 歌词搜索子开关可用态：总开关关闭时置灰并取消勾选（保存条提示一次）
 $("#lyric-search").addEventListener("change", () => updateLyricOnlineAvailability());
@@ -1505,7 +1507,47 @@ async function loadAbout() {
     toast(`关于信息加载失败：${err.message || err}`, "err");
   }
   await loadUpdateCheck();
+  await loadLogs();
 }
+
+/* 运行日志：文件由 proxy/fnlog 落盘（轮转 + 脱敏），这里只列清单、单文件下载、打包 */
+function formatBytes(n) {
+  const size = Number(n) || 0;
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(2)} MB`;
+}
+
+async function loadLogs() {
+  const dirEl = $("#logs-dir");
+  const listEl = $("#logs-list");
+  if (!listEl) return;
+  try {
+    const data = await api("/api/logs");
+    const files = Array.isArray(data.files) ? data.files : [];
+    if (dirEl) {
+      dirEl.textContent = `日志目录：${data.dir || "—"}${data.enabled === false ? "（记录已关闭）" : ""}`;
+    }
+    if (!files.length) {
+      listEl.innerHTML = `<span class="state-line muted">${data.enabled === false ? "日志记录已关闭（设置 → 运行日志）" : "还没有日志文件"}</span>`;
+      return;
+    }
+    listEl.innerHTML = files.map((f) => {
+      const name = escapeHtml(f.name || "");
+      const href = `/api/logs/download?name=${encodeURIComponent(f.name || "")}`;
+      return `<a class="state-line" href="${href}" download="${name}">${name} · ${formatBytes(f.size)}</a>`;
+    }).join("");
+  } catch (err) {
+    if (dirEl) dirEl.textContent = `日志目录加载失败：${err.message || err}`;
+  }
+}
+
+$("#logs-export").addEventListener("click", () => {
+  window.location.href = "/api/logs/export";
+});
+$("#logs-refresh").addEventListener("click", () => {
+  loadLogs();
+});
 
 $("#about-new").addEventListener("click", openUpdateModal);
 ["#update-close", "#update-later"].forEach((sel) => $(sel).addEventListener("click", closeUpdateModal));

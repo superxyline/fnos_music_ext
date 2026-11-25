@@ -16,9 +16,11 @@ import base64
 import logging
 import os
 import re
+import sys
 import time
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -38,6 +40,15 @@ from source_runtime import (
 
 logger = logging.getLogger("lxmusic_service")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+# 运行日志落盘（logs/lxmusic.log）：与 proxy 共用 fnlog，容器内共享 /repo/logs
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # /srv：复用 proxy/fnlog
+    from proxy.fnlog import setup_logging as _fn_setup_logging
+
+    _fn_setup_logging("", "lxmusic")
+except Exception as _e:  # noqa: BLE001
+    logger.warning("文件日志初始化失败（仅 stdout）: %s", _e)
 
 SERVICE_VERSION = "2.0.0"
 

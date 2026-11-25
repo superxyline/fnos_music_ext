@@ -34,6 +34,7 @@ TASK_*.md
 .tasks_archive/
 .tools/
 dist/
+dist-offline/
 packaging/fpk/.build/
 
 .cursor/

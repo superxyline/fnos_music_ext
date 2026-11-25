@@ -9,6 +9,7 @@ set -euo pipefail
 #   packaging/fpk/build.sh                     # 完整打包（fnpack 缺失时自动下载）
 #   packaging/fpk/build.sh --stage-only DIR    # 只组装不打包（结构测试用）
 #   packaging/fpk/build.sh --fnpack /path/fnpack --out dist
+#   packaging/fpk/build.sh --bundle-image   # 离线包：镜像一起打进去（约 490MB）
 # 环境变量: FNPACK_VERSION（默认 1.2.3）
 # ==============================================================================
 
@@ -24,6 +25,8 @@ FNPACK_BIN="${FNPACK:-}"
 STAGE=""
 STAGE_ONLY=0
 OUT_DIR="${REPO_ROOT}/dist"
+BUNDLE_IMAGE=0
+BUNDLE_IMAGE_TAG="${BUNDLE_IMAGE_TAG:-fnmusic-sources:latest}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -41,6 +44,18 @@ while [ $# -gt 0 ]; do
         --out)
             [ $# -ge 2 ] || { echo "用法: $0 --out <dir>" >&2; exit 1; }
             OUT_DIR="$2"
+            shift 2
+            ;;
+        --bundle-image)
+            # 离线包：把已构建的容器镜像一起打进 fpk（安装时 docker load，
+            # 不拉基础镜像、不 pip、不需要外网）。镜像压缩后约 480MB。
+            BUNDLE_IMAGE=1
+            shift
+            ;;
+        --bundle-image-tag)
+            [ $# -ge 2 ] || { echo "用法: $0 --bundle-image-tag <repo:tag>" >&2; exit 1; }
+            BUNDLE_IMAGE=1
+            BUNDLE_IMAGE_TAG="$2"
             shift 2
             ;;
         -h|--help)
@@ -146,6 +161,24 @@ chmod +x "${STAGE}"/cmd/*
 
 # 骨架与仓库复制完成后再统一换行符（cmd/config/wizard 的源文件同样是 CRLF）
 normalize_lf "${STAGE}/app/repo" "${STAGE}/cmd" "${STAGE}/config" "${STAGE}/wizard"
+
+# 离线镜像归档（可选）：装的时候 docker load 导入，跳过 compose build。
+# 只对"目标机没有稳定外网/代理"的场景有意义；架构跟随构建机（x86_64 包不能
+# 装到 ARM 机器）。默认不打，保持在线包 2MB。
+if [ "${BUNDLE_IMAGE}" -eq 1 ]; then
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "ERROR: --bundle-image 需要本机 docker" >&2
+        exit 1
+    fi
+    if ! docker image inspect "${BUNDLE_IMAGE_TAG}" >/dev/null 2>&1; then
+        echo "ERROR: 本机没有镜像 ${BUNDLE_IMAGE_TAG}，请先构建（docker compose -f docker-compose.yml build）" >&2
+        exit 1
+    fi
+    mkdir -p "${STAGE}/app/repo/image"
+    echo "[fpk] 导出离线镜像 ${BUNDLE_IMAGE_TAG}（压缩后约 480MB，需要几分钟）..."
+    docker save "${BUNDLE_IMAGE_TAG}" | gzip -3 > "${STAGE}/app/repo/image/fnmusic-sources.image.tar.gz"
+    echo "[fpk] 离线镜像: $(du -h "${STAGE}/app/repo/image/fnmusic-sources.image.tar.gz" | cut -f1)"
+fi
 
 echo "[fpk] 组装完成: ${STAGE} (version=${VERSION})"
 

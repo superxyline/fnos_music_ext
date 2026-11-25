@@ -1171,7 +1171,24 @@ install_sources_container() {
     fi
     # issue #24：构建日志逐层可见（非 tty 下默认进度条会被压成静默，看似"卡在 55%"）
     export BUILDKIT_PROGRESS="${BUILDKIT_PROGRESS:-plain}"
-    if ! run_docker compose -f "${BASE_DIR}/docker-compose.yml" up -d --build; then
+    # 离线包优先：仓库自带镜像归档时直接 docker load，跳过联网构建（不拉基础镜像、
+    # 不 pip）。导入失败仍回退在线构建，不阻塞常规安装。
+    local preloaded=0
+    if [ -n "${OFFLINE_IMAGE_ARCHIVE:-}" ] && [ -f "${OFFLINE_IMAGE_ARCHIVE}" ]; then
+        log_info "正在导入内置镜像（跳过在线构建）: $(basename "${OFFLINE_IMAGE_ARCHIVE}")"
+        if run_docker load -i "${OFFLINE_IMAGE_ARCHIVE}"; then
+            preloaded=1
+        else
+            log_warn "内置镜像导入失败，回退在线构建"
+        fi
+    fi
+    if [ "${preloaded}" -eq 1 ]; then
+        if ! run_docker compose -f "${BASE_DIR}/docker-compose.yml" up -d --no-build; then
+            log_err "内置镜像已导入，但容器启动失败。"
+            log_err "请检查 /var/log/apps/fnmusic-ext-install.log 与 docker logs ${CONTAINER_NAME}。"
+            return 1
+        fi
+    elif ! run_docker compose -f "${BASE_DIR}/docker-compose.yml" up -d --build; then
         log_err "Docker 镜像构建或启动失败（compose up --build）。"
         log_err "若日志里反复出现 apt/pip 拉取超时：多为国内网络直连境外源受限，"
         log_err "可为 Docker 配置代理后重试，或检查 /var/log/apps/fnmusic-ext-install.log 定位具体步骤。"
@@ -1337,8 +1354,17 @@ print((d.get("message") or "")[:160])
 }
 
 # Docker 模式：先探测可用基础镜像源（国内镜像优先直连、官方源兜底），
-# 结果写入 .env 的 FNMUSIC_BASE_IMAGE 供 compose build.args 使用；失败直接退出，不动现有部署
-if ! BASE_IMAGE="${BASE_IMAGE}" FNMUSIC_DOCKER_MIRRORS="${DOCKER_IMAGE_MIRRORS}" \
+# 结果写入 .env 的 FNMUSIC_BASE_IMAGE 供 compose build.args 使用；失败直接退出，不动现有部署。
+# 离线包（repo/image/*.image.tar.gz）自带完整镜像，安装时直接 docker load，
+# 不需要基础镜像也不需要联网——跳过探测，否则离线机器会卡在这一步。
+OFFLINE_IMAGE_ARCHIVE=""
+for _cand in "${BASE_DIR}"/image/*.image.tar.gz; do
+    [ -f "${_cand}" ] && { OFFLINE_IMAGE_ARCHIVE="${_cand}"; break; }
+done
+unset _cand
+if [ -n "${OFFLINE_IMAGE_ARCHIVE}" ]; then
+    log_info "离线安装包：跳过基础镜像源探测（内置镜像 $(basename "${OFFLINE_IMAGE_ARCHIVE}")）"
+elif ! BASE_IMAGE="${BASE_IMAGE}" FNMUSIC_DOCKER_MIRRORS="${DOCKER_IMAGE_MIRRORS}" \
     bash "${BASE_DIR}/ensure_base_image.sh"; then
     log_err "基础镜像源探测失败。可设置 BASE_IMAGE 环境变量手动指定可用镜像源后重试。"
     exit 1

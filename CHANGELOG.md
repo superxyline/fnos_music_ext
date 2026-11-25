@@ -5,6 +5,12 @@
 
 > 以下 v2.3.1 起为本仓库（superxyline 二次开发版）的增量变更；v2.3.0 及之前为上游 javycoder/fnos_music_ext 的变更。
 
+## [Unreleased]
+
+### 新增
+
+- **离线安装包（可选）**：`packaging/fpk/build.sh --bundle-image` 会把已构建的容器镜像一并打进 fpk（约 444MB）。安装时 `install.sh` 检测到 `repo/image/*.image.tar.gz` 就先 `docker load` 导入并跳过 `compose build`——不拉基础镜像、不跑 pip、不需要外网，也不再执行基础镜像源探测（离线机器最容易卡在这一步）；导入失败自动回退在线构建。注意：镜像架构跟随构建机，x86_64 的包不能装到 ARM 机器；离线包与在线包版本号相同，已装同版本需先卸载再装。
+
 ## [3.8.3] - 2026-11-25
 
 ### 新增

@@ -269,8 +269,10 @@ python3 -m pytest        # 全量测试（无需 Docker/飞牛环境）
 
 ```bash
 ./packaging/fpk/build.sh   # 本地打包：组装 + fnpack 校验 → dist/fnmusic-ext-<版本>.fpk
+./packaging/fpk/build.sh --bundle-image   # 离线包：把已构建的镜像一起打进去（约 444MB）
 ```
 
+- **离线包（`--bundle-image`）**：需要本机已有 `fnmusic-sources:latest` 镜像；安装时 `docker load` 直接导入、跳过 `compose build` 与基础镜像源探测，全程不需要外网——适合没有稳定代理的机器。限制：镜像架构跟随构建机（x86_64 的包不能装 ARM）；离线包与在线包版本号相同，已装同版本需先卸载再装；镜像压缩后约 445MB，FPK 约 444MB。
 - 版本号唯一来源为根目录 `VERSION`，打包时注入 manifest（本仓库无 CI，发布由本地脚本完成）；
 - 发布流程：`./packaging/fpk/build.sh` → `git tag -a v<版本>` → 双端 push → GitHub/Gitee Release 挂 fpk 附件 → `python3 tools/update_moo_index.py` 刷新 `moo.json`；
 - 打包结构由 `packaging/tests/test_fpk_pack.py` 离线校验；Windows 打包注意 `cmd/*` 可执行位；

@@ -1178,6 +1178,8 @@ install_sources_container() {
         log_info "正在导入内置镜像（跳过在线构建）: $(basename "${OFFLINE_IMAGE_ARCHIVE}")"
         if run_docker load -i "${OFFLINE_IMAGE_ARCHIVE}"; then
             preloaded=1
+            # 离线标记：extend.sh 靠它判断"镜像已内置"，用户删掉 image/ 后仍不再联网构建
+            : > "${BASE_DIR}/.offline-image" 2>/dev/null || true
         else
             log_warn "内置镜像导入失败，回退在线构建"
         fi
@@ -1362,8 +1364,8 @@ for _cand in "${BASE_DIR}"/image/*.image.tar.gz; do
     [ -f "${_cand}" ] && { OFFLINE_IMAGE_ARCHIVE="${_cand}"; break; }
 done
 unset _cand
-if [ -n "${OFFLINE_IMAGE_ARCHIVE}" ]; then
-    log_info "离线安装包：跳过基础镜像源探测（内置镜像 $(basename "${OFFLINE_IMAGE_ARCHIVE}")）"
+if [ -n "${OFFLINE_IMAGE_ARCHIVE}" ] || [ -f "${BASE_DIR}/.offline-image" ]; then
+    log_info "离线安装包：跳过基础镜像源探测（内置镜像）"
 elif ! BASE_IMAGE="${BASE_IMAGE}" FNMUSIC_DOCKER_MIRRORS="${DOCKER_IMAGE_MIRRORS}" \
     bash "${BASE_DIR}/ensure_base_image.sh"; then
     log_err "基础镜像源探测失败。可设置 BASE_IMAGE 环境变量手动指定可用镜像源后重试。"

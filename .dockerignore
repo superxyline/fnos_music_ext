@@ -11,6 +11,9 @@
 proxy/*
 !proxy/__init__.py
 !proxy/env_merge.py
+# 运行日志模块（Dockerfile COPY 进 /srv/proxy，供 webui/xiaomusic/lxmusic import）
+!proxy/fnlog.py
+!proxy/version.py
 **/__pycache__/
 **/*.pyc
 **/.pytest_cache/

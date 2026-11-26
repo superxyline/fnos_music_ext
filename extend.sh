@@ -495,6 +495,24 @@ if [ "${ENABLE_WEBUI}" -eq 1 ] && ! source_healthy "http://127.0.0.1:8774"; then
 # 构建并确保容器与当前代码同步。compose up -d --build 幂等：镜像与配置均未变时
 # 不动运行中的容器（仅秒级缓存校验）；镜像有变（git pull 升级后）则自动换新容器。
 ensure_image_current() {
+    # 离线包（repo/image/*.image.tar.gz）：镜像随包带入、install.sh 已 docker load，
+    # 这里直接 --no-build 启用即可——跳过基础镜像探测与构建，全程不需要外网。
+    # 2026-11-26 实测：离线包装完后 extend 仍会联网探测基础镜像并重新 build，
+    # 网络不通时把整个安装拖成"回调脚本异常"。
+    local _offline_img=""
+    for _cand in "${BASE_DIR}"/image/*.image.tar.gz; do
+        [ -f "${_cand}" ] && { _offline_img="${_cand}"; break; }
+    done
+    unset _cand
+    if [ -f "${BASE_DIR}/.offline-image" ] || [ -n "${_offline_img}" ]; then
+        log_info "离线安装包：跳过基础镜像探测与构建，直接使用内置镜像"
+        export BUILDKIT_PROGRESS="${BUILDKIT_PROGRESS:-plain}"
+        if ! run_docker compose -f "${BASE_DIR}/docker-compose.yml" up -d --no-build; then
+            log_err "使用内置镜像启动 ${CONTAINER_NAME} 失败。"
+            exit 1
+        fi
+        return 0
+    fi
     # 基础镜像源保障（国内镜像优先/官方兜底，见 ensure_base_image.sh），整次运行只执行一次
     if [ "${BASE_IMAGE_ENSURED:-0}" -ne 1 ]; then
         if bash "${BASE_DIR}/ensure_base_image.sh"; then

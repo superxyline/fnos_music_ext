@@ -68,12 +68,21 @@ def fetch_formal_releases(repo: str, token: str = "", limit: int = 30) -> list[d
         ver = formal_version(str(rel.get("tag_name") or ""))
         if not ver:
             continue
+        # 同一 Release 可能挂两个包（在线 fpk + 离线 fpk 约 444MB）。商店默认必须发
+        # 在线包：离线包体积大且镜像架构固定（x86_64 包装不了 ARM），商店不区分架构。
+        exact = f"fnmusic-ext-{ver}.fpk"
         fpk = None
         for asset in rel.get("assets") or []:
             name = str(asset.get("name") or "")
-            if name.startswith("fnmusic-ext-") and name.endswith(".fpk"):
+            if not (name.startswith("fnmusic-ext-") and name.endswith(".fpk")):
+                continue
+            if "-offline" in name:
+                continue
+            if name == exact:
                 fpk = asset
                 break
+            if fpk is None:
+                fpk = asset
         if not fpk:
             continue
         out.append({"version": ver, "fpk": fpk, "body": str(rel.get("body") or "").strip(),

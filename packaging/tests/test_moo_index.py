@@ -104,3 +104,47 @@ def test_repo_moo_json_if_present():
         pytest.skip("moo.json 尚未生成")
     with open(path, encoding="utf-8") as f:
         mod.validate_index(json.load(f))
+
+
+def test_prefers_online_package_over_offline(monkeypatch):
+    """同一 Release 同时挂在线包与离线包时，商店必须选在线包。
+
+    离线包约 444MB 且镜像架构固定（x86_64 包装不上 ARM），商店不区分架构，
+    默认发离线包会坑一半用户（2026-11-26 实测：moo.json 指向了 -offline）。
+    """
+    releases = [{
+        "tag_name": "v3.8.4",
+        "prerelease": False,
+        "published_at": "2026-11-26T00:00:00Z",
+        "body": "3.8.4",
+        "assets": [
+            {"name": "fnmusic-ext-3.8.4-offline.fpk",
+             "browser_download_url": "https://github.com/x/y/releases/download/v3.8.4/fnmusic-ext-3.8.4-offline.fpk",
+             "size": 465466560, "digest": "sha256:" + _SHA_A},
+            {"name": "fnmusic-ext-3.8.4.fpk",
+             "browser_download_url": "https://github.com/x/y/releases/download/v3.8.4/fnmusic-ext-3.8.4.fpk",
+             "size": 2099591, "digest": "sha256:" + _SHA_B},
+        ],
+    }]
+    monkeypatch.setattr(mod, "_http_json", lambda *a, **k: releases)
+    got = mod.fetch_formal_releases("x/y")
+    assert len(got) == 1
+    assert got[0]["fpk"]["name"] == "fnmusic-ext-3.8.4.fpk"
+    assert got[0]["fpk"]["size"] == 2099591
+
+
+def test_version_with_only_offline_package_is_skipped(monkeypatch):
+    """只挂了离线包（无在线包）的版本不进索引，避免商店下发 x86 离线包。"""
+    releases = [{
+        "tag_name": "v3.8.5",
+        "prerelease": False,
+        "published_at": "2026-11-27T00:00:00Z",
+        "body": "3.8.5",
+        "assets": [
+            {"name": "fnmusic-ext-3.8.5-offline.fpk",
+             "browser_download_url": "https://github.com/x/y/releases/download/v3.8.5/fnmusic-ext-3.8.5-offline.fpk",
+             "size": 465466560, "digest": "sha256:" + _SHA_A},
+        ],
+    }]
+    monkeypatch.setattr(mod, "_http_json", lambda *a, **k: releases)
+    assert mod.fetch_formal_releases("x/y") == []

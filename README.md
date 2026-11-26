@@ -240,6 +240,7 @@ curl -s --unix-socket /var/run/trim_music.socket http://localhost/_ext/healthz  
 
 ## 常见问题
 
+- **安装失败：`"/proxy/version.py": not found` 或应用中心提示「执行应用回调脚本异常」**：这是 **3.8.3 的构建上下文回归**（`.dockerignore` 白名单没跟上新增的 `fnlog.py` / `version.py`），与你的网络、Docker 环境无关，也影响离线包。**升级到 3.8.4 及以上**即可，3.8.3 无需任何手工修补。
 - **WebUI 打不开 / 提醒**：WebUI 无鉴权，仅限可信内网使用；确认安装时选择了 WebUI，或设置 `FNMUSIC_WEBUI_ENABLED=true` 后运行 `./extend.sh`。
 - **洛雪源播放失败**：源脚本由第三方提供，在容器内 Node 沙箱中运行——请在 WebUI 中用「测试」按钮验证源可用性，失败时更换源 URL 或重新上传脚本文件。
 - **musicdl 某平台搜索为空**：上游接口变化所致，不影响其他平台；可升级 musicdl（`>=2.13.11`）后重建镜像。

@@ -5,11 +5,21 @@
 
 > 以下 v2.3.1 起为本仓库（superxyline 二次开发版）的增量变更；v2.3.0 及之前为上游 javycoder/fnos_music_ext 的变更。
 
-## [Unreleased]
+## [3.8.4] - 2026-11-26
+
+### 修复
+
+- **安装失败（3.8.3 严重回归，issue #10）**：`.dockerignore` 白名单没跟上 3.8.3 新增的 `proxy/fnlog.py`、`proxy/version.py`，两个文件被 `proxy/*` 挡在构建上下文之外，`COPY` 直接报 `"/proxy/version.py": not found`——**在线包与离线包都装不上**，应用中心最终提示「执行应用回调脚本异常」。已补两行放行。
+- **离线包仍会联网构建**：`extend.sh` 的 `ensure_image_current()` 无条件 `up -d --build`，离线包装完（healthz 已通过）又被强制重建一次；无外网机器会连 `apt-get`/`pip` 一起失败，离线包完全失去意义。现在识别内置镜像归档或离线标记，**跳过基础镜像源探测与构建**，直接 `up -d --no-build`。
+- **离线标记**：`install.sh` 导入内置镜像成功后写 `.offline-image`，安装器与 `extend.sh` 都优先认该标记——即使删掉 444MB 镜像归档来省空间，也不会退化成联网构建。
 
 ### 新增
 
-- **离线安装包（可选）**：`packaging/fpk/build.sh --bundle-image` 会把已构建的容器镜像一并打进 fpk（约 444MB）。安装时 `install.sh` 检测到 `repo/image/*.image.tar.gz` 就先 `docker load` 导入并跳过 `compose build`——不拉基础镜像、不跑 pip、不需要外网，也不再执行基础镜像源探测（离线机器最容易卡在这一步）；导入失败自动回退在线构建。注意：镜像架构跟随构建机，x86_64 的包不能装到 ARM 机器；离线包与在线包版本号相同，已装同版本需先卸载再装。
+- **离线安装包（可选）**：`packaging/fpk/build.sh --bundle-image` 会把已构建的容器镜像一并打进 fpk（约 444MB）。安装时 `install.sh` 检测到 `repo/image/*.image.tar.gz` 就先 `docker load` 导入并跳过 `compose build`——不拉基础镜像、不跑 pip、不需要外网；导入失败自动回退在线构建。注意：镜像架构跟随构建机，x86_64 的包不能装到 ARM 机器；离线包与在线包版本号相同，已装同版本需先卸载再装。
+
+### 测试
+
+- `packaging/tests/test_dockerignore_context.py`：解析 Dockerfile 中所有 `COPY proxy/...` 源路径，逐个断言在 `.dockerignore` 下不被排除；并断言 `extend.sh` 的离线分支出现在基础镜像探测之前。已实测：临时删掉放行行，用例立即失败。
 
 ## [3.8.3] - 2026-11-25
 

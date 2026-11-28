@@ -433,25 +433,27 @@ input[type="radio"] { accent-color: var(--accent); margin-top: 4px; }
 .xm-scan.selected { border-color: var(--accent); background: var(--accent-soft); }
 .xm-scan .dot { flex: none; }
 
+/* 设备控制（小爱音箱页，2026-11-28）：每台设备一行 = 信息 + 暂停/继续 + 指令框 */
+.xm-ctrl-row {
+  display: flex; align-items: center; gap: 12px; min-width: 0;
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+  margin-bottom: 8px; background: var(--card); flex-wrap: wrap;
+}
+.xm-ctrl-row .xm-ctrl-info { min-width: 130px; }
+.xm-ctrl-row .xm-ctrl-info .name { font-size: 14px; font-weight: 500; }
+.xm-ctrl-row .xm-ctrl-info .hw { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.xm-ctrl-row .xm-ctrl-status { font-size: 12px; margin-left: 6px; }
+.xm-ctrl-row .xm-ctrl-ops { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 240px; }
+.xm-ctrl-row .xm-ctrl-ops .xm-ctrl-toggle { flex: none; min-width: 64px; }
+.xm-ctrl-row .xm-ctrl-ops .xm-ctrl-query { flex: 1; min-width: 130px; }
+.xm-ctrl-row .xm-ctrl-ops .xm-ctrl-send { flex: none; }
+
 .xm-status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 4px 0 12px; }
 .xm-status-cell { background: var(--bg); border-radius: 8px; padding: 12px 14px; }
 .xm-status-cell .v { font-size: 20px; font-weight: 700; }
 .xm-status-cell .v.ok { color: var(--ok); }
 .xm-status-cell .v.err { color: var(--err); }
 .xm-status-cell .k { font-size: 12px; color: var(--muted); margin-top: 3px; }
-
-/* 正在播放（小爱音箱完成页）：歌名 + 来源徽标 */
-.xm-now { display: flex; flex-direction: column; gap: 6px; }
-.xm-now-name { font-size: 17px; font-weight: 600; line-height: 1.4; word-break: break-word; }
-.xm-now-name.dim { color: var(--muted); font-weight: 500; }
-.xm-now-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 20px; }
-.xm-now-dev { font-size: 12px; }
-.xm-now-badge {
-  display: inline-block; padding: 1px 9px; border-radius: 999px;
-  font-size: 12px; font-weight: 500; line-height: 18px;
-  background: var(--accent-soft); color: var(--accent);
-}
-.xm-now-badge[data-source="local"] { background: var(--ok-soft); color: var(--ok); }
 
 .xm-cmd-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 4px; }
 .xm-cmd-table td { padding: 7px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }

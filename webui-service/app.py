@@ -1672,7 +1672,19 @@ async def api_xiaomusic_status(request: Request):
     state = await _xm_proxy(request, "GET", "/api/wizard/state")
     if not isinstance(state, JSONResponse):
         health["wizard"] = state
+    # 已接管设备快照（管理台「设备控制」卡片）：失败不影响主状态展示
+    dev = await _xm_proxy(request, "GET", "/api/xm/devices_state", timeout=8.0)
+    if not isinstance(dev, JSONResponse):
+        health["devices_state"] = dev
     return health
+
+
+@app.post("/api/xiaomusic/device_cmd")
+async def api_xiaomusic_device_cmd(request: Request):
+    """向指定小爱音箱下发指令/暂停继续（管理台「设备控制」卡片）"""
+    body = await request.json()
+    return await _xm_proxy(request, "POST", "/api/xm/device_cmd", body=body,
+                           timeout=15.0)
 
 
 @app.post("/api/xiaomusic/sync")

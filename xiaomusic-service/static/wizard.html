@@ -110,6 +110,11 @@ async function api(path, opts) {
   const r = await fetch(path, opts);
   const data = await r.json().catch(() => ({}));
   if (!r.ok && data.message) throw new Error(data.message);
+  // 后端部分失败分支以 HTTP 200 + ok:false 返回（如登录验证失败），
+  // 必须再查业务码，否则失败会被上层当成功提示（2026-11-28 用户反馈：
+  // 飞牛音乐登录 400 失败，界面仍提示"配置成功"，随后弹回第 3 步）。
+  // 注意用 ===false 严格判断：/api/wizard/state 等响应无 ok 字段，不能 !data.ok。
+  if (data && data.ok === false) throw new Error(data.message || '操作失败');
   return data;
 }
 

@@ -224,55 +224,24 @@ def test_no_xiaomusic_advanced_settings_entry():
 
 # --------------------------------------------------- 正在播放 + 口令介绍 --
 
-def test_done_page_renders_now_playing_card():
-    """完成页要有「正在播放」卡片：歌名 + 来源徽标（本地曲库 / 在线 · XX）。
+def test_done_page_now_playing_merged_into_ctrl_card():
+    """完成页来源标注由「设备控制」卡片承担（2026-11-28 融合，独立卡片已删）。
 
-    2026-10-28 用户需求：接管期间打开小爱音箱页，能看到当前播的歌与来源。
+    2026-10-28 用户需求（能看到当前播的歌与来源）保留：设备行状态文本带
+    正在播放歌名 +（来源）标注，随 5 秒轮询刷新；断言独立「正在播放」卡片
+    不复存在、xm-now 死样式清理干净。
     """
     js = (STATIC / "app.js").read_text(encoding="utf-8")
-    assert 'id="xm-now-name"' in js, "缺少当前歌曲歌名节点"
-    assert 'id="xm-now-src"' in js, "缺少来源徽标节点"
-    assert "正在播放" in js
+    assert 'id="xm-now-name"' not in js, "独立正在播放卡片应已融合进设备控制"
+    assert "function xmRefreshNow(" not in js, "xmRefreshNow 应随卡片融合删除"
+    assert "source_label" in js, "设备行缺来源标注"
+    assert "▶ 正在播放" in js
     # 刷新入口必须挂在轮询回调里（否则只有首次渲染，不跟随播放变化）
     body = js[js.index("function xmRefreshDone"):]
     body = body[:body.index("\n}")]
-    assert "xmRefreshNow(" in body, "轮询/首次渲染都必须刷新当前播放"
-    # 来源徽标按 source 区分配色（本地曲库绿色，在线源强调色）
+    assert "xmCtrlRender(" in body, "轮询/首次渲染都必须刷新设备控制卡片"
     css = (STATIC / "style.css").read_text(encoding="utf-8")
-    assert ".xm-now-badge" in css
-    assert '.xm-now-badge[data-source="local"]' in css
-
-
-def test_done_page_documents_seq_play_command():
-    """「顺序播放本地收藏」必须写进口令介绍（连同整张循环与排序口径）。"""
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
-    assert "顺序播放本地收藏" in js, "口令表缺少顺序播放"
-    assert "整张放完再从头循环" in js or "整张放完" in js, "要写清播完循环"
-    assert "最近收藏的在前" in js, "要写清排序口径（最新收藏在前）"
-    # 顶部开关说明也提一句，用户不进完成页也能看到
-    html = (STATIC / "index.html").read_text(encoding="utf-8")
-    assert "顺序播放本地收藏" in html
-
-
-# --------------------------------------------------- 正在播放 + 口令介绍 --
-
-def test_done_page_renders_now_playing_card():
-    """完成页要有「正在播放」卡片：歌名 + 来源徽标（本地曲库 / 在线 · XX）。
-
-    2026-10-28 用户需求：接管期间打开小爱音箱页，能看到当前播的歌与来源。
-    """
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
-    assert 'id="xm-now-name"' in js, "缺少当前歌曲歌名节点"
-    assert 'id="xm-now-src"' in js, "缺少来源徽标节点"
-    assert "正在播放" in js
-    # 刷新入口必须挂在轮询回调里（否则只有首次渲染，不跟随播放变化）
-    body = js[js.index("function xmRefreshDone"):]
-    body = body[:body.index("\n}")]
-    assert "xmRefreshNow(" in body, "轮询/首次渲染都必须刷新当前播放"
-    # 来源徽标按 source 区分配色（本地曲库绿色，在线源强调色）
-    css = (STATIC / "style.css").read_text(encoding="utf-8")
-    assert ".xm-now-badge" in css
-    assert '.xm-now-badge[data-source="local"]' in css
+    assert ".xm-now-badge" not in css, "xm-now 死样式应已清理"
 
 
 def test_done_page_documents_seq_play_command():

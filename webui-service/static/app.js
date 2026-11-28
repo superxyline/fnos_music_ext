@@ -1764,15 +1764,10 @@ function xmDoneHtml(st) {
     <div class="xm-msg" id="xm-done-msg" hidden></div>
   </div>
   <div class="card">
-    <div class="card-title">正在播放</div>
-    <div class="xm-now">
-      <div class="xm-now-name dim" id="xm-now-name">—</div>
-      <div class="xm-now-meta">
-        <span class="xm-now-badge" id="xm-now-src" hidden></span>
-        <span class="xm-now-dev muted" id="xm-now-dev"></span>
-      </div>
-    </div>
-    <p class="hint">接管期间音箱正在播放的歌曲与来源：<b>本地曲库</b>＝飞牛音乐里的歌，<b>在线 · XX</b>＝该在线音源。页面停留时每 5 秒自动刷新。</p>
+    <div class="card-title">设备控制</div>
+    <div id="xm-ctrl-list"><div class="muted">加载设备状态…</div></div>
+    <div class="xm-msg" id="xm-ctrl-msg" hidden></div>
+    <p class="hint">暂停/继续直接控制对应音箱（可续播）；指令与对音箱说话同语义（下一首、音量50、播放晴天、30分钟后停止等），只对选中的那台生效，支持回车发送。正在播放的歌名后标注来源：<b>本地曲库</b>＝飞牛音乐里的歌，<b>在线 · XX</b>＝该在线音源；状态随页面停留每 5 秒自动刷新。</p>
   </div>
   <div class="card">
     <div class="card-title">语音口令</div>
@@ -2012,28 +2007,104 @@ function xmSetHealth(id, ok, text) {
   if (t) t.textContent = text;
 }
 
-function xmRefreshNow(st) {
-  /* 正在播放：歌名 + 来源徽标（本地曲库 / 在线 · XX）。桥接 health 的 now_playing。 */
-  const np = st.now_playing || {};
-  const nameEl = $("#xm-now-name");
-  if (!nameEl) return;
-  const name = (np.name || "").trim();
-  const playing = np.is_playing === true;
-  nameEl.textContent = name || (playing ? "（曲目信息获取中…）" : "当前未在播放");
-  nameEl.classList.toggle("dim", !name);
+/* ---------- 设备控制（2026-11-28：直接下发指令/暂停继续） ---------- */
+let xmCtrlKeys = "";
 
-  const badge = $("#xm-now-src");
-  if (badge) {
-    const label = (np.source_label || "").trim();
-    const show = !!(name && label);
-    badge.hidden = !show;
-    if (show) {
-      badge.textContent = label;
-      badge.dataset.source = np.source || "";
+function xmCtrlRender(devs, ds) {
+  /* 设备集合变化才重建行（保住输入框中正在输入的内容）；每轮只更新状态文本与按钮。
+     空态用哨兵值区分"从未渲染"与"已是空态"——初始 xmCtrlKeys 就是 ""，
+     若拿它当判据，空态永远写不进 DOM，卡片会一直停在「加载设备状态…」 */
+  const box = $("#xm-ctrl-list");
+  if (!box) return;
+  const list = Array.isArray(devs) ? devs : [];
+  if (!list.length) {
+    if (xmCtrlKeys !== "__empty__") {
+      xmCtrlKeys = "__empty__";
+      const miOff = ds && ds.mi_logged === false;
+      box.innerHTML = `<div class="muted">${miOff
+        ? "小米登录已失效，无法获取设备状态——请点「重新配置」重新扫码登录。"
+        : "暂无已接管设备。"}</div>`;
     }
+    return;
   }
-  const devEl = $("#xm-now-dev");
-  if (devEl) devEl.textContent = playing ? (np.device || "") : (name ? "已暂停" : "");
+  const keys = list.map((d) => d.did).join(",");
+  if (keys !== xmCtrlKeys) {
+    xmCtrlKeys = keys;
+    box.innerHTML = list.map((d) => `
+      <div class="xm-ctrl-row" data-did="${escapeHtml(d.did)}">
+        <div class="xm-ctrl-info">
+          <div class="name">${escapeHtml(d.name || d.did)}</div>
+          <div class="hw">${escapeHtml(d.hardware || "未知型号")}<span class="xm-ctrl-status" data-did="${escapeHtml(d.did)}"></span></div>
+        </div>
+        <div class="xm-ctrl-ops">
+          <button class="btn xm-ctrl-toggle" data-did="${escapeHtml(d.did)}">暂停</button>
+          <input class="input xm-ctrl-query" data-did="${escapeHtml(d.did)}" placeholder="指令，如 下一首 / 音量50 / 播放晴天">
+          <button class="btn xm-ctrl-send" data-did="${escapeHtml(d.did)}">发送</button>
+        </div>
+      </div>`).join("");
+    $$("#xm-ctrl-list .xm-ctrl-toggle").forEach((el) =>
+      el.addEventListener("click", () => xmCtrlToggle(el.dataset.did)));
+    $$("#xm-ctrl-list .xm-ctrl-send").forEach((el) =>
+      el.addEventListener("click", () => xmCtrlSend(el.dataset.did)));
+    $$("#xm-ctrl-list .xm-ctrl-query").forEach((el) =>
+      el.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") { ev.preventDefault(); xmCtrlSend(el.dataset.did); }
+      }));
+  }
+  list.forEach((d) => {
+    const sEl = box.querySelector(`.xm-ctrl-status[data-did="${CSS.escape(d.did)}"]`);
+    if (sEl) {
+      const name = (d.cur_music || "").trim();
+      const src = (d.source_label || "").trim();
+      sEl.textContent = d.is_playing
+        ? `　▶ 正在播放：${name || "（曲目获取中）"}${src ? `（${src}）` : ""}`
+        : "　已暂停 / 空闲";
+      sEl.style.color = d.is_playing ? "var(--accent, #3370ff)" : "var(--muted, #8a94a6)";
+    }
+    const btn = box.querySelector(`.xm-ctrl-toggle[data-did="${CSS.escape(d.did)}"]`);
+    if (btn) {
+      btn.textContent = d.is_playing ? "暂停" : "继续";
+      btn.dataset.playing = d.is_playing ? "1" : "0";
+    }
+  });
+}
+
+async function xmCtrlToggle(did) {
+  const btn = $(`#xm-ctrl-list .xm-ctrl-toggle[data-did="${CSS.escape(did)}"]`);
+  const playing = btn && btn.dataset.playing === "1";
+  await xmCtrlPost({ did, action: playing ? "pause" : "play" }, btn);
+}
+
+async function xmCtrlSend(did) {
+  const input = $(`#xm-ctrl-list .xm-ctrl-query[data-did="${CSS.escape(did)}"]`);
+  if (!input) return;
+  const query = input.value.trim();
+  if (!query) { xmMsg("#xm-ctrl-msg", "err", "请输入指令"); return; }
+  await xmCtrlPost({ did, query }, null, input);
+}
+
+async function xmCtrlPost(payload, btn, input) {
+  const msg = "#xm-ctrl-msg";
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api("/api/xiaomusic/device_cmd", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    xmMsg(msg, "ok", r.message || "已下发");
+    if (input) input.value = "";
+    // 下发后状态有变化，稍等片刻主动刷一次（不等 5s 轮询）
+    setTimeout(async () => {
+      try {
+        const fresh = await api("/api/xiaomusic/status");
+        if (fresh && fresh.ok) xmRefreshDone(fresh);
+      } catch (_) { /* 忽略单次失败 */ }
+    }, 800);
+  } catch (exc) {
+    xmMsg(msg, "err", exc.message || exc);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 function xmRefreshDone(st) {
@@ -2048,7 +2119,8 @@ function xmRefreshDone(st) {
   set("#xm-d-push", st.push_ok ? "正常" : "等待", st.push_ok ? "ok" : "err");
   const err = st.last_error || "";
   set("#xm-d-err", err ? (err.length > 12 ? err.slice(0, 12) + "…" : err) : "无", err ? "err" : "ok");
-  xmRefreshNow(st);
+  const xmDs = st.devices_state || {};
+  xmCtrlRender(Array.isArray(xmDs) ? xmDs : (xmDs.devices || []), xmDs);
 
   // ① 口令轮询（桥接 enable_pull_ask）：false 时 poller 空转，语音指令永远到不了桥接
   const pollOn = st.pull_ask_on;

@@ -595,6 +595,8 @@ class NativeCore:
         """
         self.log.info("[native] run_forever start")
         self.music_library.try_gen_all_music_tag()
+        # 登录自愈（见 _relogin_loop）：登录失败后周期重试，不再只能重启进程
+        self._relogin_task = asyncio.create_task(self._relogin_loop())
         try:
             await self.auth_manager.init_all_data()
         except asyncio.CancelledError:
@@ -625,6 +627,9 @@ class NativeCore:
         for t in list(self.running_task):
             t.cancel()
         self.running_task.clear()
+        relogin = getattr(self, "_relogin_task", None)
+        if relogin is not None:
+            relogin.cancel()
         for t in list(self._sleep_timers.values()):
             t.cancel()
         self._sleep_timers.clear()
@@ -641,6 +646,37 @@ class NativeCore:
     def mi_logged_in(self) -> bool:
         """小米登录是否真实有效（mina_service 存在说明登录成功）。"""
         return self.auth_manager is not None and self.auth_manager.mina_service is not None
+
+    async def _relogin_loop(self):
+        """登录失效自愈：mina_service 为空时低频重试登录。
+
+        87001 教训（2026-11-28 实测）：init_all_data 只在 run_forever 启动时
+        跑一次，登录一旦失败整个进程生命周期无人重试——口令、设备快照、
+        控制指令全部失效，只能重启进程或重新扫码。降频守卫只观察不发请求，
+        这里是登录恢复的唯一自动通道。频率必须克制（60s 起指数退避到 600s
+        封顶）：外部用户日志里「向导每提交一次就 force_login 一次」的 2 秒
+        风暴正是加重风控的反例。风控解封通常几分钟内，退避足够覆盖。
+        """
+        backoff = 60
+        while True:
+            await asyncio.sleep(backoff)
+            am = self.auth_manager
+            if am is None:
+                continue
+            if getattr(am, "mina_service", None) is not None:
+                backoff = 60  # 已恢复：退避复位，继续低频巡检
+                continue
+            self.log.info("[relogin] 登录失效（%.0fs 未恢复），自动重试登录（下次退避 %ds）",
+                          backoff, min(backoff * 2, 600))
+            try:
+                await am.init_all_data(force_login=True)
+            except Exception as e:  # noqa: BLE001
+                self.log.warning("[relogin] 自动重登异常: %s", e)
+            if getattr(am, "mina_service", None) is None:
+                backoff = min(backoff * 2, 600)
+            else:
+                backoff = 60
+                self.log.info("[relogin] 登录已恢复，轮询自动回到正常频率")
 
     def push_config(
         self,

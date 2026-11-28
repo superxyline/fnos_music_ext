@@ -345,6 +345,8 @@ async def lifespan(_app):
     patch_tts_timer()
     # 3.8 轮询间隔守卫：登录态变化时把 pull_ask_sec 在 1s / 60s 之间切换
     asyncio.create_task(poll_guard_loop())
+    # 3.82 下一曲定时器竞态修复：失引用旧定时器到期误触发换歌（频繁暂停/继续）
+    patch_next_timer()
     # 3.9 本地音乐文件服务（/music/*）：
     #     xiaomusic 的 _get_file_url 会拼 http://{nas_ip}:{public_port}/music/...
     #     发给音箱——edge-tts 确认音在 music/tmp/ 下、点歌下载的本地歌曲在
@@ -905,6 +907,52 @@ def _spawn_audio_id_resolve(playlist: list):
     asyncio.create_task(_task())
 
 
+def patch_next_timer():
+    """修上游下一曲定时器的"失引用"竞态（频繁暂停/继续导致换歌的根因）。
+
+    2026-11-28 实测：上游 set_next_music_timeout 的 _do_next 到期时读
+    self._next_timer 当"当前定时器"——被后续 set/cancel 覆盖失去引用的旧
+    task 到期时，会把新 timer 误当成自己的：cancel 掉它再强行 _play_next。
+    管理台「继续」会重建定时器（set 里 await cancel 有让出窗口），与上游
+    口令播放/poller 的 set 并发交错后必然出现失引用旧 task，到期即换歌。
+
+    修复：task 闭包持有自身引用，到期校验 self._next_timer is 自身 才执行；
+    被替代的旧 task 静默退出。语义与上游一致（最新 set 生效、单曲模式到点
+    停止）。
+    """
+    try:
+        from xiaomusic.const import PLAY_TYPE_SIN
+        from xiaomusic.device_player import XiaoMusicDevice
+    except ImportError:
+        log.info("[timer] 无 xiaomusic 环境，跳过下一曲定时器补丁")
+        return
+
+    async def patched_set(self, sec):
+        await self.cancel_next_timer()
+
+        async def _do_next():
+            await asyncio.sleep(max(1.0, float(sec)))
+            this_task = asyncio.current_task()
+            if self._next_timer is not this_task:
+                self.log.info("[timer] 下一曲定时器已被替代，静默退出 did: %s", self.did)
+                return
+            self._next_timer = None
+            try:
+                if self.device.play_type == PLAY_TYPE_SIN:
+                    self.log.info(f"单曲播放不继续播放下一首 did: {self.did}")
+                    await self.stop(arg1="notts")
+                else:
+                    await self._play_next()
+            except Exception as e:  # noqa: BLE001
+                self.log.error(f"[timer] _do_next 异常: {e}")
+
+        self._next_timer = asyncio.create_task(_do_next())
+        self.log.info(f"{sec} 秒后将会播放下一首歌曲 did: {self.did}")
+
+    XiaoMusicDevice.set_next_music_timeout = patched_set
+    log.info("[timer] 下一曲定时器失引用校验已生效")
+
+
 def patch_audio_id_resolver():
     """包装上游 XiaoMusicDevice._get_audio_id，修掉带屏设备"屏幕显示错歌"。
 
@@ -1162,7 +1210,12 @@ def _now_playing() -> dict:
 @app.get("/play")
 @app.head("/play")
 async def play(request: Request, guid: str):
-    """带认证请求飞牛音乐取流，跟随 302，流式回传（支持 Range）"""
+    """带认证请求飞牛音乐取流，跟随 302，流式回传（支持 Range）。
+
+    FLAC 等音箱媒体播放器不支持的格式（实测 L05B「播放中但静音」）在
+    transcode_mode=auto（默认）时用容器内置 ffmpeg 流式转 mp3 320k：
+    转码流不支持 Range（从头转），播放器从头拉即可；原格式直通路径不变。
+    """
     if not CFG.get("wizard_done"):
         return JSONResponse({"error": "尚未完成安装向导"}, status_code=503)
     # 口令收藏（fav_current）：音箱开播哪首就来取哪首的流，这里即"当前播放"。
@@ -1184,7 +1237,9 @@ async def play(request: Request, guid: str):
     STATE.fn = STATE.fn or new_fn_client()
     range_header = request.headers.get("range")
     try:
-        resp = await STATE.fn.open_stream(guid, range_header=range_header)
+        # 探测流不带 Range：转码分支要全量输入（从头转）；直通分支如需 Range
+        # 再按原样重开一次（开流成本只是一次 302 + 响应头）
+        resp = await STATE.fn.open_stream(guid, range_header=None)
     except Exception as e:
         log.warning("取流失败 guid=%s: %s", guid, e)
         return JSONResponse({"error": f"取流失败: {e}"}, status_code=502)
@@ -1194,6 +1249,16 @@ async def play(request: Request, guid: str):
             return JSONResponse(
                 {"error": f"飞牛返回 HTTP {resp.status_code}", "detail": body[:200]},
                 status_code=resp.status_code)
+        if _needs_transcode(resp.headers.get("Content-Type", "")):
+            return await _transcode_response(resp)
+        if range_header:
+            await resp.aclose()
+            resp = await STATE.fn.open_stream(guid, range_header=range_header)
+            if resp.status_code >= 400:
+                body = await resp.aread()
+                return JSONResponse(
+                    {"error": f"飞牛返回 HTTP {resp.status_code}", "detail": body[:200]},
+                    status_code=resp.status_code)
         headers = {}
         for h in ("Content-Length", "Content-Range", "Accept-Ranges"):
             v = resp.headers.get(h)
@@ -1205,8 +1270,82 @@ async def play(request: Request, guid: str):
             media_type=resp.headers.get("Content-Type", "application/octet-stream"),
             headers=headers)
     except Exception as e:
-        await resp.aclose()
+        with contextlib.suppress(Exception):
+            await resp.aclose()
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# /play 转码：FLAC（实测 L05B 解码静音）→ mp3 320k。transcode_mode=off 关闭。
+TRANSCODE_TYPES = {"audio/flac"}
+
+
+def _needs_transcode(content_type: str) -> bool:
+    mode = str(CFG.get("transcode_mode", "auto") or "auto").strip().lower()
+    if mode in ("off", "never"):
+        return False
+    ctype = (content_type or "").split(";")[0].strip().lower()
+    return ctype in TRANSCODE_TYPES
+
+
+async def _transcode_response(resp) -> StreamingResponse:
+    """上游音频流 → ffmpeg → mp3 流式响应；客户端断开/上游结束时清理子进程。"""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-i", "pipe:0", "-vn",
+            "-c:a", "libmp3lame", "-b:a", "320k",
+            "-f", "mp3", "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except Exception as e:  # noqa: BLE001
+        # 无 ffmpeg / 启动失败：退回直通，静音也比没歌强不了多少，但至少不崩
+        log.warning("[play] ffmpeg 不可用，退回直通原格式: %s", e)
+        return StreamingResponse(
+            resp.aiter_bytes(),
+            media_type=resp.headers.get("Content-Type", "application/octet-stream"))
+
+    async def _pump():
+        # 注意：StreamWriter.write() 是普通方法（非协程），必须配 drain()；
+        # 误写 await write() 会 TypeError 被下面 except 吞掉 → ffmpeg 永远
+        # 等不到输入，表现为 0 字节转码流（2026-11-28 实测）
+        err = None
+        try:
+            async for chunk in resp.aiter_bytes():
+                proc.stdin.write(chunk)
+                await proc.stdin.drain()
+        except Exception as exc:  # noqa: BLE001  # 客户端断开/上游异常：让 ffmpeg 收到 EOF 自然收尾
+            err = exc
+        finally:
+            if err is not None:
+                log.debug("[play] 转码泵中断（客户端断开属正常）: %s", err)
+            with contextlib.suppress(Exception):
+                await proc.stdin.close()
+
+    async def _gen():
+        pump = asyncio.create_task(_pump())
+        try:
+            while True:
+                chunk = await proc.stdout.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            pump.cancel()
+            with contextlib.suppress(Exception):
+                await pump
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(proc.wait(), timeout=3)
+            with contextlib.suppress(Exception):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await resp.aclose()
+
+    log.info("[play] 格式需转码（%s → mp3 320k，transcode_mode=%s）",
+             resp.headers.get("Content-Type", "?"),
+             CFG.get("transcode_mode", "auto"))
+    return StreamingResponse(_gen(), media_type="audio/mpeg")
 
 
 @app.get("/playlist.json")
@@ -1300,7 +1439,10 @@ async def mi_login(request: Request):
         # fetch_devices(trigger_login=True) 内部会 init_all_data(force_login=True)
         devices = await XM.fetch_devices(trigger_login=True)
         if not devices:
-            return JSONResponse({"ok": False, "message": "登录失败或设备列表为空，请检查账号密码"})
+            # status_code 必须给：前端 api() 同时检查 HTTP 状态与 body.ok，
+            # 双保险（2026-11-28 修复失败被误报为成功）
+            return JSONResponse({"ok": False, "message": "登录失败或设备列表为空，请检查账号密码"},
+                                status_code=400)
         return {"ok": True, "devices": devices}
     except Exception as e:
         log.exception("小米登录异常")
@@ -1321,7 +1463,7 @@ async def wizard_qrcode():
             XM.qrlogin.start_status_poll(lp)
         image_url = XM.qrlogin.image_url(qr or {})
         if not image_url:
-            return JSONResponse({"ok": False, "message": "二维码生成失败"})
+            return JSONResponse({"ok": False, "message": "二维码生成失败"}, status_code=400)
         return {"ok": True, "qrcode_url": image_url, "expire_seconds": 120}
     except Exception as e:
         return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
@@ -1437,7 +1579,9 @@ async def wizard_fnmusic(request: Request):
         favorites = await client.get_favorites()
         await client.aclose()
     except Exception as e:
-        return JSONResponse({"ok": False, "message": f"登录失败: {e}"})
+        # 带 NAS_IP:4565 这类错误地址时登录会吃 HTTP 400，message 里已含
+        # 服务端响应片段；必须给 status_code，前端才能直接走 throw 路径
+        return JSONResponse({"ok": False, "message": f"登录失败: {e}"}, status_code=400)
     # 保存配置，标记向导完成。
     # base_url 取登录后的实际值：强制 HTTPS 环境下 FnMusicClient 会在首次
     # 登录时把 http://:5666 自动升级为 https://:5667（issue #5），落盘真实
@@ -1476,6 +1620,170 @@ async def wizard_reset():
     save_json(BRIDGE_CONFIG_FILE, CFG)
     log.info("向导已完全重置（小米登录态与飞牛配置已清）")
     return {"ok": True}
+
+
+# ---------------- 设备控制（管理台「小爱音箱」页直接下发指令，2026-11-28） ----------------
+
+@app.get("/api/xm/devices_state")
+async def xm_devices_state():
+    """已接管设备逐台快照：did/名称/型号/播放状态/当前曲目。
+
+    device_manager.devices 即按 mi_did 过滤后的已接管设备集合；
+    did/device_id 从 Device 对象取（不信任 dict key，与 _now_playing 同模式）。
+    供管理台「设备控制」卡片展示，随 /api/xiaomusic/status 每 5s 合并下发。
+    """
+    out = []
+    mi_ready = bool(XM is not None and XM.auth_manager is not None
+                    and XM.auth_manager.mina_service is not None)
+    try:
+        devices = getattr(getattr(XM, "device_manager", None), "devices", {}) or {}
+        for dev in devices.values():
+            info = getattr(dev, "device", None)
+            did = str(getattr(info, "did", "") or "")
+            if not did:
+                continue
+            # 来源标注（与「正在播放」同一判定链）：cur_music → all_music URL 里的
+            # guid → _guid_source。拿不到 guid 时留空，前端不显示徽标。
+            cur_name = (getattr(info, "cur_music", "") or "").strip()
+            src_label = ""
+            if cur_name:
+                try:
+                    url = (getattr(getattr(XM, "music_library", None),
+                                   "all_music", {}) or {}).get(cur_name, "")
+                    m = re.search(r"[?&]guid=([^&]+)", url or "")
+                    if m:
+                        src_label = _guid_source(
+                            urllib.parse.unquote(m.group(1)))[1]
+                except Exception:  # noqa: BLE001
+                    src_label = ""
+            out.append({
+                "did": did,
+                "name": getattr(info, "name", "") or "",
+                "hardware": getattr(info, "hardware", "") or "",
+                "is_playing": bool(getattr(dev, "is_playing", False)),
+                "cur_music": cur_name,
+                "cur_playlist": (getattr(info, "cur_playlist", "") or "").strip(),
+                "source_label": src_label,
+            })
+    except Exception as e:  # noqa: BLE001
+        log.warning("[ctrl] 读取设备状态失败: %s", e)
+    out.sort(key=lambda d: (not d["is_playing"], d["name"]))
+    return {"ok": True, "mi_logged": mi_ready, "devices": out}
+
+
+# 设备控制（action）的同设备互斥与去抖状态：pause/play 并发到达会乱序打给
+# 小米（播放器状态机错乱），也是下一曲定时器失引用竞态的温床
+_CTRL_LOCKS: dict = {}
+_CTRL_LAST: dict = {}
+
+
+@app.post("/api/xm/device_cmd")
+async def xm_device_cmd(request: Request):
+    """向指定已接管设备下发指令。
+
+    - {did, action:"pause"|"play"}：直接走 mina player_pause/player_play。
+      暂停/继续必须用这个通道——语音口令的「暂停」映射到 stop（清空播放、
+      不留进度），按钮语义是"可续播的暂停"，与口令行为不同（miservice-fork
+      2.9.3 MiNAService.player_pause/player_play，device_id 用 UUID）。
+    - {did, query:"..."}：与语音口令完全同路径（dispatcher.dispatch）。
+      先用同一匹配器本地预判是否可识别（dispatch 本身恒返回 None，无法
+      判断成败）；识别后异步执行立即返回——点歌含搜索/下载可能几十秒，
+      同步等待会拖死请求。do_check_cmd 内部已兜异常，不会伤轮询。
+    """
+    data = await request.json()
+    did = str(data.get("did") or "").strip()
+    action = str(data.get("action") or "").strip()
+    query = str(data.get("query") or "").strip()
+    if not did:
+        return JSONResponse({"ok": False, "message": "缺少 did"}, status_code=400)
+    if not action and not query:
+        return JSONResponse({"ok": False, "message": "缺少指令内容"}, status_code=400)
+    if XM is None:
+        return JSONResponse({"ok": False, "message": "引擎未启动"}, status_code=503)
+    dm = getattr(XM, "device_manager", None)
+    device = (getattr(dm, "devices", {}) or {}).get(did) if dm is not None else None
+    if device is None:
+        return JSONResponse({"ok": False, "message": "设备不在接管列表，请刷新页面"},
+                            status_code=400)
+
+    if action:
+        if action not in ("pause", "play"):
+            return JSONResponse({"ok": False, "message": "不支持的动作"},
+                                status_code=400)
+        # 同设备操作串行 + 去抖：锁内执行避免 pause/play 乱序到达小米；
+        # 400ms 内同动作连点直接吞掉（双击防抖），不同动作（暂停↔继续）不受影响
+        lock = _CTRL_LOCKS.setdefault(did, asyncio.Lock())
+        async with lock:
+            if time.time() - _CTRL_LAST.get((did, action), 0) < 0.4:
+                log.info("[ctrl] 去抖吞掉重复 %s did=%s", action, did)
+                return {"ok": True,
+                        "message": "已暂停" if action == "pause" else "已继续播放"}
+            mina = getattr(getattr(XM, "auth_manager", None), "mina_service", None)
+            if mina is None:
+                return JSONResponse({"ok": False,
+                                     "message": "小米登录未就绪，暂无法控制音箱"},
+                                    status_code=400)
+            device_id = getattr(device, "device_id", None) or getattr(
+                getattr(device, "device", None), "device_id", None)
+            try:
+                if action == "pause":
+                    await mina.player_pause(device_id)
+                    # 同步桥接内存状态：轮询链路感知不到 ubus 暂停（不产生对话
+                    # 记录、不触发播放结束事件），is_playing 不改 → 设备快照永远
+                    # "播放中"（管理台按钮永远是「暂停」，看不到「继续」，2026-11-28
+                    # 实测），且下一曲定时器到点会自动跳歌（暂停失效）。拆定时器
+                    # 的处理与 dispatcher._stop_fallback 一致；暂停起点单独记录，
+                    # 继续播放时补进 _paused_time（上游 offset 计算专用）。
+                    device.is_playing = False
+                    device._fn_paused_at = time.time()
+                    with contextlib.suppress(Exception):
+                        await device.cancel_group_next_timer()
+                else:
+                    await mina.player_play(device_id)
+                    device.is_playing = True
+                    # 暂停时长补进上游 _paused_time（offset = now - start - paused，
+                    # 两者都是上游为 TTS 暂停设计的字段），再按剩余时长重建下一曲
+                    # 定时器——暂停时拆掉了，恢复后播完这首仍能自动接下一首。
+                    paused_at = float(getattr(device, "_fn_paused_at", 0) or 0)
+                    if paused_at:
+                        device._paused_time = float(
+                            getattr(device, "_paused_time", 0) or 0) + max(
+                                0.0, time.time() - paused_at)
+                        device._fn_paused_at = 0
+                    offset, duration = 0.0, 0.0
+                    with contextlib.suppress(Exception):
+                        offset, duration = device.get_offset_duration()
+                    if duration > 0:
+                        remain = max(5.0, float(duration) - float(offset or 0))
+                        with contextlib.suppress(Exception):
+                            await device.set_next_music_timeout(remain)
+            except Exception as e:  # noqa: BLE001
+                log.warning("[ctrl] %s 下发失败 did=%s: %s", action, did, e)
+                return JSONResponse({"ok": False, "message": f"下发失败: {e}"},
+                                    status_code=502)
+            _CTRL_LAST[(did, action)] = time.time()
+            log.info("[ctrl] %s -> did=%s", action, did)
+            return {"ok": True, "message": "已暂停" if action == "pause" else "已继续播放"}
+
+    try:
+        opvalue, _oparg = XM.dispatcher.match_cmd(device, query, True)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"ok": False, "message": f"口令解析异常: {e}"},
+                            status_code=500)
+    if not opvalue:
+        handled = False
+        try:
+            handled = await XM.dispatcher._stop_fallback(device, query)
+        except Exception:  # noqa: BLE001
+            handled = False
+        if not handled:
+            return JSONResponse({"ok": False,
+                                 "message": "未识别的口令（可下发的指令见「语音口令」表）"},
+                                status_code=400)
+        return {"ok": True, "message": "已按停止处理"}
+    asyncio.create_task(XM.do_check_cmd(did, query, ctrl_panel=True))
+    log.info("[ctrl] 下发口令 %r -> did=%s (action=%s)", query, did, opvalue)
+    return {"ok": True, "message": f"已下发（{opvalue}）"}
 
 
 # ---------------- 状态页与 UI ----------------
@@ -1521,7 +1829,8 @@ async def index():
     if logo.exists():
         b64 = base64.b64encode(logo.read_bytes()).decode()
         html = html.replace("__LOGO_B64__", b64)
-    return HTMLResponse(html)
+    # no-store：向导页修 bug 后必须立即可见，不能吃浏览器缓存（2026-11-28 测试包）
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 if __name__ == "__main__":
